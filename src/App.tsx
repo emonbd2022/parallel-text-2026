@@ -14,10 +14,10 @@ const STORAGE_CONFIG = 'parrarel_config_v3';
 // Models
 const MODELS = [
   { id: 'auto', name: 'Auto (Best Effort)', rpm: 5 },
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview (5 RPM)', rpm: 5 },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (5 RPM)', rpm: 5 },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite (10 RPM)', rpm: 10 },
-  { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (10 RPM)', rpm: 10 }
+  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview (20 RPD)', rpm: 5 },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (20 RPD)', rpm: 5 },
+  { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (500 RPD)', rpm: 10 },
+  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite (20 RPD)', rpm: 10 }
 ];
 
 // Helper: Get Session Date (Resets at 2:00 PM GMT+6)
@@ -355,6 +355,7 @@ export default function App() {
       let usedModel = config.model;
 
       if (config.model === 'auto') {
+        // Priority: 3 Flash -> 2.5 Flash -> 3.1 Flash Lite -> 2.5 Flash Lite
         try {
           usedModel = 'gemini-3-flash-preview';
           results = await generateMetadataBatch(
@@ -373,14 +374,25 @@ export default function App() {
               { ...config, model: usedModel }
             );
           } catch (flash25Error) {
-            console.warn("Auto: 2.5 Flash failed, retrying with Lite...", flash25Error);
+            console.warn("Auto: 2.5 Flash failed, retrying with 3.1 Flash Lite...", flash25Error);
 
-            usedModel = 'gemini-2.5-flash-lite';
-            results = await generateMetadataBatch(
-              keyObj.key,
-              payload,
-              { ...config, model: usedModel }
-            );
+            try {
+                usedModel = 'gemini-3.1-flash-lite-preview';
+                results = await generateMetadataBatch(
+                  keyObj.key,
+                  payload,
+                  { ...config, model: usedModel }
+                );
+            } catch (flash31LiteError) {
+                console.warn("Auto: 3.1 Flash Lite failed, retrying with 2.5 Flash Lite...", flash31LiteError);
+                
+                usedModel = 'gemini-2.5-flash-lite';
+                results = await generateMetadataBatch(
+                  keyObj.key,
+                  payload,
+                  { ...config, model: usedModel }
+                );
+            }
           }
         }
       } else {
@@ -407,7 +419,7 @@ export default function App() {
       setKeys(prev => prev.map(k => {
         if (k.id === keyObj.id) {
             const currentSession = getUsageSessionId();
-            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0 }) };
+            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0 }) };
             
             // Ensure usage date is current session before incrementing
             if (newUsage.date !== currentSession) {
@@ -415,9 +427,11 @@ export default function App() {
                 newUsage.flash = 0;
                 newUsage.lite = 0;
                 newUsage.flash_3 = 0;
+                newUsage.flash_3_1_lite = 0;
             }
 
-            if (usedModel.includes('flash-lite')) newUsage.lite = (newUsage.lite || 0) + 1;
+            if (usedModel.includes('gemini-3.1-flash-lite-preview')) newUsage.flash_3_1_lite = (newUsage.flash_3_1_lite || 0) + 1;
+            else if (usedModel.includes('gemini-2.5-flash-lite')) newUsage.lite = (newUsage.lite || 0) + 1;
             else if (usedModel.includes('gemini-2.5-flash')) newUsage.flash = (newUsage.flash || 0) + 1;
             else if (usedModel.includes('gemini-3-flash-preview')) newUsage.flash_3 = (newUsage.flash_3 || 0) + 1;
 
@@ -526,12 +540,14 @@ export default function App() {
     // Check usage limits and validity
     const validKeys = keys.filter(k => {
         if (k.errorCount >= 5) return false;
-        const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0 };
+        const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0 };
         if (config.model === 'auto') {
-            return (usage.flash < 20) || (usage.flash_3 < 20) || (usage.lite < 20);
-        } else if (config.model.includes('flash-lite')) {
+            return (usage.flash_3 < 20) || (usage.flash < 20) || (usage.flash_3_1_lite < 500) || (usage.lite < 20);
+        } else if (config.model.includes('gemini-3.1-flash-lite-preview')) {
+            return usage.flash_3_1_lite < 500;
+        } else if (config.model.includes('gemini-2.5-flash-lite')) {
             return usage.lite < 20;
-        } else if (config.model.includes('flash')) {
+        } else if (config.model.includes('gemini-2.5-flash')) {
             return usage.flash < 20;
         } else if (config.model.includes('gemini-3-flash-preview')) {
             return usage.flash_3 < 20;

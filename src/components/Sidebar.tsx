@@ -98,7 +98,7 @@ export const Sidebar: React.FC<Props> = ({
                   label: l, 
                   key: k, 
                   errorCount: 0,
-                  usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0 }
+                  usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0 }
                 }])}
                 onRemove={(id) => setKeys(prev => prev.filter(k => k.id !== id))}
                 onResetUsage={onResetUsage}
