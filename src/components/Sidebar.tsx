@@ -32,24 +32,6 @@ export const Sidebar: React.FC<Props> = ({
 }) => {
   
   // Custom handlers for Adobe-style sliders
-  const handleConcurrencyMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault(); e.stopPropagation();
-    const startX = e.clientX;
-    const startVal = config.concurrency;
-    const moveHandler = (ev: MouseEvent) => {
-        const delta = Math.round((ev.clientX - startX) / 20);
-        setConfig(prev => ({ ...prev, concurrency: Math.min(10, Math.max(1, startVal + delta)) }));
-    };
-    const upHandler = () => {
-        window.removeEventListener('mousemove', moveHandler);
-        window.removeEventListener('mouseup', upHandler);
-        document.body.style.cursor = '';
-    };
-    window.addEventListener('mousemove', moveHandler);
-    window.addEventListener('mouseup', upHandler);
-    document.body.style.cursor = 'ew-resize';
-  };
-
   const handleBatchMouseDown = (e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
     const startX = e.clientX;
@@ -186,38 +168,18 @@ export const Sidebar: React.FC<Props> = ({
                 </div>
                 </div>
 
-                {/* Concurrency Slider */}
+                {/* Auto Export Toggle */}
+                <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-indigo-500/30 transition-colors">
                 <div>
-                    <div className="flex justify-between items-center mb-2 pl-1">
-                    <label className="text-[10px] uppercase font-bold text-slate-500">Concurrency Limit</label>
-                    <div className="bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-bold px-2 py-0.5 rounded-md font-mono">
-                        {config.concurrency}x
-                    </div>
-                    </div>
-                    
-                    <div 
-                    className="bg-slate-900 border border-slate-700 rounded-xl p-4 relative group cursor-ew-resize select-none touch-none hover:border-indigo-500/50 transition-colors"
-                    onMouseDown={handleConcurrencyMouseDown}
-                    >
-                    <div className="absolute top-1/2 left-4 right-4 h-1.5 bg-slate-800 rounded-full -translate-y-1/2 overflow-hidden pointer-events-none">
-                        <div 
-                        className="h-full bg-gradient-to-r from-emerald-500 via-indigo-500 to-purple-500 transition-all duration-75 ease-out"
-                        style={{ width: `${((config.concurrency - 1) / 9) * 100}%` }}
-                        />
-                    </div>
-                    <div 
-                        className="absolute top-1/2 w-5 h-5 bg-white rounded-full shadow-[0_0_10px_rgba(255,255,255,0.5)] border-2 border-indigo-500 -translate-y-1/2 -translate-x-1/2 transition-transform duration-75 ease-out pointer-events-none group-active:scale-125"
-                        style={{ left: `calc(1rem + ${((config.concurrency - 1) / 9) * (100 - (32/300)*100)}%)` }} 
-                    />
-                    <div className="w-full h-4"></div>
-                    <div className="flex justify-between mt-3 text-[10px] font-bold text-slate-600 uppercase tracking-widest select-none pointer-events-none">
-                        <span className={config.concurrency === 1 ? 'text-emerald-500' : ''}>Sequential</span>
-                        <span className={config.concurrency === 10 ? 'text-purple-500' : ''}>Parallel</span>
-                    </div>
-                    </div>
-                    <p className="text-[10px] text-slate-500 mt-2 px-1 leading-relaxed">
-                        Drag to adjust speed. Zoto goti, toto khoti
-                    </p>
+                    <span className="block text-sm font-bold text-slate-200">Auto Export</span>
+                    <span className="text-[10px] text-slate-500 block mt-0.5">Export CSV automatically on finish</span>
+                </div>
+                <button 
+                    onClick={() => setConfig(prev => ({...prev, autoExport: !prev.autoExport}))}
+                    className={`w-11 h-6 rounded-full transition-all relative ${config.autoExport ? 'bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.4)]' : 'bg-slate-700'}`}
+                >
+                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.autoExport ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
                 </div>
 
                 {/* Batch Size Slider (Images Per Request) */}

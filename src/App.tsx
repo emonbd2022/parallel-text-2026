@@ -100,7 +100,8 @@ export default function App() {
       negativeTitleWords: '',
       negativeKeywords: '',
       targetExtension: '',
-      forceTransparency: false
+      forceTransparency: false,
+      autoExport: false
     };
   });
 
@@ -508,15 +509,79 @@ export default function App() {
     }
   };
 
+  const handleExport = () => {
+    const completedItems = items.filter(i => i.status === 'done');
+    if (completedItems.length === 0) return;
+
+    const headers = ['Filename', 'Title', 'Keywords'];
+    const rows = completedItems.map(i => {
+      let fileName = i.name;
+      if (config.targetExtension) {
+        const lastDotIndex = fileName.lastIndexOf('.');
+        if (lastDotIndex !== -1) {
+            fileName = fileName.substring(0, lastDotIndex) + config.targetExtension;
+        } else {
+            fileName = fileName + config.targetExtension;
+        }
+      }
+
+      const safeName = `"${fileName.replace(/"/g, '""')}"`;
+      const safeTitle = `"${i.title.replace(/"/g, '""')}"`;
+      const safeKeys = `"${i.keywords.replace(/"/g, '""')}"`;
+      return `${safeName},${safeTitle},${safeKeys}`;
+    });
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `parrarel_export_${new Date().getTime()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    const newRecord: HistoryRecord = {
+      id: Math.random().toString(36).slice(2),
+      timestamp: new Date().toISOString(),
+      itemCount: completedItems.length,
+      csv: csvContent
+    };
+    setHistory(prev => [newRecord, ...prev].slice(0, 20));
+  };
+
+  const playSuccessSound = () => {
+    try {
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(523.25, audioContext.currentTime); // C5
+        oscillator.frequency.exponentialRampToValueAtTime(1046.5, audioContext.currentTime + 0.1); // C6
+        
+        gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.5);
+        
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + 0.5);
+    } catch (e) {
+        console.error("Audio play failed", e);
+    }
+  };
+
   useEffect(() => {
     if (!isProcessing) return;
 
-    // 1. Calculate slots
+    // 1. Calculate slots (Unlimited concurrency - limited only by available keys)
     const activeKeyIds = new Set(items.filter(i => i.status === 'processing' && i.assignedKeyId).map(i => i.assignedKeyId));
     const activeRequests = activeKeyIds.size;
-    const slotsAvailable = config.concurrency - activeRequests;
-
-    if (slotsAvailable <= 0) return;
+    // No concurrency limit check here
 
     // 2. Get pending items
     // Filter pending items that have thumbnail ready
@@ -527,6 +592,10 @@ export default function App() {
         if (!hasActive) {
             setIsProcessing(false);
             setStatusMsg('Processing complete.');
+            playSuccessSound();
+            if (config.autoExport) {
+                handleExport();
+            }
         } else {
             setStatusMsg('Waiting for current batches...');
         }
@@ -583,15 +652,12 @@ export default function App() {
 
     // 4. Fill Slots
     const sortedQueue = [...pendingItems].sort((a, b) => a.attempts - b.attempts);
-    const batchesToStart = Math.min(slotsAvailable, availableKeys.length);
     const batchSize = config.batchSize || 1;
 
     let currentItemIndex = 0;
     
     // Iterate through available keys to find work
     for (const chosenKey of availableKeys) {
-        if (batchesToStart <= 0) break;
-
         const batch: ProcessingItem[] = [];
         // Scan queue for items that HAVEN'T failed with this specific key
         let scannedCount = 0;
@@ -667,49 +733,6 @@ export default function App() {
           setHistory([]);
           localStorage.removeItem(STORAGE_HISTORY);
       }
-  };
-
-  const handleExport = () => {
-    const completedItems = items.filter(i => i.status === 'done');
-    if (completedItems.length === 0) return;
-
-    const headers = ['Filename', 'Title', 'Keywords'];
-    const rows = completedItems.map(i => {
-      let fileName = i.name;
-      if (config.targetExtension) {
-        const lastDotIndex = fileName.lastIndexOf('.');
-        if (lastDotIndex !== -1) {
-            fileName = fileName.substring(0, lastDotIndex) + config.targetExtension;
-        } else {
-            fileName = fileName + config.targetExtension;
-        }
-      }
-
-      const safeName = `"${fileName.replace(/"/g, '""')}"`;
-      const safeTitle = `"${i.title.replace(/"/g, '""')}"`;
-      const safeKeys = `"${i.keywords.replace(/"/g, '""')}"`;
-      return `${safeName},${safeTitle},${safeKeys}`;
-    });
-    const csvContent = [headers.join(','), ...rows].join('\n');
-    
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `parrarel_export_${new Date().getTime()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-    const newRecord: HistoryRecord = {
-      id: Math.random().toString(36).slice(2),
-      timestamp: new Date().toISOString(),
-      itemCount: completedItems.length,
-      csv: csvContent
-    };
-    setHistory(prev => [newRecord, ...prev].slice(0, 20));
   };
 
   const allDone = items.length > 0 && items.every(i => i.status === 'done');
