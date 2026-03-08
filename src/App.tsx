@@ -612,7 +612,10 @@ export default function App() {
 
     // Check usage limits and validity
     const validKeys = keys.filter(k => {
-        if (k.errorCount >= 20) return false; // Increased from 5 to 20
+        // REMOVED: if (k.errorCount >= 20) return false; 
+        // We no longer permanently disable keys based on error count. 
+        // We just prioritize better keys and rely on cooldowns.
+        
         // We rely on API error responses (429) to handle rate limits rather than strict client-side counting.
         // However, we keep a very high ceiling just in case.
         const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0 };
@@ -661,6 +664,9 @@ export default function App() {
     // 4. Fill Slots
     const sortedQueue = [...pendingItems].sort((a, b) => a.attempts - b.attempts);
     const batchSize = config.batchSize || 1;
+
+    // Sort keys: prioritize those with fewer errors
+    availableKeys.sort((a, b) => a.errorCount - b.errorCount);
 
     let currentItemIndex = 0;
     
