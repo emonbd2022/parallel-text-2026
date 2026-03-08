@@ -60,6 +60,7 @@ export default function App() {
         return { 
             ...k, 
             cooldownUntil: undefined,
+            errorCount: 0, // Reset errors on reload to prevent permanent blocking
             usage: usage
         };
       });
@@ -308,11 +309,15 @@ export default function App() {
   };
 
   const handleResetUsage = (id: string) => {
-      if (window.confirm('Are you sure you want to manually reset usage counts for this key?')) {
+      if (window.confirm('Are you sure you want to manually reset usage counts and errors for this key?')) {
           const currentSession = getUsageSessionId();
           setKeys(prev => prev.map(k => {
               if (k.id === id) {
-                  return { ...k, usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0 } };
+                  return { 
+                      ...k, 
+                      errorCount: 0, // Reset errors too
+                      usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0 } 
+                  };
               }
               return k;
           }));
@@ -620,17 +625,25 @@ export default function App() {
         // However, we keep a very high ceiling just in case.
         const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0 };
         
+        // Ensure properties are numbers (handle undefined/null from old storage)
+        const u = {
+            flash: Number(usage.flash || 0),
+            lite: Number(usage.lite || 0),
+            flash_3: Number(usage.flash_3 || 0),
+            flash_3_1_lite: Number(usage.flash_3_1_lite || 0)
+        };
+
         // Increased limits to 10,000 to effectively disable client-side blocking
         if (config.model === 'auto') {
-            return (usage.flash_3 < 10000) || (usage.flash < 10000) || (usage.flash_3_1_lite < 10000) || (usage.lite < 10000);
+            return (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 10000);
         } else if (config.model.includes('gemini-3.1-flash-lite-preview')) {
-            return usage.flash_3_1_lite < 10000;
+            return u.flash_3_1_lite < 10000;
         } else if (config.model.includes('gemini-2.5-flash-lite')) {
-            return usage.lite < 10000;
+            return u.lite < 10000;
         } else if (config.model.includes('gemini-2.5-flash')) {
-            return usage.flash < 10000;
+            return u.flash < 10000;
         } else if (config.model.includes('gemini-3-flash-preview')) {
-            return usage.flash_3 < 10000;
+            return u.flash_3 < 10000;
         }
         return true;
     });
