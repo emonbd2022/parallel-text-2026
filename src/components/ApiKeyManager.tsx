@@ -103,10 +103,10 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
           ...(k.usage ?? {})
         };
 
-          const flashLimit = usage.flash >= 20;
-          const liteLimit = usage.lite >= 20;
-          const flash_3_Limit = usage.flash_3 >= 20;
-          const flash_3_1_lite_Limit = usage.flash_3_1_lite >= 500;
+          const flashLimit = usage.flash >= 10000;
+          const liteLimit = usage.lite >= 10000;
+          const flash_3_Limit = usage.flash_3 >= 10000;
+          const flash_3_1_lite_Limit = usage.flash_3_1_lite >= 10000;
 
           return (
             <div key={k.id} className={`flex items-center justify-between transition-colors p-3 rounded-xl border group relative
@@ -119,17 +119,17 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                    <span className={`font-semibold text-sm truncate ${isDead ? 'text-red-400' : 'text-slate-200'}`} title={k.label}>{k.label}</span>
                    
                    {/* Usage Badges */}
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_Limit ? 'bg-red-500/20 text-red-400' : 'bg-cyan-500/10 text-cyan-400'}`} title="Gemini 3 Flash (20 RPD)">
-                      🔥 3F: {usage.flash_3}/20
+                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_Limit ? 'bg-red-500/20 text-red-400' : 'bg-cyan-500/10 text-cyan-400'}`} title="Gemini 3 Flash Usage">
+                      🔥 3F: {usage.flash_3}
                    </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flashLimit ? 'bg-red-500/20 text-red-400' : 'bg-cyan-500/10 text-cyan-400'}`} title="Gemini 2.5 Flash (20 RPD)">
-                      ⚡ 2.5F: {usage.flash}/20
+                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flashLimit ? 'bg-red-500/20 text-red-400' : 'bg-cyan-500/10 text-cyan-400'}`} title="Gemini 2.5 Flash Usage">
+                      ⚡ 2.5F: {usage.flash}
                    </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_1_lite_Limit ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/10 text-emerald-400'}`} title="Gemini 3.1 Flash Lite (500 RPD)">
-                      🚀 3.1L: {usage.flash_3_1_lite}/500
+                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_1_lite_Limit ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/10 text-emerald-400'}`} title="Gemini 3.1 Flash Lite Usage">
+                      🚀 3.1L: {usage.flash_3_1_lite}
                    </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${liteLimit ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/10 text-amber-400'}`} title="Gemini 2.5 Flash Lite (20 RPD)">
-                      💡 2.5L: {usage.lite}/20
+                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${liteLimit ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/10 text-amber-400'}`} title="Gemini 2.5 Flash Lite Usage">
+                      💡 2.5L: {usage.lite}
                    </span>
 
                    {isCoolingDown && (

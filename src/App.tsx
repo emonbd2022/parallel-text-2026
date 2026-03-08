@@ -609,24 +609,28 @@ export default function App() {
     // Check usage limits and validity
     const validKeys = keys.filter(k => {
         if (k.errorCount >= 5) return false;
+        // We rely on API error responses (429) to handle rate limits rather than strict client-side counting.
+        // However, we keep a very high ceiling just in case.
         const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0 };
+        
+        // Increased limits to 10,000 to effectively disable client-side blocking
         if (config.model === 'auto') {
-            return (usage.flash_3 < 20) || (usage.flash < 20) || (usage.flash_3_1_lite < 500) || (usage.lite < 20);
+            return (usage.flash_3 < 10000) || (usage.flash < 10000) || (usage.flash_3_1_lite < 10000) || (usage.lite < 10000);
         } else if (config.model.includes('gemini-3.1-flash-lite-preview')) {
-            return usage.flash_3_1_lite < 500;
+            return usage.flash_3_1_lite < 10000;
         } else if (config.model.includes('gemini-2.5-flash-lite')) {
-            return usage.lite < 20;
+            return usage.lite < 10000;
         } else if (config.model.includes('gemini-2.5-flash')) {
-            return usage.flash < 20;
+            return usage.flash < 10000;
         } else if (config.model.includes('gemini-3-flash-preview')) {
-            return usage.flash_3 < 20;
+            return usage.flash_3 < 10000;
         }
         return true;
     });
     
     if (validKeys.length === 0) {
         const totalKeys = keys.length;
-        if (totalKeys > 0) setStatusMsg("Daily quota (20 reqs) reached for all keys.");
+        if (totalKeys > 0) setStatusMsg("All keys have high error counts or hit safety limits.");
         else setStatusMsg("No API keys configured.");
         setIsProcessing(false);
         return;
