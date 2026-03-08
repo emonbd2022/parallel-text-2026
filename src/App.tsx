@@ -453,11 +453,13 @@ export default function App() {
       let cooldownTime = 0;
       let errorPenalty = 1;
 
-      if (errMsg.includes('QUOTA_EXCEEDED')) {
+      if (errMsg.includes('QUOTA_EXCEEDED') || errMsg.includes('429')) {
         cooldownTime = 60 * 1000;
-        errorPenalty = 0; 
+        errorPenalty = 0; // Do not penalize for rate limits
       } else if (errMsg.includes('INVALID_KEY')) {
-        errorPenalty = 10;
+        errorPenalty = 10; // Kill invalid keys immediately
+      } else {
+        errorPenalty = 1; // Standard penalty for other errors
       }
 
       setKeys(prevKeys => prevKeys.map(k => {
@@ -473,7 +475,8 @@ export default function App() {
 
       // Revert items to pending or error
       setItems(prev => {
-        const activeKeys = keys.filter(k => k.errorCount < 5); 
+        // We consider keys active if they have < 20 errors (increased from 5)
+        const activeKeys = keys.filter(k => k.errorCount < 20); 
         
         return prev.map(p => {
             if (batchItems.find(b => b.id === p.id)) {
@@ -481,9 +484,10 @@ export default function App() {
                 const newFailedKeys = [...(p.failedKeyIds || []), keyObj.id];
                 
                 // CRITICAL: Check if we have exhausted all available keys for this item
+                // Only fail the item if ALL keys (including this one) have failed it
                 const allKeysExhausted = activeKeys.every(k => newFailedKeys.includes(k.id));
 
-                if (allKeysExhausted) {
+                if (allKeysExhausted && activeKeys.length > 0) {
                      return { 
                          ...p, 
                          status: 'error', 
@@ -608,7 +612,7 @@ export default function App() {
 
     // Check usage limits and validity
     const validKeys = keys.filter(k => {
-        if (k.errorCount >= 5) return false;
+        if (k.errorCount >= 20) return false; // Increased from 5 to 20
         // We rely on API error responses (429) to handle rate limits rather than strict client-side counting.
         // However, we keep a very high ceiling just in case.
         const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0 };

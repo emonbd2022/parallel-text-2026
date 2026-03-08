@@ -93,7 +93,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
         {keys.map((k) => {
           const isCoolingDown = k.cooldownUntil && k.cooldownUntil > now;
           const remainingSecs = isCoolingDown ? Math.ceil((k.cooldownUntil! - now) / 1000) : 0;
-          const isDead = k.errorCount >= 5;
+          const isDead = k.errorCount >= 20; // Increased from 5
           const usage = {
           date: '',
           flash_3: 0,
