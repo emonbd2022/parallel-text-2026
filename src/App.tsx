@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import { ApiKey, ProcessingItem, ProcessingConfig, HistoryRecord } from './types';
 import { ProcessingQueue } from './components/ProcessingQueue';
 import { Sidebar } from './components/Sidebar';
@@ -896,6 +897,7 @@ export default function App() {
         </div>
       </main>
 
+      <SpeedInsights />
     </div>
   );
 }
