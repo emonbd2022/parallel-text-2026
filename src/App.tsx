@@ -85,7 +85,7 @@ export default function App() {
       const saved = localStorage.getItem(STORAGE_CONFIG);
       if (saved) {
           const parsed = JSON.parse(saved);
-          return { ...parsed, batchSize: parsed.batchSize || 5, model: 'gemini-3.1-flash-lite-preview' };
+          return { ...parsed, batchSize: parsed.batchSize || 5, model: parsed.model || 'auto' };
       }
     } catch (e) { /* ignore */ }
     
@@ -95,7 +95,7 @@ export default function App() {
       maxRetries: 3,
       titleMaxLen: 120,
       keywordsCount: 40,
-      model: 'gemini-3.1-flash-lite-preview', 
+      model: 'auto', 
       titlePrefix: '',
       titleSuffix: '',
       negativeTitleWords: '',
