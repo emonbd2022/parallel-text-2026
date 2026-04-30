@@ -14,9 +14,9 @@ const STORAGE_CONFIG = 'parrarel_config_v3';
 // Models
 const MODELS = [
   { id: 'auto', name: 'Auto (Best Effort)', rpm: 5 },
+  { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (500 RPD)', rpm: 10 },
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview (20 RPD)', rpm: 5 },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (20 RPD)', rpm: 5 },
-  { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (500 RPD)', rpm: 10 },
   { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite (20 RPD)', rpm: 10 }
 ];
 
@@ -102,7 +102,8 @@ export default function App() {
       negativeKeywords: '',
       targetExtension: '',
       forceTransparency: false,
-      autoExport: false
+      autoExport: false,
+      migratedTo31Lite: true
     };
   });
 

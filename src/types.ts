@@ -54,6 +54,7 @@ export interface ProcessingConfig {
   targetExtension?: string; // .jpg, .png, etc.
   forceTransparency?: boolean; // Forces "isolated on transparent background" tag
   autoExport?: boolean;
+  migratedTo31Lite?: boolean;
 }
 
 export interface GeminiResponse {
