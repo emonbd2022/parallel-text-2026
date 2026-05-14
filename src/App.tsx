@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { ApiKey, ProcessingItem, ProcessingConfig, HistoryRecord } from './types';
 import { ProcessingQueue } from './components/ProcessingQueue';
 import { Sidebar } from './components/Sidebar';
@@ -897,6 +898,7 @@ export default function App() {
         </div>
       </main>
 
+      <Analytics />
     </div>
   );
 }
