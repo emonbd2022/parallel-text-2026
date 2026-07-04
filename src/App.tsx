@@ -5,12 +5,14 @@ import { Sidebar } from './components/Sidebar';
 import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
+import { Clock, Key } from 'lucide-react';
 
 // Persistence Keys
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
 const STORAGE_HISTORY = 'parrarel_history_v3';
 const STORAGE_CONFIG = 'parrarel_config_v3';
 const STORAGE_ITEMS = 'parrarel_items_v3';
+const STORAGE_STATS = 'parrarel_stats_v1';
 
 // Models
 const MODELS = [
@@ -91,9 +93,18 @@ export default function App() {
     } catch { return []; }
   });
 
+  const [modelStats, setModelStats] = useState<Record<string, { totalTimeMs: number, count: number, fails: number }>>(() => {
+      try {
+          return JSON.parse(localStorage.getItem(STORAGE_STATS) || '{}');
+      } catch {
+          return {};
+      }
+  });
+
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string>('Ready');
   const [tick, setTick] = useState(0); 
+  const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
   
   const [config, setConfig] = useState<ProcessingConfig>(() => {
     try {
@@ -122,8 +133,24 @@ export default function App() {
     };
   });
 
+  const pendingCount = items.filter(i => i.status === 'pending').length;
+  const activeKeysCount = keys.filter(k => k.errorCount < 20).length;
+
+  useEffect(() => {
+    if (isProcessing && pendingCount > 0) {
+      const avgTime = parseInt(localStorage.getItem('AVG_PROCESSING_TIME') || '5000', 10);
+      const activeKeys = Math.max(1, activeKeysCount);
+      const batchesLeft = pendingCount / (config.batchSize || 1);
+      const msLeft = (batchesLeft * avgTime) / activeKeys;
+      setEtaEndTime(Date.now() + msLeft);
+    } else {
+      setEtaEndTime(null);
+    }
+  }, [isProcessing, pendingCount, activeKeysCount, config.batchSize]);
+
   // Refs for scrolling
   const itemRefs = useRef<{[key: string]: HTMLDivElement | null}>({});
+  const autoModelIndexRef = useRef(0);
   
   // Refs for Drag-to-Scroll
   const scrollContainerRef = useRef<HTMLElement>(null);
@@ -135,6 +162,7 @@ export default function App() {
   useEffect(() => localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys)), [keys]);
   useEffect(() => localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history)), [history]);
   useEffect(() => localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config)), [config]);
+  useEffect(() => localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats)), [modelStats]);
   
   // Auto-save items every 30 seconds
   const itemsRef = useRef(items);
@@ -402,52 +430,68 @@ export default function App() {
           return { id: item.id, base64Image: item.thumb };
       });
 
-      let results;
+      let results: any;
       let usedModel = config.model;
 
       if (config.model === 'auto') {
-        // Priority: 3 Flash -> 2.5 Flash -> 3.1 Flash Lite -> 2.5 Flash Lite
-        try {
-          usedModel = 'gemini-3-flash-preview';
-          results = await generateMetadataBatch(
-            keyObj.key,
-            payload,
-            { ...config, model: usedModel }
-          );
-        } catch (flash3Error) {
-          console.warn("Auto: Gemini 3 Flash failed, retrying with 2.5 Flash...", flash3Error);
+        const autoModels = [
+          'gemini-3-flash-preview',
+          'gemini-2.5-flash',
+          'gemini-3.1-flash-lite-preview',
+          'gemini-2.5-flash-lite'
+        ];
 
-          try {
-            usedModel = 'gemini-2.5-flash';
-            results = await generateMetadataBatch(
-              keyObj.key,
-              payload,
-              { ...config, model: usedModel }
-            );
-          } catch (flash25Error) {
-            console.warn("Auto: 2.5 Flash failed, retrying with 3.1 Flash Lite...", flash25Error);
+        // Sort by average latency + penalty for fails
+        autoModels.sort((a, b) => {
+            const statA = modelStats[a];
+            const statB = modelStats[b];
+            
+            const scoreA = statA ? ((statA.totalTimeMs / Math.max(1, statA.count)) + (statA.fails * 5000)) : 10000;
+            const scoreB = statB ? ((statB.totalTimeMs / Math.max(1, statB.count)) + (statB.fails * 5000)) : 10000;
+            
+            return scoreA - scoreB;
+        });
 
+        let success = false;
+        let lastError = null;
+
+        for (let i = 0; i < autoModels.length; i++) {
+            usedModel = autoModels[i];
+            const startTime = Date.now();
             try {
-                usedModel = 'gemini-3.1-flash-lite-preview';
                 results = await generateMetadataBatch(
                   keyObj.key,
                   payload,
                   { ...config, model: usedModel }
                 );
-            } catch (flash31LiteError) {
-                console.warn("Auto: 3.1 Flash Lite failed, retrying with 2.5 Flash Lite...", flash31LiteError);
-                
-                usedModel = 'gemini-2.5-flash-lite';
-                results = await generateMetadataBatch(
-                  keyObj.key,
-                  payload,
-                  { ...config, model: usedModel }
-                );
+                success = true;
+                const elapsed = Date.now() - startTime;
+                setModelStats(prev => {
+                    const current = prev[usedModel!] || { totalTimeMs: 0, count: 0, fails: 0 };
+                    return { ...prev, [usedModel!]: { ...current, totalTimeMs: current.totalTimeMs + elapsed, count: current.count + 1 } };
+                });
+                break;
+            } catch (err) {
+                console.warn(`Auto: ${usedModel} failed, retrying...`, err);
+                lastError = err;
+                setModelStats(prev => {
+                    const current = prev[usedModel!] || { totalTimeMs: 0, count: 0, fails: 0 };
+                    return { ...prev, [usedModel!]: { ...current, fails: current.fails + 1 } };
+                });
             }
-          }
+        }
+        
+        if (!success) {
+            throw lastError;
         }
       } else {
+        const startTime = Date.now();
         results = await generateMetadataBatch(keyObj.key, payload, config);
+        const elapsed = Date.now() - startTime;
+        setModelStats(prev => {
+            const current = prev[usedModel!] || { totalTimeMs: 0, count: 0, fails: 0 };
+            return { ...prev, [usedModel!]: { ...current, totalTimeMs: current.totalTimeMs + elapsed, count: current.count + 1 } };
+        });
       }
 
       setItems(prev => prev.map(p => {
@@ -459,7 +503,8 @@ export default function App() {
                 keywords: results[p.id].keywords,
                 assignedKeyId: undefined,
                 retryAfter: undefined,
-                failedKeyIds: [] // Success resets failures
+                failedKeyIds: [], // Success resets failures
+                usedModel: usedModel
               };
           }
           return p;
@@ -732,8 +777,12 @@ export default function App() {
     const sortedQueue = [...pendingItems].sort((a, b) => a.attempts - b.attempts);
     const batchSize = config.batchSize || 1;
 
-    // Sort keys: prioritize those with fewer errors
-    availableKeys.sort((a, b) => a.errorCount - b.errorCount);
+    // Sort keys: prioritize those with fewer errors (healthier)
+    availableKeys.sort((a, b) => {
+        const healthA = Math.max(0, 100 - (a.errorCount * 5));
+        const healthB = Math.max(0, 100 - (b.errorCount * 5));
+        return healthB - healthA;
+    });
 
     let currentItemIndex = 0;
     
@@ -822,25 +871,22 @@ export default function App() {
   const errorCount = items.filter(i => i.status === 'error' || (i.status === 'pending' && i.attempts > 3)).length;
   const hasPartialData = doneCount > 0 && !allDone;
 
-  let estimatedTimeStr = '';
-  if (isProcessing) {
-      const pendingCount = items.filter(i => i.status === 'pending').length;
-      if (pendingCount > 0) {
-          const avgTime = parseInt(localStorage.getItem('AVG_PROCESSING_TIME') || '5000', 10);
-          const activeKeysCount = Math.max(1, keys.filter(k => k.errorCount < 20).length);
-          const batchesLeft = pendingCount / (config.batchSize || 1);
-          const msLeft = (batchesLeft * avgTime) / activeKeysCount;
-          
-          if (msLeft < 60000) {
-              estimatedTimeStr = ` • ETA: ~${Math.ceil(msLeft/1000)}s`;
-          } else {
-              estimatedTimeStr = ` • ETA: ~${Math.ceil(msLeft/60000)}m`;
-          }
-      }
+  let estimatedTimeNode: React.ReactNode = null;
+  if (isProcessing && etaEndTime) {
+      const msLeft = Math.max(0, etaEndTime - Date.now());
+      const totalSeconds = Math.ceil(msLeft / 1000);
+      const m = Math.floor(totalSeconds / 60);
+      const s = totalSeconds % 60;
+      estimatedTimeNode = (
+          <span className="inline-flex items-center ml-2 text-purple-400">
+             <Clock className="w-3.5 h-3.5 mr-1" />
+             ETA: {m > 0 ? `${m}m ` : ''}{s}s
+          </span>
+      );
   }
 
   return (
-    <div className="h-screen w-screen bg-slate-950 text-slate-200 flex overflow-hidden selection:bg-indigo-500/30 font-sans">
+    <div className="h-screen w-screen bg-slate-950 text-slate-200 flex overflow-hidden selection:bg-purple-500/30 font-sans">
       
       <Sidebar 
          keys={keys}
@@ -851,6 +897,7 @@ export default function App() {
          onStartStop={() => setIsProcessing(!isProcessing)}
          hasItems={items.length > 0}
          models={MODELS}
+         modelStats={modelStats}
          history={history}
          onClearHistory={handleClearHistory}
          onResetUsage={handleResetUsage}
@@ -862,14 +909,21 @@ export default function App() {
         <div className="h-1 bg-slate-900 w-full shrink-0 z-50">
            <div 
                style={{ width: `${items.length ? (items.filter(i => i.status === 'done').length / items.length) * 100 : 0}%` }}
-               className="h-full bg-gradient-to-r from-emerald-500 via-cyan-500 to-indigo-500 transition-all duration-300 ease-out shadow-[0_0_15px_rgba(16,185,129,0.5)]"
+               className="h-full bg-gradient-to-r from-purple-500 via-fuchsia-500 to-purple-600 transition-all duration-300 ease-out shadow-[0_0_15px_rgba(168,85,247,0.5)]"
            />
         </div>
 
         <div className="p-8 border-b border-white/5 flex items-center justify-between bg-slate-950/50 backdrop-blur-md z-30">
            <div>
              <h2 className="text-xl font-bold text-white">Queue</h2>
-             <p className="text-sm text-slate-500">{items.length} items ({doneCount} done){estimatedTimeStr}</p>
+             <p className="flex items-center text-sm text-slate-500">
+               {items.length} items ({doneCount} done)
+               {estimatedTimeNode}
+               <span className="inline-flex items-center ml-2 border-l border-white/10 pl-2">
+                 <Key className="w-3.5 h-3.5 mr-1" />
+                 {activeKeysCount}/{keys.length} Healthy
+               </span>
+             </p>
            </div>
            <div className="flex gap-3">
               {errorCount > 0 && (
@@ -888,7 +942,7 @@ export default function App() {
                 type="button"
                 onClick={handleSaveProject}
                 disabled={items.length === 0}
-                className="px-4 py-2 bg-slate-800 hover:bg-indigo-900/40 text-slate-300 hover:text-indigo-400 rounded-lg transition-all font-semibold border border-white/5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-slate-800 hover:bg-purple-900/40 text-slate-300 hover:text-purple-400 rounded-lg transition-all font-semibold border border-white/5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Save Project
               </button>
@@ -942,16 +996,16 @@ export default function App() {
           }}
         >
              <div 
-                  className="group relative border-2 border-dashed border-slate-800 bg-slate-900/20 hover:bg-slate-900/40 hover:border-indigo-500/30 transition-all duration-300 rounded-3xl p-8 text-center cursor-pointer overflow-hidden min-h-[200px] flex flex-col items-center justify-center"
+                  className="group relative border-2 border-dashed border-slate-800 bg-slate-900/20 hover:bg-slate-900/40 hover:border-purple-500/30 transition-all duration-300 rounded-3xl p-8 text-center cursor-pointer overflow-hidden min-h-[200px] flex flex-col items-center justify-center"
                   onClick={(e) => {
                     e.stopPropagation();
                     document.getElementById('fileInput')?.click();
                   }}
                 >
-                  <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/5 to-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 to-fuchsia-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
                   <input id="fileInput" type="file" multiple accept="image/*,.eps,.svg" className="hidden" onChange={(e) => handleAddFiles(e.target.files)} />
                   <div className="relative z-10 flex flex-col items-center gap-3">
-                    <div className="p-4 bg-slate-800 rounded-full text-indigo-400 shadow-xl group-hover:scale-110 transition-transform duration-300 ring-1 ring-white/10">
+                    <div className="p-4 bg-slate-800 rounded-full text-purple-400 shadow-xl group-hover:scale-110 transition-transform duration-300 ring-1 ring-white/10">
                       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     </div>
                     <div>

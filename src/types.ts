@@ -31,6 +31,7 @@ export interface ProcessingItem {
   keywords: string;
   assignedKeyId?: string; // Tracks which key is currently processing this item
   failedKeyIds: string[]; // Tracks which keys have already failed for this item
+  usedModel?: string; // The model used to generate the metadata
 }
 
 export interface HistoryRecord {
@@ -60,4 +61,11 @@ export interface ProcessingConfig {
 export interface GeminiResponse {
   title: string;
   keywords: string; // Comma separated string for the UI
+}
+
+export interface ModelStats {
+  model: string;
+  totalTimeMs: number;
+  successCount: number;
+  failCount: number;
 }

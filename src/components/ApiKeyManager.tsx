@@ -46,7 +46,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
           className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all ${
             showInput 
               ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
-              : 'bg-indigo-600 text-white hover:bg-indigo-500 shadow-lg shadow-indigo-900/50'
+              : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
           }`}
         >
           {showInput ? 'Cancel' : '+ Add Key'}
@@ -63,7 +63,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                 placeholder="My Gemini Key"
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-500 outline-none"
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 outline-none"
               />
             </div>
             <div>
@@ -73,7 +73,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                 placeholder="AIzaSy..."
                 value={keyVal}
                 onChange={(e) => setKeyVal(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-500 outline-none font-mono"
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 outline-none font-mono"
               />
             </div>
           </div>
@@ -107,6 +107,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
           const liteLimit = usage.lite >= 10000;
           const flash_3_Limit = usage.flash_3 >= 10000;
           const flash_3_1_lite_Limit = usage.flash_3_1_lite >= 10000;
+          const health = Math.max(0, 100 - (k.errorCount * 5));
 
           return (
             <div key={k.id} className={`flex items-center justify-between transition-colors p-3 rounded-xl border group relative
@@ -118,6 +119,11 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                 <div className="flex flex-wrap items-center gap-2 mb-1">
                    <span className={`font-semibold text-sm truncate ${isDead ? 'text-red-400' : 'text-slate-200'}`} title={k.label}>{k.label}</span>
                    
+                   {/* Health Badge */}
+                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${health > 50 ? 'bg-purple-500/10 text-purple-400' : health > 0 ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/20 text-red-400'}`} title="API Health">
+                      ❤️ {health}%
+                   </span>
+
                    {/* Usage Badges */}
                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_Limit ? 'bg-red-500/20 text-red-400' : 'bg-cyan-500/10 text-cyan-400'}`} title="Gemini 3 Flash Usage">
                       🔥 3F: {usage.flash_3}
@@ -157,7 +163,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                 </button>
                 <button 
                   onClick={() => toggleVisibility(k.id)}
-                  className="text-slate-500 hover:text-indigo-400 p-1.5 rounded-lg hover:bg-slate-700/50 transition-colors"
+                  className="text-slate-500 hover:text-purple-400 p-1.5 rounded-lg hover:bg-slate-700/50 transition-colors"
                   title={visibleKeys.has(k.id) ? "Hide Key" : "Show Key"}
                 >
                   {visibleKeys.has(k.id) ? (

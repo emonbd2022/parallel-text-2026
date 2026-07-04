@@ -72,7 +72,7 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
               rounded-3xl overflow-hidden 
               bg-slate-900 border border-slate-800 
               transition-all duration-300 shadow-xl hover:shadow-2xl hover:shadow-black/50
-              ${item.status === 'processing' ? 'ring-1 ring-indigo-500/50 shadow-[0_0_30px_rgba(99,102,241,0.15)]' : ''}
+              ${item.status === 'processing' ? 'ring-1 ring-purple-500/50 shadow-[0_0_30px_rgba(168,85,247,0.15)]' : ''}
               ${item.status === 'error' ? 'border-red-900/50' : ''}
             `}
           >
@@ -93,7 +93,7 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
 
                     <button 
                         onClick={() => onRegenerate(item.id)}
-                        className="p-1.5 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-lg backdrop-blur-md transition-colors shadow-lg"
+                        className="p-1.5 bg-purple-600/80 hover:bg-purple-600 text-white rounded-lg backdrop-blur-md transition-colors shadow-lg"
                         title="Regenerate Metadata"
                     >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -146,14 +146,15 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                             
                             {/* Status Pill */}
                              <div className={`flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider ${
-                                item.status === 'processing' ? 'text-indigo-400' : 
+                                item.status === 'processing' ? 'text-purple-400' : 
                                 item.status === 'done' ? 'text-emerald-400' :
                                 item.status === 'error' ? 'text-red-400' :
                                 'text-slate-400'
                               }`}>
-                                {item.status === 'processing' && <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"/>}
+                                {item.status === 'processing' && <div className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"/>}
                                 {item.status === 'done' && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"/>}
                                 <span>{item.status === 'processing' ? 'Processing...' : isWaitingRetry(item) ? `Retrying (${item.attempts})...` : item.status}</span>
+                                {item.usedModel && <span className="ml-1 text-slate-500 tracking-normal lowercase border-l border-white/10 pl-1.5">{item.usedModel.replace('gemini-', '')}</span>}
                               </div>
                         </div>
                     </div>
@@ -193,7 +194,7 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                             value={item.title}
                             onChange={(e) => onUpdate(item.id, 'title', e.target.value)}
                             disabled={item.status === 'processing' || item.status === 'compressing'}
-                            className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3.5 text-sm text-slate-200 focus:border-indigo-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700 shadow-inner"
+                            className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3.5 text-sm text-slate-200 focus:border-purple-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-purple-500/50 outline-none transition-all placeholder:text-slate-700 shadow-inner"
                             placeholder={item.status === 'pending' ? 'Waiting for generation...' : 'Processing title...'}
                           />
                       </div>
@@ -215,7 +216,7 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                              value={item.keywords}
                              onChange={(e) => onUpdate(item.id, 'keywords', e.target.value)}
                              disabled={item.status === 'processing' || item.status === 'compressing'}
-                             className="w-full flex-1 min-h-[140px] bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3.5 text-sm text-slate-200 focus:border-indigo-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-indigo-500/50 outline-none resize-none transition-all placeholder:text-slate-700 shadow-inner leading-relaxed"
+                             className="w-full flex-1 min-h-[140px] bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3.5 text-sm text-slate-200 focus:border-purple-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-purple-500/50 outline-none resize-none transition-all placeholder:text-slate-700 shadow-inner leading-relaxed"
                              placeholder={item.status === 'pending' ? 'Waiting for generation...' : 'Processing keywords...'}
                           />
                       </div>

@@ -12,6 +12,7 @@ interface Props {
   onStartStop: () => void;
   hasItems: boolean;
   models: { id: string; name: string }[];
+  modelStats: Record<string, { totalTimeMs: number, count: number, fails: number }>;
   history: HistoryRecord[];
   onClearHistory: () => void;
   onResetUsage: (id: string) => void;
@@ -26,6 +27,7 @@ export const Sidebar: React.FC<Props> = ({
   onStartStop, 
   hasItems,
   models,
+  modelStats,
   history,
   onClearHistory,
   onResetUsage
@@ -65,12 +67,12 @@ export const Sidebar: React.FC<Props> = ({
   return (
     <aside className="w-1/3 min-w-[360px] max-w-[600px] border-r border-white/5 bg-slate-900/20 flex flex-col h-full z-20">
          <div className="p-8 pb-4 shrink-0 flex items-center gap-4">
-            <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-emerald-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20 ring-1 ring-white/10">
+            <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-fuchsia-600 rounded-xl flex items-center justify-center shadow-lg shadow-purple-500/20 ring-1 ring-white/10">
                 <Layers className="text-white w-7 h-7" />
             </div>
             <div>
                 <h1 className="text-2xl font-extrabold tracking-tight leading-none">
-                  <span className="bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 via-cyan-400 to-indigo-400">
+                  <span className="bg-clip-text text-transparent bg-gradient-to-r from-fuchsia-400 via-purple-400 to-purple-400">
                     Parallel Text
                   </span>
                 </h1>
@@ -102,12 +104,45 @@ export const Sidebar: React.FC<Props> = ({
                     <select 
                     value={config.model}
                     onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value }))}
-                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-200 focus:border-indigo-500 outline-none"
+                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-200 focus:border-purple-500 outline-none"
                     >
                     {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                     </select>
                     <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </div>
+                </div>
+                
+                {/* Performance Ratings */}
+                <div className="mt-3">
+                    <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 space-y-1.5 text-xs">
+                        {models.filter(m => m.id !== 'auto').map(m => {
+                            const stat = modelStats[m.id];
+                            const avgTime = stat && stat.count > 0 ? stat.totalTimeMs / stat.count : 0;
+                            let stars = 0;
+                            if (!stat || stat.count === 0) {
+                                stars = 0; 
+                            } else {
+                                const score = avgTime + (stat.fails * 5000);
+                                if (score < 4000) stars = 5;
+                                else if (score < 6000) stars = 4;
+                                else if (score < 9000) stars = 3;
+                                else if (score < 14000) stars = 2;
+                                else stars = 1;
+                            }
+                            
+                            return (
+                                <div key={m.id} className="flex items-center justify-between">
+                                    <span className="text-slate-400 truncate pr-2" title={m.name}>{m.name.split(' (')[0]}</span>
+                                    <div className="flex items-center gap-0.5" title={stars > 0 ? `Avg: ${(avgTime/1000).toFixed(1)}s, Fails: ${stat?.fails||0}` : 'No data yet'}>
+                                        {stars === 0 ? <span className="text-slate-600 font-mono text-[9px] uppercase tracking-wider">Unrated</span> :
+                                         [...Array(5)].map((_, i) => (
+                                             <span key={i} className={`text-xs ${i < stars ? "text-amber-400" : "text-slate-700"}`}>★</span>
+                                         ))}
+                                    </div>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
                 </div>
@@ -116,11 +151,11 @@ export const Sidebar: React.FC<Props> = ({
                 <div className="grid grid-cols-2 gap-4">
                 <div>
                     <label className="block text-[10px] uppercase font-bold text-slate-500 mb-2 pl-1">Max Title</label>
-                    <input type="number" value={config.titleMaxLen} onChange={(e) => setConfig(prev => ({...prev, titleMaxLen: +e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none" />
+                    <input type="number" value={config.titleMaxLen} onChange={(e) => setConfig(prev => ({...prev, titleMaxLen: +e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-purple-500 outline-none" />
                 </div>
                 <div>
                     <label className="block text-[10px] uppercase font-bold text-slate-500 mb-2 pl-1">Keywords</label>
-                    <input type="number" value={config.keywordsCount} onChange={(e) => setConfig(prev => ({...prev, keywordsCount: +e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none" />
+                    <input type="number" value={config.keywordsCount} onChange={(e) => setConfig(prev => ({...prev, keywordsCount: +e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-purple-500 outline-none" />
                 </div>
                 </div>
 
@@ -128,22 +163,22 @@ export const Sidebar: React.FC<Props> = ({
                 <div className="grid grid-cols-2 gap-4">
                 <div>
                     <label className="block text-[10px] uppercase font-bold text-slate-500 mb-2 pl-1">Prefix</label>
-                    <input type="text" placeholder="Start..." value={config.titlePrefix} onChange={(e) => setConfig(prev => ({...prev, titlePrefix: e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none" />
+                    <input type="text" placeholder="Start..." value={config.titlePrefix} onChange={(e) => setConfig(prev => ({...prev, titlePrefix: e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-purple-500 outline-none" />
                 </div>
                 <div>
                     <label className="block text-[10px] uppercase font-bold text-slate-500 mb-2 pl-1">Suffix</label>
-                    <input type="text" placeholder="...End" value={config.titleSuffix} onChange={(e) => setConfig(prev => ({...prev, titleSuffix: e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none" />
+                    <input type="text" placeholder="...End" value={config.titleSuffix} onChange={(e) => setConfig(prev => ({...prev, titleSuffix: e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-purple-500 outline-none" />
                 </div>
                 </div>
 
                 {/* Negatives */}
                 <div>
                 <label className="block text-[10px] uppercase font-bold text-slate-500 mb-2 pl-1">Negative Title Words</label>
-                <input type="text" placeholder="word1, word2..." value={config.negativeTitleWords} onChange={(e) => setConfig(prev => ({...prev, negativeTitleWords: e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none" />
+                <input type="text" placeholder="word1, word2..." value={config.negativeTitleWords} onChange={(e) => setConfig(prev => ({...prev, negativeTitleWords: e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-purple-500 outline-none" />
                 </div>
                 <div>
                 <label className="block text-[10px] uppercase font-bold text-slate-500 mb-2 pl-1">Negative Keywords</label>
-                <input type="text" placeholder="word1, word2..." value={config.negativeKeywords} onChange={(e) => setConfig(prev => ({...prev, negativeKeywords: e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-indigo-500 outline-none" />
+                <input type="text" placeholder="word1, word2..." value={config.negativeKeywords} onChange={(e) => setConfig(prev => ({...prev, negativeKeywords: e.target.value}))} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm focus:border-purple-500 outline-none" />
                 </div>
 
                 {/* Export Type */}
@@ -153,7 +188,7 @@ export const Sidebar: React.FC<Props> = ({
                     <select 
                     value={config.targetExtension}
                     onChange={(e) => setConfig(prev => ({ ...prev, targetExtension: e.target.value }))}
-                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-200 focus:border-indigo-500 outline-none"
+                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-200 focus:border-purple-500 outline-none"
                     >
                     <option value="">Keep Original (Default)</option>
                     <option value=".jpg">.jpg</option>
@@ -169,14 +204,14 @@ export const Sidebar: React.FC<Props> = ({
                 </div>
 
                 {/* Auto Export Toggle */}
-                <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-indigo-500/30 transition-colors">
+                <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-purple-500/30 transition-colors">
                 <div>
                     <span className="block text-sm font-bold text-slate-200">Auto Export</span>
                     <span className="text-[10px] text-slate-500 block mt-0.5">Export CSV automatically on finish</span>
                 </div>
                 <button 
                     onClick={() => setConfig(prev => ({...prev, autoExport: !prev.autoExport}))}
-                    className={`w-11 h-6 rounded-full transition-all relative ${config.autoExport ? 'bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.4)]' : 'bg-slate-700'}`}
+                    className={`w-11 h-6 rounded-full transition-all relative ${config.autoExport ? 'bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.4)]' : 'bg-slate-700'}`}
                 >
                     <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.autoExport ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
@@ -186,23 +221,23 @@ export const Sidebar: React.FC<Props> = ({
                 <div>
                     <div className="flex justify-between items-center mb-2 pl-1">
                     <label className="text-[10px] uppercase font-bold text-slate-500">Images per Request</label>
-                    <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold px-2 py-0.5 rounded-md font-mono">
+                    <div className="bg-fuchsia-500/10 border border-fuchsia-500/20 text-fuchsia-400 text-xs font-bold px-2 py-0.5 rounded-md font-mono">
                         {config.batchSize || 1} imgs
                     </div>
                     </div>
                     
                     <div 
-                    className="bg-slate-900 border border-slate-700 rounded-xl p-4 relative group cursor-ew-resize select-none touch-none hover:border-emerald-500/50 transition-colors"
+                    className="bg-slate-900 border border-slate-700 rounded-xl p-4 relative group cursor-ew-resize select-none touch-none hover:border-fuchsia-500/50 transition-colors"
                     onMouseDown={handleBatchMouseDown}
                     >
                     <div className="absolute top-1/2 left-4 right-4 h-1.5 bg-slate-800 rounded-full -translate-y-1/2 overflow-hidden pointer-events-none">
                         <div 
-                        className="h-full bg-gradient-to-r from-cyan-500 to-emerald-500 transition-all duration-75 ease-out"
+                        className="h-full bg-gradient-to-r from-purple-500 to-fuchsia-500 transition-all duration-75 ease-out"
                         style={{ width: `${(((config.batchSize || 1) - 1) / 4) * 100}%` }}
                         />
                     </div>
                     <div 
-                        className="absolute top-1/2 w-5 h-5 bg-white rounded-full shadow-[0_0_10px_rgba(255,255,255,0.5)] border-2 border-emerald-500 -translate-y-1/2 -translate-x-1/2 transition-transform duration-75 ease-out pointer-events-none group-active:scale-125"
+                        className="absolute top-1/2 w-5 h-5 bg-white rounded-full shadow-[0_0_10px_rgba(255,255,255,0.5)] border-2 border-fuchsia-500 -translate-y-1/2 -translate-x-1/2 transition-transform duration-75 ease-out pointer-events-none group-active:scale-125"
                         style={{ left: `calc(1rem + ${(((config.batchSize || 1) - 1) / 4) * (100 - (32/300)*100)}%)` }} 
                     />
                     <div className="w-full h-4"></div>
@@ -217,14 +252,14 @@ export const Sidebar: React.FC<Props> = ({
                 </div>
 
                 {/* Transparency Toggle */}
-                <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-indigo-500/30 transition-colors">
+                <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-purple-500/30 transition-colors">
                 <div>
                     <span className="block text-sm font-bold text-slate-200">Transparent Background</span>
                     <span className="text-[10px] text-slate-500 block mt-0.5">Force "isolated on transparent background" tag</span>
                 </div>
                 <button 
                     onClick={() => setConfig(prev => ({...prev, forceTransparency: !prev.forceTransparency}))}
-                    className={`w-11 h-6 rounded-full transition-all relative ${config.forceTransparency ? 'bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.4)]' : 'bg-slate-700'}`}
+                    className={`w-11 h-6 rounded-full transition-all relative ${config.forceTransparency ? 'bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.4)]' : 'bg-slate-700'}`}
                 >
                     <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.forceTransparency ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
@@ -245,14 +280,14 @@ export const Sidebar: React.FC<Props> = ({
                 ) : (
                     <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar pr-2">
                         {history.map(rec => (
-                            <div key={rec.id} onClick={() => downloadHistoryCsv(rec)} className="flex justify-between items-center p-2 rounded-lg bg-slate-800/40 hover:bg-slate-800 cursor-pointer border border-transparent hover:border-indigo-500/30 group">
+                            <div key={rec.id} onClick={() => downloadHistoryCsv(rec)} className="flex justify-between items-center p-2 rounded-lg bg-slate-800/40 hover:bg-slate-800 cursor-pointer border border-transparent hover:border-purple-500/30 group">
                                 <div className="flex flex-col">
                                     <span className="text-xs font-semibold text-slate-300">{new Date(rec.timestamp).toLocaleDateString()}</span>
                                     <span className="text-[10px] text-slate-500">{new Date(rec.timestamp).toLocaleTimeString()}</span>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    <span className="text-[10px] bg-slate-900 text-indigo-400 px-1.5 py-0.5 rounded font-mono font-bold">{rec.itemCount} items</span>
-                                    <svg className="w-4 h-4 text-slate-600 group-hover:text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                    <span className="text-[10px] bg-slate-900 text-purple-400 px-1.5 py-0.5 rounded font-mono font-bold">{rec.itemCount} items</span>
+                                    <svg className="w-4 h-4 text-slate-600 group-hover:text-fuchsia-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                                 </div>
                             </div>
                         ))}
