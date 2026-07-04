@@ -352,6 +352,8 @@ export default function App() {
 
     setStatusMsg(`Processing batch of ${batchItems.length} items (${keyObj.label})...`);
 
+    const batchStartTime = Date.now();
+
     try {
       const payload = batchItems.map(item => {
           if (!item.thumb) throw new Error("Missing thumbnail");
@@ -451,6 +453,11 @@ export default function App() {
         }
         return k;
       }));
+      
+      const batchDuration = Date.now() - batchStartTime;
+      const prevAvg = parseInt(localStorage.getItem('AVG_PROCESSING_TIME') || '5000', 10);
+      const newAvg = (prevAvg * 0.8) + (batchDuration * 0.2);
+      localStorage.setItem('AVG_PROCESSING_TIME', Math.round(newAvg).toString());
 
     } catch (error: any) {
       console.warn(`Key ${keyObj.label} failed for batch:`, error);
@@ -546,7 +553,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `parrarel_export_${new Date().getTime()}.csv`);
+    link.setAttribute('download', `${items.length}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -560,6 +567,10 @@ export default function App() {
       csv: csvContent
     };
     setHistory(prev => [newRecord, ...prev].slice(0, 20));
+    
+    // Clear items after export as requested
+    setItems([]);
+    localStorage.removeItem(STORAGE_ITEMS);
   };
 
   const playSuccessSound = () => {
@@ -768,6 +779,23 @@ export default function App() {
   const errorCount = items.filter(i => i.status === 'error' || (i.status === 'pending' && i.attempts > 3)).length;
   const hasPartialData = doneCount > 0 && !allDone;
 
+  let estimatedTimeStr = '';
+  if (isProcessing) {
+      const pendingCount = items.filter(i => i.status === 'pending').length;
+      if (pendingCount > 0) {
+          const avgTime = parseInt(localStorage.getItem('AVG_PROCESSING_TIME') || '5000', 10);
+          const activeKeysCount = Math.max(1, keys.filter(k => k.errorCount < 20).length);
+          const batchesLeft = pendingCount / (config.batchSize || 1);
+          const msLeft = (batchesLeft * avgTime) / activeKeysCount;
+          
+          if (msLeft < 60000) {
+              estimatedTimeStr = ` • ETA: ~${Math.ceil(msLeft/1000)}s`;
+          } else {
+              estimatedTimeStr = ` • ETA: ~${Math.ceil(msLeft/60000)}m`;
+          }
+      }
+  }
+
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-200 flex overflow-hidden selection:bg-indigo-500/30 font-sans">
       
@@ -798,7 +826,7 @@ export default function App() {
         <div className="p-8 border-b border-white/5 flex items-center justify-between bg-slate-950/50 backdrop-blur-md z-30">
            <div>
              <h2 className="text-xl font-bold text-white">Queue</h2>
-             <p className="text-sm text-slate-500">{items.length} items ({doneCount} done)</p>
+             <p className="text-sm text-slate-500">{items.length} items ({doneCount} done){estimatedTimeStr}</p>
            </div>
            <div className="flex gap-3">
               {errorCount > 0 && (
@@ -820,6 +848,18 @@ export default function App() {
                 className="px-4 py-2 bg-slate-800 hover:bg-indigo-900/40 text-slate-300 hover:text-indigo-400 rounded-lg transition-all font-semibold border border-white/5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Save Project
+              </button>
+              
+              <button
+                onClick={() => setIsProcessing(!isProcessing)}
+                disabled={items.length === 0}
+                className={`px-6 py-2 rounded-lg font-bold text-sm shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0 ${
+                    isProcessing 
+                    ? 'bg-gradient-to-r from-orange-600 to-red-600 text-white shadow-orange-900/30' 
+                    : 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-blue-900/30 hover:shadow-blue-900/50'
+                } disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none`}
+              >
+                {isProcessing ? 'Stop' : 'Start'} Processing
               </button>
               <button 
                 type="button"
@@ -889,7 +929,11 @@ export default function App() {
                 />
         </div>
 
-        <div className="absolute bottom-6 right-8 z-50 animate-in slide-in-from-bottom-5 fade-in pointer-events-none">
+        <div className="text-center py-4 text-xs text-slate-500 border-t border-white/5 bg-slate-950/50 backdrop-blur-md shrink-0">
+           All rights reserved. Developed and maintained by Shahin Alam Emon.
+        </div>
+
+        <div className="absolute bottom-12 right-8 z-50 animate-in slide-in-from-bottom-5 fade-in pointer-events-none">
             <div className="glass-panel px-6 py-4 rounded-2xl flex items-center gap-4 shadow-[0_0_40px_rgba(0,0,0,0.5)] border border-white/10 bg-slate-900/90 backdrop-blur-xl">
                 <div className={`w-3 h-3 rounded-full ${isProcessing ? 'bg-emerald-400 animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.5)]' : 'bg-slate-500'}`}></div>
                 <span className="text-base font-medium text-slate-100 font-mono tracking-tight shadow-black drop-shadow-sm">{statusMsg}</span>

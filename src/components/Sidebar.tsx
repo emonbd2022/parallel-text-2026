@@ -229,19 +229,6 @@ export const Sidebar: React.FC<Props> = ({
                     <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.forceTransparency ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
                 </div>
-
-                {/* Start/Stop Button */}
-                <button
-                onClick={onStartStop}
-                disabled={!hasItems}
-                className={`w-full py-4 rounded-xl font-bold text-base shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0 ${
-                    isProcessing 
-                    ? 'bg-gradient-to-r from-orange-600 to-red-600 text-white shadow-orange-900/30' 
-                    : 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-blue-900/30 hover:shadow-blue-900/50'
-                } disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none`}
-                >
-                {isProcessing ? 'STOP PROCESSING' : 'START PROCESSING'}
-                </button>
             </div>
             
             {/* HISTORY SECTION */}
