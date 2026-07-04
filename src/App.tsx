@@ -10,6 +10,7 @@ import { saveProject, loadProject, clearProject } from './services/projectStorag
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
 const STORAGE_HISTORY = 'parrarel_history_v3';
 const STORAGE_CONFIG = 'parrarel_config_v3';
+const STORAGE_ITEMS = 'parrarel_items_v3';
 
 // Models
 const MODELS = [
@@ -73,8 +74,22 @@ export default function App() {
     } catch { return []; }
   });
 
-  // Items start empty every time
-  const [items, setItems] = useState<ProcessingItem[]>([]);
+  // Items are loaded from localStorage if available
+  const [items, setItems] = useState<ProcessingItem[]>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(STORAGE_ITEMS) || '[]');
+      return stored.map((item: any) => {
+          // If it was compressing or processing, reset its state or mark as error if we don't have the file
+          if (item.status === 'compressing') {
+              return { ...item, status: 'error', errorMsg: 'Interrupted. Please re-upload.' };
+          }
+          if (item.status === 'processing') {
+              return { ...item, status: 'pending' };
+          }
+          return item;
+      });
+    } catch { return []; }
+  });
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string>('Ready');
@@ -120,6 +135,33 @@ export default function App() {
   useEffect(() => localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys)), [keys]);
   useEffect(() => localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history)), [history]);
   useEffect(() => localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config)), [config]);
+  
+  // Auto-save items every 30 seconds
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  useEffect(() => {
+    const autoSaveInterval = setInterval(() => {
+      if (itemsRef.current.length > 0) {
+          // Omit file and blob to avoid exceeding localStorage quota and stripping issues
+          const storableItems = itemsRef.current.map(item => ({
+              ...item,
+              file: null,
+              blob: null
+          }));
+          try {
+              localStorage.setItem(STORAGE_ITEMS, JSON.stringify(storableItems));
+          } catch (e) {
+              console.warn("Failed to auto-save items to localStorage:", e);
+          }
+      } else {
+          localStorage.removeItem(STORAGE_ITEMS);
+      }
+    }, 30000);
+    return () => clearInterval(autoSaveInterval);
+  }, []);
   
   // Session Reset Check Timer
   useEffect(() => {
@@ -757,6 +799,7 @@ export default function App() {
       if (window.confirm('Are you sure you want to clear all items and delete the saved project?')) {
           setIsProcessing(false);
           setItems([]);
+          localStorage.removeItem(STORAGE_ITEMS);
           setStatusMsg("Clearing project...");
           try {
               await clearProject();
