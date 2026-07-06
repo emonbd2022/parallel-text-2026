@@ -147,6 +147,12 @@ const transparencyDirective = config.forceTransparency
               finalTitle = truncated.replace(/[\s,.;:-]+$/, '') + '.';
           }
 
+          // Limit Keywords to maximum 45
+          const maxKeywords = 45;
+          if (keywordsList.length > maxKeywords) {
+              keywordsList = keywordsList.slice(0, maxKeywords);
+          }
+
           results[originalId] = {
             title: finalTitle,
             keywords: keywordsList.join(', ')
