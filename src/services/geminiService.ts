@@ -46,10 +46,11 @@ const transparencyDirective = config.forceTransparency
 
     For each image:
     1. Create a highly commercial and descriptive title containing highly searched keywords. 
-       - The title MUST consist of 2 to 3 complete sentences. 
-       - The first 1 or 2 sentences should vividly describe the main subject, setting, action, and lighting (e.g., "Grain pouring into a large pile in a warehouse. Golden light hits the harvest inside a granary.").
-       - The final sentence MUST suggest a practical use case or conceptual theme for the image (e.g., "Food supply concept for industrial trade ads.", "Perfect for corporate presentations or medical brochures.").
+       - The title MUST consist of 1 to 2 complete sentences. 
+       - The first sentence should vividly describe the main subject, setting, action, and lighting (e.g., "Grain pouring into a large pile in a warehouse.").
+       - The final sentence MUST suggest a practical use case or conceptual theme for the image (e.g., "Food supply concept for industrial trade ads.").
        - ${transparencyDirective}
+       - CRITICAL: The ENTIRE title MUST be strictly UNDER ${config.titleMaxLen || 180} characters in length. Be extremely concise and precise to ensure it fits this strict limit.
     2. Produce exactly ${config.keywordsCount} accurate, SEO-friendly keywords optimized for Adobe Stock sales.
        - Focus on conceptual terms, emotions, setting, lighting, and specific subject details.
        - Include synonyms and related concepts that buyers might search for.
@@ -132,9 +133,21 @@ const transparencyDirective = config.forceTransparency
           // Apply Prefix / Suffix
           if (config.titlePrefix) title = `${config.titlePrefix.trim()} ${title}`;
           if (config.titleSuffix) title = `${title} ${config.titleSuffix.trim()}`;
+          
+          let finalTitle = title.trim();
+          const maxLen = config.titleMaxLen || 180;
+          if (finalTitle.length > maxLen) {
+              // Truncate to maxLen and ensure we don't cut off in the middle of a word if possible
+              let truncated = finalTitle.substring(0, maxLen);
+              const lastSpace = truncated.lastIndexOf(' ');
+              if (lastSpace > 0) {
+                  truncated = truncated.substring(0, lastSpace);
+              }
+              finalTitle = truncated;
+          }
 
           results[originalId] = {
-            title: title.trim(),
+            title: finalTitle,
             keywords: keywordsList.join(', ')
           };
        }
