@@ -50,7 +50,7 @@ const transparencyDirective = config.forceTransparency
        - The first sentence should vividly describe the main subject, setting, action, and lighting (e.g., "Grain pouring into a large pile in a warehouse.").
        - The final sentence MUST suggest a practical use case or conceptual theme for the image (e.g., "Food supply concept for industrial trade ads.").
        - ${transparencyDirective}
-       - CRITICAL: The ENTIRE title MUST be strictly UNDER ${config.titleMaxLen || 180} characters in length. Be extremely concise and precise to ensure it fits this strict limit.
+       - CRITICAL: The ENTIRE title MUST be precise, using a maximum of 25 words, and strictly UNDER ${config.titleMaxLen || 180} characters in length (including spaces). Be extremely concise.
     2. Produce exactly ${config.keywordsCount} accurate, SEO-friendly keywords optimized for Adobe Stock sales.
        - Focus on conceptual terms, emotions, setting, lighting, and specific subject details.
        - Include synonyms and related concepts that buyers might search for.
