@@ -17,6 +17,7 @@ const STORAGE_STATS = 'parrarel_stats_v1';
 // Models
 const MODELS = [
   { id: 'auto', name: 'Auto (Best Effort)', rpm: 5 },
+  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (20 RPD)', rpm: 5 },
   { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (500 RPD)', rpm: 10 },
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview (20 RPD)', rpm: 5 },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (20 RPD)', rpm: 5 },
@@ -47,8 +48,16 @@ export const getUsageSessionId = () => {
   return `${year}-${month}-${day}`;
 };
 
+interface Toast {
+  id: string;
+  title: string;
+  message: string;
+  type?: 'success' | 'info' | 'warning' | 'error';
+}
+
 export default function App() {
   // --- State ---
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const [keys, setKeys] = useState<ApiKey[]>(() => {
     try {
       const loaded = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '[]');
@@ -105,6 +114,7 @@ export default function App() {
   const [statusMsg, setStatusMsg] = useState<string>('Ready');
   const [tick, setTick] = useState(0); 
   const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
+  const [startTimeMs, setStartTimeMs] = useState<number | null>(null);
   
   const [config, setConfig] = useState<ProcessingConfig>(() => {
     try {
@@ -134,19 +144,21 @@ export default function App() {
   });
 
   const pendingCount = items.filter(i => i.status === 'pending').length;
+  const processingCount = items.filter(i => i.status === 'processing').length;
   const activeKeysCount = keys.filter(k => k.errorCount < 20).length;
 
   useEffect(() => {
-    if (isProcessing && pendingCount > 0) {
+    const itemsLeft = pendingCount + processingCount;
+    if (isProcessing && itemsLeft > 0) {
       const avgTime = parseInt(localStorage.getItem('AVG_PROCESSING_TIME') || '5000', 10);
       const activeKeys = Math.max(1, activeKeysCount);
-      const batchesLeft = pendingCount / (config.batchSize || 1);
+      const batchesLeft = itemsLeft / (config.batchSize || 1);
       const msLeft = (batchesLeft * avgTime) / activeKeys;
       setEtaEndTime(Date.now() + msLeft);
     } else {
       setEtaEndTime(null);
     }
-  }, [isProcessing, pendingCount, activeKeysCount, config.batchSize]);
+  }, [isProcessing, pendingCount, processingCount, activeKeysCount, config.batchSize]);
 
   // Refs for scrolling
   const itemRefs = useRef<{[key: string]: HTMLDivElement | null}>({});
@@ -222,12 +234,17 @@ export default function App() {
     initProject();
   }, []);
 
+  const lastUserScrollRef = useRef(0);
+
   // Auto-scroll to processing item
   useEffect(() => {
     if (!isProcessing) return;
+    if (Date.now() - lastUserScrollRef.current < 10000) return;
+
     const activeItem = items.find(i => i.status === 'processing');
     if (activeItem && itemRefs.current[activeItem.id]) {
       setTimeout(() => {
+        if (Date.now() - lastUserScrollRef.current < 10000) return;
         itemRefs.current[activeItem.id]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 100);
     }
@@ -276,6 +293,7 @@ export default function App() {
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!isDraggingRef.current || !scrollContainerRef.current) return;
     e.preventDefault();
+    lastUserScrollRef.current = Date.now();
     const walk = (e.pageY - startYRef.current) * 1.5; // Multiplier for faster scrolling
     scrollContainerRef.current.scrollTop = startScrollTopRef.current - walk;
   };
@@ -285,8 +303,10 @@ export default function App() {
   const handleAddFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     
+    const existingNames = new Set(items.map(p => p.name));
+    
     const newItems: ProcessingItem[] = Array.from(files)
-      .filter(f => f.type.startsWith('image/') || f.name.toLowerCase().endsWith('.eps') || f.name.toLowerCase().endsWith('.svg'))
+      .filter(f => (f.type.startsWith('image/') || f.name.toLowerCase().endsWith('.eps') || f.name.toLowerCase().endsWith('.svg')) && !existingNames.has(f.name))
       .map(f => ({
         id: Math.random().toString(36).slice(2, 11),
         file: f,
@@ -435,6 +455,7 @@ export default function App() {
 
       if (config.model === 'auto') {
         const autoModels = [
+          'gemini-3.5-flash',
           'gemini-3-flash-preview',
           'gemini-2.5-flash',
           'gemini-3.1-flash-lite-preview',
@@ -526,7 +547,8 @@ export default function App() {
                 newUsage.flash_3_1_lite = 0;
             }
 
-            if (usedModel.includes('gemini-3.1-flash-lite-preview')) newUsage.flash_3_1_lite = (newUsage.flash_3_1_lite || 0) + 1;
+            if (usedModel.includes('gemini-3.5-flash')) newUsage.flash_3_5 = (newUsage.flash_3_5 || 0) + 1;
+            else if (usedModel.includes('gemini-3.1-flash-lite-preview')) newUsage.flash_3_1_lite = (newUsage.flash_3_1_lite || 0) + 1;
             else if (usedModel.includes('gemini-2.5-flash-lite')) newUsage.lite = (newUsage.lite || 0) + 1;
             else if (usedModel.includes('gemini-2.5-flash')) newUsage.flash = (newUsage.flash || 0) + 1;
             else if (usedModel.includes('gemini-3-flash-preview')) newUsage.flash_3 = (newUsage.flash_3 || 0) + 1;
@@ -655,9 +677,16 @@ export default function App() {
     };
     setHistory(prev => [newRecord, ...prev].slice(0, 20));
     
-    // Clear items after export as requested
-    setItems([]);
-    localStorage.removeItem(STORAGE_ITEMS);
+    const allDone = items.length > 0 && items.every(i => i.status === 'done');
+    if (allDone) {
+        setItems([]);
+        localStorage.removeItem(STORAGE_ITEMS);
+        setStatusMsg("Export complete! CSV file has been downloaded. All items cleared.");
+        showNotification("Export Complete", `CSV file with ${completedItems.length} items has been downloaded.`);
+    } else {
+        setStatusMsg(`Exported partial CSV with ${completedItems.length} items.`);
+        showNotification("Partial Export", `Downloaded CSV with ${completedItems.length} completed items.`);
+    }
   };
 
   const playSuccessSound = () => {
@@ -693,16 +722,30 @@ export default function App() {
 
     // 2. Get pending items
     // Filter pending items that have thumbnail ready
-    const pendingItems = items.filter(i => i.status === 'pending' && i.blob);
+    const pendingItems = items.filter(i => i.status === 'pending' && i.thumb);
     
     if (pendingItems.length === 0) {
         const hasActive = items.some(i => i.status === 'processing' || i.status === 'compressing');
         if (!hasActive) {
             setIsProcessing(false);
-            setStatusMsg('Processing complete.');
-            playSuccessSound();
-            if (config.autoExport) {
-                handleExport();
+            const allDone = items.length > 0 && items.every(i => i.status === 'done');
+            if (allDone) {
+                setStatusMsg('Processing complete.');
+                playSuccessSound();
+                if (config.autoExport) {
+                    handleExport();
+                } else {
+                    showNotification('Processing Complete', 'All items have been processed successfully.');
+                }
+            } else {
+                const missingBlobs = items.some(i => i.status === 'pending' && !i.thumb);
+                if (missingBlobs) {
+                    setStatusMsg('Stopped. Some pending items are missing image data. Please re-upload them.');
+                    showNotification('Processing Stopped', 'Some pending items are missing image data.');
+                } else {
+                    setStatusMsg('Processing stopped (some items failed or hit limits).');
+                    showNotification('Processing Stopped', 'Some items failed or hit API limits.');
+                }
             }
         } else {
             setStatusMsg('Waiting for current batches...');
@@ -729,12 +772,15 @@ export default function App() {
             flash: Number(usage.flash || 0),
             lite: Number(usage.lite || 0),
             flash_3: Number(usage.flash_3 || 0),
-            flash_3_1_lite: Number(usage.flash_3_1_lite || 0)
+            flash_3_1_lite: Number(usage.flash_3_1_lite || 0),
+            flash_3_5: Number(usage.flash_3_5 || 0)
         };
 
         // Increased limits to 10,000 to effectively disable client-side blocking
         if (config.model === 'auto') {
-            return (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 10000);
+            return (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 10000);
+        } else if (config.model.includes('gemini-3.5-flash')) {
+            return u.flash_3_5 < 10000;
         } else if (config.model.includes('gemini-3.1-flash-lite-preview')) {
             return u.flash_3_1_lite < 10000;
         } else if (config.model.includes('gemini-2.5-flash-lite')) {
@@ -859,6 +905,75 @@ export default function App() {
       }
   };
   
+  const showNotification = (title: string, message: string) => {
+    // 1. In-app toast
+    const id = Math.random().toString(36).slice(2);
+    setToasts(prev => [...prev, { id, title, message, type: 'success' }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 5000);
+
+    // 2. OS Notification
+    if (!("Notification" in window)) return;
+    
+    if (Notification.permission === "granted") {
+      new Notification(title, { body: message, icon: '/vite.svg' });
+    } else if (Notification.permission !== "denied") {
+      Notification.requestPermission().then(permission => {
+        if (permission === "granted") {
+          new Notification(title, { body: message, icon: '/vite.svg' });
+        }
+      });
+    }
+  };
+
+  const handleStartStop = async () => {
+      if (isProcessing) {
+          setIsProcessing(false);
+          setStatusMsg("Processing paused.");
+          return;
+      }
+      
+      if ("Notification" in window && Notification.permission === "default") {
+          Notification.requestPermission();
+      }
+      
+      if (keys.length === 0) {
+          setStatusMsg("No API keys configured. Please add keys first.");
+          return;
+      }
+
+      setStatusMsg("Validating API keys...");
+      let hasValidKey = false;
+      const keysToTest = keys.filter(k => k.errorCount < 20);
+      
+      if (keysToTest.length === 0) {
+          setStatusMsg("All configured keys have hit safety limits.");
+          return;
+      }
+
+      for (const key of keysToTest) {
+          try {
+              const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key.key}`);
+              if (res.ok) {
+                  hasValidKey = true;
+                  break; // Found at least one working key
+              }
+          } catch (e) {
+              // Ignore network errors here and just try the next one
+          }
+      }
+
+      if (!hasValidKey) {
+          setStatusMsg("No valid API keys found. Please check your keys.");
+          return;
+      }
+
+      setIsProcessing(true);
+      if (!startTimeMs) setStartTimeMs(Date.now());
+      setStatusMsg("Starting processing...");
+  };
+  
   const handleClearHistory = () => {
       if (window.confirm('Clear export history?')) {
           setHistory([]);
@@ -885,6 +1000,51 @@ export default function App() {
       );
   }
 
+  let elapsedTimeNode: React.ReactNode = null;
+  if (startTimeMs) {
+      const elapsedMs = Math.max(0, Date.now() - startTimeMs);
+      const elapsedSecs = Math.floor(elapsedMs / 1000);
+      const m = Math.floor(elapsedSecs / 60);
+      const s = elapsedSecs % 60;
+      elapsedTimeNode = (
+          <span className="inline-flex items-center ml-2 text-slate-400 border-l border-white/10 pl-2">
+             Elapsed: {m > 0 ? `${m}m ` : ''}{s}s
+          </span>
+      );
+  }
+
+  // --- GLOBAL KEYBOARD SHORTCUTS ---
+  const handlersRef = useRef({ handleSaveProject, handleExport, handleStartStop, handleClear, doneCount: items.filter(i => i.status === 'done').length });
+  useEffect(() => {
+    handlersRef.current = { handleSaveProject, handleExport, handleStartStop, handleClear, doneCount: items.filter(i => i.status === 'done').length };
+  });
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in input or textarea
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        handlersRef.current.handleSaveProject();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        if (handlersRef.current.doneCount > 0) {
+            handlersRef.current.handleExport();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        handlersRef.current.handleStartStop();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'Backspace' || e.key === 'Delete')) {
+        e.preventDefault();
+        handlersRef.current.handleClear();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-200 flex overflow-hidden selection:bg-purple-500/30 font-sans">
       
@@ -894,7 +1054,7 @@ export default function App() {
          config={config}
          setConfig={setConfig}
          isProcessing={isProcessing}
-         onStartStop={() => setIsProcessing(!isProcessing)}
+         onStartStop={handleStartStop}
          hasItems={items.length > 0}
          models={MODELS}
          modelStats={modelStats}
@@ -919,6 +1079,7 @@ export default function App() {
              <p className="flex items-center text-sm text-slate-500">
                {items.length} items ({doneCount} done)
                {estimatedTimeNode}
+               {elapsedTimeNode}
                <span className="inline-flex items-center ml-2 border-l border-white/10 pl-2">
                  <Key className="w-3.5 h-3.5 mr-1" />
                  {activeKeysCount}/{keys.length} Healthy
@@ -942,6 +1103,7 @@ export default function App() {
                 type="button"
                 onClick={handleSaveProject}
                 disabled={items.length === 0}
+                title="Save Project (Ctrl+S / Cmd+S)"
                 className="px-4 py-2 bg-slate-800 hover:bg-purple-900/40 text-slate-300 hover:text-purple-400 rounded-lg transition-all font-semibold border border-white/5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Save Project
@@ -950,6 +1112,7 @@ export default function App() {
               <button
                 onClick={() => setIsProcessing(!isProcessing)}
                 disabled={items.length === 0}
+                title={isProcessing ? 'Stop Processing (Ctrl+Enter / Cmd+Enter)' : 'Start Processing (Ctrl+Enter / Cmd+Enter)'}
                 className={`px-6 py-2 rounded-lg font-bold text-sm shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0 ${
                     isProcessing 
                     ? 'bg-gradient-to-r from-orange-600 to-red-600 text-white shadow-orange-900/30' 
@@ -961,6 +1124,7 @@ export default function App() {
               <button 
                 type="button"
                 onClick={handleClear}
+                title="Clear All Items (Ctrl+Backspace / Cmd+Backspace)"
                 className="px-4 py-2 bg-slate-800/50 hover:bg-red-900/20 text-slate-300 hover:text-red-400 rounded-lg transition-colors font-semibold border border-white/5 text-sm"
               >
                 Clear All
@@ -969,6 +1133,7 @@ export default function App() {
                 type="button"
                 onClick={handleExport}
                 disabled={!hasPartialData && !allDone}
+                title="Export CSV (Ctrl+E / Cmd+E)"
                 className={`px-4 py-2 text-white rounded-lg transition-all font-bold text-sm flex items-center gap-2
                   ${allDone 
                       ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)] transform hover:-translate-y-0.5' 
@@ -985,6 +1150,8 @@ export default function App() {
           ref={scrollContainerRef}
           className="flex-1 overflow-y-auto p-8 custom-scrollbar scroll-smooth space-y-8"
           id="main-scroll-area"
+          onWheel={() => lastUserScrollRef.current = Date.now()}
+          onTouchMove={() => lastUserScrollRef.current = Date.now()}
           onMouseDown={handleMouseDown}
           onMouseLeave={handleMouseUp}
           onMouseUp={handleMouseUp}
@@ -1037,6 +1204,30 @@ export default function App() {
             </div>
         </div>
       </main>
+
+      {/* Global Toast Notifications Container */}
+      <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+        {toasts.map(toast => (
+          <div 
+            key={toast.id} 
+            className="pointer-events-auto bg-slate-800 border border-white/10 shadow-2xl rounded-xl p-4 min-w-[300px] flex items-start gap-3 transform transition-all animate-in slide-in-from-right-8 fade-in"
+          >
+            <div className="text-purple-400 mt-0.5 shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </div>
+            <div className="flex-1">
+              <h4 className="text-sm font-bold text-slate-100">{toast.title}</h4>
+              <p className="text-xs text-slate-300 mt-1">{toast.message}</p>
+            </div>
+            <button 
+              onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+              className="text-slate-400 hover:text-white transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        ))}
+      </div>
 
     </div>
   );
