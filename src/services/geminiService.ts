@@ -138,12 +138,13 @@ const transparencyDirective = config.forceTransparency
           const maxLen = config.titleMaxLen || 180;
           if (finalTitle.length > maxLen) {
               // Truncate to maxLen and ensure we don't cut off in the middle of a word if possible
-              let truncated = finalTitle.substring(0, maxLen);
+              let truncated = finalTitle.substring(0, maxLen - 1);
               const lastSpace = truncated.lastIndexOf(' ');
               if (lastSpace > 0) {
                   truncated = truncated.substring(0, lastSpace);
               }
-              finalTitle = truncated;
+              // Add a full stop
+              finalTitle = truncated.replace(/[\s,.;:-]+$/, '') + '.';
           }
 
           results[originalId] = {
