@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ApiKey, ProcessingItem, ProcessingConfig, HistoryRecord } from './types';
+import { ApiKey, ProcessingItem, ProcessingConfig, HistoryRecord, ProcessingLog } from './types';
 import { ProcessingQueue } from './components/ProcessingQueue';
 import { Sidebar } from './components/Sidebar';
+import { StatisticsModal } from './components/StatisticsModal';
 import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
@@ -10,6 +11,7 @@ import { Clock, Key } from 'lucide-react';
 // Persistence Keys
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
 const STORAGE_HISTORY = 'parrarel_history_v3';
+const STORAGE_LOGS = 'parrarel_logs_v1';
 const STORAGE_CONFIG = 'parrarel_config_v3';
 const STORAGE_ITEMS = 'parrarel_items_v3';
 const STORAGE_STATS = 'parrarel_stats_v1';
@@ -85,6 +87,12 @@ export default function App() {
     } catch { return []; }
   });
 
+  const [logs, setLogs] = useState<ProcessingLog[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_LOGS) || '[]');
+    } catch { return []; }
+  });
+
   // Items are loaded from localStorage if available
   const [items, setItems] = useState<ProcessingItem[]>(() => {
     try {
@@ -115,6 +123,7 @@ export default function App() {
   const [tick, setTick] = useState(0); 
   const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
   const [startTimeMs, setStartTimeMs] = useState<number | null>(null);
+  const [showStats, setShowStats] = useState(false);
   
   const [config, setConfig] = useState<ProcessingConfig>(() => {
     try {
@@ -150,15 +159,26 @@ export default function App() {
   useEffect(() => {
     const itemsLeft = pendingCount + processingCount;
     if (isProcessing && itemsLeft > 0) {
-      const avgTime = parseInt(localStorage.getItem('AVG_PROCESSING_TIME') || '5000', 10);
+      let avgMsPerItem = 5000 / (config.batchSize || 1); // fallback
+      if (logs.length > 0) {
+        let totalItems = 0;
+        let totalDuration = 0;
+        logs.forEach(log => {
+          totalItems += log.itemCount;
+          totalDuration += log.durationMs;
+        });
+        if (totalItems > 0) {
+          avgMsPerItem = totalDuration / totalItems;
+        }
+      }
+
       const activeKeys = Math.max(1, activeKeysCount);
-      const batchesLeft = itemsLeft / (config.batchSize || 1);
-      const msLeft = (batchesLeft * avgTime) / activeKeys;
+      const msLeft = (itemsLeft * avgMsPerItem) / activeKeys;
       setEtaEndTime(Date.now() + msLeft);
     } else {
       setEtaEndTime(null);
     }
-  }, [isProcessing, pendingCount, processingCount, activeKeysCount, config.batchSize]);
+  }, [isProcessing, pendingCount, processingCount, activeKeysCount, logs]);
 
   // Refs for scrolling
   const itemRefs = useRef<{[key: string]: HTMLDivElement | null}>({});
@@ -173,6 +193,7 @@ export default function App() {
   // Persist State
   useEffect(() => localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys)), [keys]);
   useEffect(() => localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history)), [history]);
+  useEffect(() => localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs)), [logs]);
   useEffect(() => localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config)), [config]);
   useEffect(() => localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats)), [modelStats]);
   
@@ -564,9 +585,21 @@ export default function App() {
       }));
       
       const batchDuration = Date.now() - batchStartTime;
-      const prevAvg = parseInt(localStorage.getItem('AVG_PROCESSING_TIME') || '5000', 10);
-      const newAvg = (prevAvg * 0.8) + (batchDuration * 0.2);
+      const totalTime = parseInt(localStorage.getItem('TOTAL_PROCESSING_TIME') || '0', 10) + batchDuration;
+      const totalBatches = parseInt(localStorage.getItem('TOTAL_BATCHES_PROCESSED') || '0', 10) + 1;
+      localStorage.setItem('TOTAL_PROCESSING_TIME', totalTime.toString());
+      localStorage.setItem('TOTAL_BATCHES_PROCESSED', totalBatches.toString());
+      
+      const newAvg = totalTime / totalBatches;
       localStorage.setItem('AVG_PROCESSING_TIME', Math.round(newAvg).toString());
+
+      const newLog: ProcessingLog = {
+        id: Math.random().toString(36).slice(2),
+        timestamp: new Date().toISOString(),
+        itemCount: batchItems.length,
+        durationMs: batchDuration
+      };
+      setLogs(prev => [...prev, newLog]);
 
     } catch (error: any) {
       console.warn(`Key ${keyObj.label} failed for batch:`, error);
@@ -1048,6 +1081,8 @@ export default function App() {
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-200 flex overflow-hidden selection:bg-purple-500/30 font-sans">
       
+      {showStats && <StatisticsModal logs={logs} onClose={() => setShowStats(false)} />}
+
       <Sidebar 
          keys={keys}
          setKeys={setKeys}
@@ -1059,6 +1094,7 @@ export default function App() {
          models={MODELS}
          modelStats={modelStats}
          history={history}
+         onViewStats={() => setShowStats(true)}
          onClearHistory={handleClearHistory}
          onResetUsage={handleResetUsage}
       />

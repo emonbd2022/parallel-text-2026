@@ -42,6 +42,14 @@ export interface HistoryRecord {
   csv: string;
 }
 
+export interface ProcessingLog {
+  id: string;
+  timestamp: string;
+  itemCount: number;
+  durationMs: number;
+}
+
+
 export interface ProcessingConfig {
   concurrency: number; // Max simultaneous API requests
   batchSize: number; // Images per single API request (1-5)

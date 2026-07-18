@@ -15,6 +15,7 @@ interface Props {
   modelStats: Record<string, { totalTimeMs: number, count: number, fails: number }>;
   history: HistoryRecord[];
   onClearHistory: () => void;
+  onViewStats: () => void;
   onResetUsage: (id: string) => void;
 }
 
@@ -30,6 +31,7 @@ export const Sidebar: React.FC<Props> = ({
   modelStats,
   history,
   onClearHistory,
+  onViewStats,
   onResetUsage
 }) => {
   
@@ -270,9 +272,14 @@ export const Sidebar: React.FC<Props> = ({
             <div className="glass-panel p-6 rounded-2xl space-y-4">
                 <div className="flex items-center justify-between border-b border-white/5 pb-2">
                     <h3 className="text-lg font-bold text-slate-100">Export History</h3>
-                    <button onClick={onClearHistory} className="text-[10px] uppercase font-bold text-slate-500 hover:text-red-400 transition-colors">
-                        Clear
-                    </button>
+                    <div className="flex gap-2">
+                        <button onClick={onViewStats} className="text-[10px] uppercase font-bold text-purple-400 hover:text-purple-300 transition-colors">
+                            Stats
+                        </button>
+                        <button onClick={onClearHistory} className="text-[10px] uppercase font-bold text-slate-500 hover:text-red-400 transition-colors">
+                            Clear
+                        </button>
+                    </div>
                 </div>
                 
                 {history.length === 0 ? (
