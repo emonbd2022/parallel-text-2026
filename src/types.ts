@@ -67,6 +67,7 @@ export interface ProcessingConfig {
   forceTransparency?: boolean; // Forces "isolated on transparent background" tag
   autoExport?: boolean;
   migratedTo31Lite?: boolean;
+  prioritizeFastest?: boolean;
 }
 
 export interface GeminiResponse {

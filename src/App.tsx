@@ -764,6 +764,24 @@ export default function App() {
     // Filter pending items that have thumbnail ready
     const pendingItems = items.filter(i => i.status === 'pending' && i.thumb);
     
+    if (config.prioritizeFastest) {
+        let totalMs = 0;
+        logs.forEach(l => totalMs += l.durationMs);
+        
+        let totalDoneBytes = 0;
+        items.forEach(i => {
+            if (i.status === 'done') totalDoneBytes += i.size;
+        });
+
+        const msPerByte = (totalDoneBytes > 0 && totalMs > 0) ? (totalMs / totalDoneBytes) : 1;
+        
+        pendingItems.sort((a, b) => {
+             const expectedA = a.size * msPerByte;
+             const expectedB = b.size * msPerByte;
+             return expectedA - expectedB;
+        });
+    }
+    
     if (pendingItems.length === 0) {
         const hasActive = items.some(i => i.status === 'processing' || i.status === 'compressing');
         if (!hasActive) {
@@ -1094,7 +1112,7 @@ export default function App() {
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-200 flex overflow-hidden selection:bg-purple-500/30 font-sans">
       
-      {showStats && <StatisticsModal logs={logs} onClose={() => setShowStats(false)} />}
+      {showStats && <StatisticsModal logs={logs} modelStats={modelStats} models={MODELS} onClose={() => setShowStats(false)} />}
 
       <Sidebar 
          keys={keys}

@@ -5,10 +5,12 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 
 interface Props {
   logs: ProcessingLog[];
+  modelStats: Record<string, { totalTimeMs: number, count: number, fails: number }>;
+  models: { id: string, name: string }[];
   onClose: () => void;
 }
 
-export const StatisticsModal: React.FC<Props> = ({ logs, onClose }) => {
+export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onClose }) => {
     const [dateRange, setDateRange] = useState({ start: '', end: '' });
 
     // Ensure logs are sorted
@@ -72,6 +74,57 @@ export const StatisticsModal: React.FC<Props> = ({ logs, onClose }) => {
             hours[h].count += log.itemCount;
         });
         return hours;
+    }, [sortedLogs]);
+
+    // 5. Model Efficiency
+    const modelPerformance = useMemo(() => {
+        const results = models.filter(m => m.id !== 'auto').map(m => {
+            const stat = modelStats[m.id];
+            const avgTime = stat && stat.count > 0 ? stat.totalTimeMs / stat.count : 0;
+            const totalAttempts = stat ? (stat.count + stat.fails) : 0;
+            const successRate = totalAttempts > 0 ? (stat.count / totalAttempts) * 100 : 0;
+            const score = avgTime > 0 ? avgTime + ((stat?.fails || 0) * 5000) : 999999;
+            return {
+                id: m.id,
+                name: m.name.split(' (')[0],
+                avgTime,
+                successRate,
+                score,
+                hasData: !!stat && stat.count > 0
+            };
+        }).filter(m => m.hasData);
+
+        if (results.length === 0) return { best: null, worst: null };
+
+        const sortedByScore = [...results].sort((a, b) => a.score - b.score);
+        return {
+            best: sortedByScore[0],
+            worst: sortedByScore[sortedByScore.length - 1]
+        };
+    }, [modelStats, models]);
+
+    // 6. Processing Time Trend
+    const latencyData = useMemo(() => {
+        const dataMap: Record<string, { totalMs: number, count: number }> = {};
+        const now = new Date();
+        for (let i = 13; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+            const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            dataMap[dateStr] = { totalMs: 0, count: 0 };
+        }
+        
+        sortedLogs.forEach(log => {
+            const dateStr = new Date(log.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+            if (dataMap[dateStr] !== undefined) {
+                dataMap[dateStr].totalMs += log.durationMs;
+                dataMap[dateStr].count += 1;
+            }
+        });
+        
+        return Object.keys(dataMap).map(date => ({ 
+            date, 
+            avgTimeSec: dataMap[date].count > 0 ? Number((dataMap[date].totalMs / dataMap[date].count / 1000).toFixed(1)) : 0 
+        }));
     }, [sortedLogs]);
 
     return (
@@ -154,6 +207,26 @@ export const StatisticsModal: React.FC<Props> = ({ logs, onClose }) => {
                         </div>
                     </div>
 
+                    {/* Processing Time Trend Chart */}
+                    <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
+                        <h3 className="font-semibold text-slate-200 mb-4">Average Processing Time Trend (Last 14 Days)</h3>
+                        <div className="h-64">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={latencyData}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                                    <XAxis dataKey="date" stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} />
+                                    <YAxis stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} tickFormatter={(val) => `${val}s`} />
+                                    <Tooltip 
+                                        contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px' }}
+                                        itemStyle={{ color: '#10b981' }}
+                                        formatter={(value: number) => [`${value}s`, 'Avg Latency']}
+                                    />
+                                    <Line type="monotone" dataKey="avgTimeSec" stroke="#10b981" strokeWidth={3} dot={{ fill: '#10b981', strokeWidth: 2 }} activeDot={{ r: 6 }} name="Avg Latency (s)" />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+
                     {/* Time of Day Chart */}
                     <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
                         <h3 className="font-semibold text-slate-200 mb-4">When You Work (Activity by Hour)</h3>
@@ -177,6 +250,37 @@ export const StatisticsModal: React.FC<Props> = ({ logs, onClose }) => {
                             </ResponsiveContainer>
                         </div>
                     </div>
+
+                    {/* Model Performance Summary */}
+                    {modelPerformance.best && (
+                        <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
+                            <h3 className="font-semibold text-slate-200 mb-4">Model Performance Summary</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="bg-emerald-900/10 border border-emerald-500/20 p-4 rounded-lg flex items-center justify-between">
+                                    <div>
+                                        <p className="text-xs font-bold text-emerald-500 uppercase tracking-wider">Most Efficient</p>
+                                        <p className="font-semibold text-slate-200 mt-1">{modelPerformance.best.name}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-sm font-mono text-emerald-400">{(modelPerformance.best.avgTime / 1000).toFixed(1)}s avg</p>
+                                        <p className="text-xs text-slate-500">{modelPerformance.best.successRate.toFixed(1)}% success</p>
+                                    </div>
+                                </div>
+                                {modelPerformance.worst && modelPerformance.worst.id !== modelPerformance.best.id && (
+                                    <div className="bg-red-900/10 border border-red-500/20 p-4 rounded-lg flex items-center justify-between">
+                                        <div>
+                                            <p className="text-xs font-bold text-red-500 uppercase tracking-wider">Least Reliable</p>
+                                            <p className="font-semibold text-slate-200 mt-1">{modelPerformance.worst.name}</p>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className="text-sm font-mono text-red-400">{(modelPerformance.worst.avgTime / 1000).toFixed(1)}s avg</p>
+                                            <p className="text-xs text-slate-500">{modelPerformance.worst.successRate.toFixed(1)}% success</p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
 
                 </div>
             </div>

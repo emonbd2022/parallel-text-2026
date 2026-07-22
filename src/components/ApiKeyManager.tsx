@@ -101,6 +101,8 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
           lite: 0,
           flash_3_1_lite: 0,
           flash_3_5: 0,
+          flash_3_5_lite: 0,
+          flash_3_6: 0,
           ...(k.usage ?? {})
         };
 
@@ -109,6 +111,8 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
           const flash_3_Limit = usage.flash_3 >= 10000;
           const flash_3_1_lite_Limit = usage.flash_3_1_lite >= 10000;
           const flash_3_5_Limit = (usage.flash_3_5 || 0) >= 10000;
+          const flash_3_5_lite_Limit = (usage.flash_3_5_lite || 0) >= 10000;
+          const flash_3_6_Limit = (usage.flash_3_6 || 0) >= 10000;
           const health = Math.max(0, 100 - (k.errorCount * 5));
 
           return (
@@ -127,8 +131,14 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                    </span>
 
                    {/* Usage Badges */}
+                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_6_Limit ? 'bg-red-500/20 text-red-400' : 'bg-indigo-500/10 text-indigo-400'}`} title="Gemini 3.6 Flash Usage">
+                      🌟 3.6F: {usage.flash_3_6 || 0}
+                   </span>
                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_5_Limit ? 'bg-red-500/20 text-red-400' : 'bg-fuchsia-500/10 text-fuchsia-400'}`} title="Gemini 3.5 Flash Usage">
                       ⭐ 3.5F: {usage.flash_3_5 || 0}
+                   </span>
+                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_5_lite_Limit ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/10 text-emerald-400'}`} title="Gemini 3.5 Flash Lite Usage">
+                      💫 3.5L: {usage.flash_3_5_lite || 0}
                    </span>
                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_Limit ? 'bg-red-500/20 text-red-400' : 'bg-cyan-500/10 text-cyan-400'}`} title="Gemini 3 Flash Usage">
                       🔥 3F: {usage.flash_3}
@@ -157,6 +167,15 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                 <span className="text-[10px] text-slate-500 font-mono truncate block">
                   {visibleKeys.has(k.id) ? k.key : `${k.key.substring(0, 6)}••••••••${k.key.substring(k.key.length - 4)}`}
                 </span>
+                
+                {/* Health Progress Bar */}
+                <div className="w-full h-1 mt-1.5 bg-slate-800 rounded-full overflow-hidden flex items-center">
+                    <div 
+                        className={`h-full rounded-full transition-all duration-500 ${health >= 80 ? 'bg-emerald-500' : health >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
+                        style={{ width: `${health}%` }}
+                        title={`Recent health trend: ${health}%`}
+                    />
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <button

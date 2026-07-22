@@ -117,34 +117,53 @@ export const Sidebar: React.FC<Props> = ({
                 
                 {/* Performance Ratings */}
                 <div className="mt-3">
-                    <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 space-y-1.5 text-xs">
+                    <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
+                            <span className="text-[10px] uppercase font-bold text-slate-500">Model Health</span>
+                            <div className="flex gap-2 text-[8px] font-mono uppercase text-slate-500" title="Color coding based on latency (<4s, <8s) and success rate (>95%, >80%)">
+                                <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Optimal</span>
+                                <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Fair</span>
+                                <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-red-500" /> Poor</span>
+                            </div>
+                        </div>
+                        <div className="space-y-1.5">
                         {models.filter(m => m.id !== 'auto').map(m => {
                             const stat = modelStats[m.id];
                             const avgTime = stat && stat.count > 0 ? stat.totalTimeMs / stat.count : 0;
-                            let stars = 0;
-                            if (!stat || stat.count === 0) {
-                                stars = 0; 
-                            } else {
-                                const score = avgTime + (stat.fails * 5000);
-                                if (score < 4000) stars = 5;
-                                else if (score < 6000) stars = 4;
-                                else if (score < 9000) stars = 3;
-                                else if (score < 14000) stars = 2;
-                                else stars = 1;
-                            }
+                            const totalAttempts = stat ? (stat.count + stat.fails) : 0;
+                            const successRate = totalAttempts > 0 ? (stat.count / totalAttempts) * 100 : 0;
+                            const isUnrated = !stat || stat.count === 0;
                             
                             return (
-                                <div key={m.id} className="flex items-center justify-between">
-                                    <span className="text-slate-400 truncate pr-2" title={m.name}>{m.name.split(' (')[0]}</span>
-                                    <div className="flex items-center gap-0.5" title={stars > 0 ? `Avg: ${(avgTime/1000).toFixed(1)}s, Fails: ${stat?.fails||0}` : 'No data yet'}>
-                                        {stars === 0 ? <span className="text-slate-600 font-mono text-[9px] uppercase tracking-wider">Unrated</span> :
-                                         [...Array(5)].map((_, i) => (
-                                             <span key={i} className={`text-xs ${i < stars ? "text-amber-400" : "text-slate-700"}`}>★</span>
-                                         ))}
+                                <div key={m.id} className="flex flex-col py-1">
+                                    <div className="flex items-center justify-between mb-1.5">
+                                        <span className="text-slate-400 truncate pr-2 font-medium" title={m.name}>{m.name.split(' (')[0]}</span>
+                                        {isUnrated ? (
+                                            <span className="text-slate-600 font-mono text-[9px] uppercase tracking-wider">Unrated</span>
+                                        ) : (
+                                            <div className="flex items-center gap-2 text-[10px] font-mono">
+                                                <span className="text-slate-400" title="Average Latency">
+                                                    {(avgTime/1000).toFixed(1)}s
+                                                </span>
+                                                <span className={successRate >= 95 ? 'text-emerald-400' : successRate >= 80 ? 'text-amber-400' : 'text-red-400'} title="Success Rate">
+                                                    {successRate.toFixed(0)}%
+                                                </span>
+                                            </div>
+                                        )}
                                     </div>
+                                    {!isUnrated && (
+                                        <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden flex items-center">
+                                            <div 
+                                                className={`h-full rounded-full transition-all duration-500 ${avgTime < 4000 ? 'bg-emerald-500' : avgTime < 8000 ? 'bg-amber-500' : 'bg-red-500'}`}
+                                                style={{ width: `${Math.max(5, Math.min(100, (avgTime / 15000) * 100))}%` }}
+                                                title={`Avg latency: ${(avgTime/1000).toFixed(1)}s`}
+                                            />
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })}
+                        </div>
                     </div>
                 </div>
                 </div>
@@ -216,6 +235,20 @@ export const Sidebar: React.FC<Props> = ({
                     className={`w-11 h-6 rounded-full transition-all relative ${config.autoExport ? 'bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.4)]' : 'bg-slate-700'}`}
                 >
                     <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.autoExport ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+                </div>
+
+                {/* Prioritize Faster Items Toggle */}
+                <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-purple-500/30 transition-colors">
+                <div>
+                    <span className="block text-sm font-bold text-slate-200">Prioritize Faster Items</span>
+                    <span className="text-[10px] text-slate-500 block mt-0.5">Process smaller items first</span>
+                </div>
+                <button 
+                    onClick={() => setConfig(prev => ({...prev, prioritizeFastest: !prev.prioritizeFastest}))}
+                    className={`w-11 h-6 rounded-full transition-all relative ${config.prioritizeFastest ? 'bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.4)]' : 'bg-slate-700'}`}
+                >
+                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.prioritizeFastest ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
                 </div>
 
