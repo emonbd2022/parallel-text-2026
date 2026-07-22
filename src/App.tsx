@@ -478,7 +478,9 @@ export default function App() {
 
       if (config.model === 'auto') {
         const autoModels = [
+          'gemini-3.6-flash',
           'gemini-3.5-flash',
+          'gemini-3.5-flash-lite',
           'gemini-3-flash-preview',
           'gemini-2.5-flash',
           'gemini-3.1-flash-lite-preview',
@@ -648,23 +650,24 @@ export default function App() {
                 // CRITICAL: Check if we have exhausted all available keys for this item
                 // Only fail the item if ALL keys (including this one) have failed it
                 const allKeysExhausted = activeKeys.every(k => newFailedKeys.includes(k.id));
-
+                const backoffDelay = Math.min(2000 * Math.pow(2, p.attempts), 120000); // Exponential backoff up to 2 mins
                 if (allKeysExhausted && activeKeys.length > 0) {
-                     return { 
-                         ...p, 
-                         status: 'error', 
-                         errorMsg: `All API keys failed for this image.`, 
-                         assignedKeyId: undefined,
-                         failedKeyIds: newFailedKeys
+                     return {
+                          ...p,
+                          status: 'pending',
+                          assignedKeyId: undefined,
+                          failedKeyIds: [], // Auto retry by resetting failed keys
+                          attempts: p.attempts + 1,
+                          retryAfter: Date.now() + Math.max(backoffDelay, 30000) // At least 30s backoff if all keys failed
                      };
                 } else {
-                     return { 
-                         ...p, 
-                         status: 'pending', 
-                         assignedKeyId: undefined, 
-                         failedKeyIds: newFailedKeys,
+                     return {
+                          ...p,
+                          status: 'pending',
+                          assignedKeyId: undefined,
+                          failedKeyIds: newFailedKeys,
                          attempts: p.attempts + 1,
-                         retryAfter: Date.now() + 2000 
+                         retryAfter: Date.now() + backoffDelay 
                      };
                 }
             }

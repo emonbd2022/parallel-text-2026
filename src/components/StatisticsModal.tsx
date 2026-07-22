@@ -103,28 +103,41 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
         };
     }, [modelStats, models]);
 
-    // 6. Processing Time Trend
-    const latencyData = useMemo(() => {
-        const dataMap: Record<string, { totalMs: number, count: number }> = {};
-        const now = new Date();
-        for (let i = 13; i >= 0; i--) {
-            const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-            const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-            dataMap[dateStr] = { totalMs: 0, count: 0 };
-        }
-        
+    // 7. Hourly Performance Heatmap
+    const heatmapData = useMemo(() => {
+        const matrix = Array(24).fill(0).map(() => ({ totalMs: 0, count: 0, items: 0 }));
         sortedLogs.forEach(log => {
-            const dateStr = new Date(log.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-            if (dataMap[dateStr] !== undefined) {
-                dataMap[dateStr].totalMs += log.durationMs;
-                dataMap[dateStr].count += 1;
-            }
+            const h = new Date(log.timestamp).getHours();
+            matrix[h].totalMs += log.durationMs;
+            matrix[h].count += log.itemCount;
+            matrix[h].items += log.itemCount;
         });
         
-        return Object.keys(dataMap).map(date => ({ 
-            date, 
-            avgTimeSec: dataMap[date].count > 0 ? Number((dataMap[date].totalMs / dataMap[date].count / 1000).toFixed(1)) : 0 
-        }));
+        let minAvg = Infinity;
+        let maxAvg = 0;
+        const hours = matrix.map((h, i) => {
+            const avg = h.count > 0 ? h.totalMs / h.count : 0;
+            if (h.count > 0) {
+                if (avg < minAvg) minAvg = avg;
+                if (avg > maxAvg) maxAvg = avg;
+            }
+            return { hour: i, avg, items: h.items, hasData: h.count > 0 };
+        });
+        
+        return { hours, minAvg, maxAvg };
+    }, [sortedLogs]);
+
+    // 6. Processing Time Trend
+    const latencyData = useMemo(() => {
+        const recentLogs = sortedLogs.slice(-20);
+        return recentLogs.map((log, index) => {
+            const dateStr = new Date(log.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+            return {
+                session: `B${index + 1}`,
+                date: dateStr,
+                avgTimeSec: log.itemCount > 0 ? Number((log.durationMs / log.itemCount / 1000).toFixed(1)) : 0
+            };
+        });
     }, [sortedLogs]);
 
     return (
@@ -209,21 +222,84 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
 
                     {/* Processing Time Trend Chart */}
                     <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
-                        <h3 className="font-semibold text-slate-200 mb-4">Average Processing Time Trend (Last 14 Days)</h3>
+                        <h3 className="font-semibold text-slate-200 mb-4">Average Processing Time Trend (Last 20 Batches)</h3>
                         <div className="h-64">
                             <ResponsiveContainer width="100%" height="100%">
                                 <LineChart data={latencyData}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                                    <XAxis dataKey="date" stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} />
+                                    <XAxis dataKey="session" stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} />
                                     <YAxis stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} tickFormatter={(val) => `${val}s`} />
                                     <Tooltip 
                                         contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px' }}
                                         itemStyle={{ color: '#10b981' }}
+                                        labelStyle={{ color: '#94a3b8', marginBottom: '4px' }}
                                         formatter={(value: number) => [`${value}s`, 'Avg Latency']}
+                                        labelFormatter={(label, payload) => {
+                                            if (payload && payload.length > 0 && payload[0].payload) {
+                                                return `${label} (${payload[0].payload.date})`;
+                                            }
+                                            return label;
+                                        }}
                                     />
                                     <Line type="monotone" dataKey="avgTimeSec" stroke="#10b981" strokeWidth={3} dot={{ fill: '#10b981', strokeWidth: 2 }} activeDot={{ r: 6 }} name="Avg Latency (s)" />
                                 </LineChart>
                             </ResponsiveContainer>
+                        </div>
+                    </div>
+
+                    {/* 24-Hour Performance Heatmap */}
+                    <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-semibold text-slate-200">24-Hour Performance Heatmap</h3>
+                            <div className="flex items-center gap-2 text-[10px] uppercase font-bold text-slate-500">
+                                <span>Fast</span>
+                                <div className="flex gap-1">
+                                    <div className="w-3 h-3 rounded bg-emerald-500" />
+                                    <div className="w-3 h-3 rounded bg-amber-500" />
+                                    <div className="w-3 h-3 rounded bg-red-500" />
+                                </div>
+                                <span>Slow</span>
+                            </div>
+                        </div>
+                        <div className="grid gap-1 h-24" style={{ gridTemplateColumns: "repeat(24, minmax(0, 1fr))" }}>
+                            {heatmapData.hours.map((h) => {
+                                let colorClass = "bg-slate-800";
+                                if (h.hasData) {
+                                    // simple thresholding based on ms per item
+                                    const avgSec = h.avg / 1000;
+                                    if (avgSec < 4) colorClass = "bg-emerald-500";
+                                    else if (avgSec < 8) colorClass = "bg-amber-500";
+                                    else colorClass = "bg-red-500";
+                                }
+                                return (
+                                    <div 
+                                        key={h.hour} 
+                                        className={`relative group rounded-sm ${colorClass} transition-opacity hover:opacity-80`}
+                                        style={{ height: '100%' }}
+                                    >
+                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 w-max bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs shadow-xl pointer-events-none">
+                                            <p className="font-bold text-slate-200 mb-1">{h.hour}:00 - {h.hour}:59</p>
+                                            {h.hasData ? (
+                                                <>
+                                                    <p className="text-slate-400">Avg Time: <span className="text-white font-mono">{(h.avg / 1000).toFixed(1)}s</span> / item</p>
+                                                    <p className="text-slate-400">Volume: <span className="text-white font-mono">{h.items}</span> items</p>
+                                                </>
+                                            ) : (
+                                                <p className="text-slate-500">No data</p>
+                                            )}
+                                        </div>
+                                        {/* Label at bottom for some hours */}
+                                        {h.hour % 4 === 0 && (
+                                            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 text-[10px] text-slate-500 font-mono">
+                                                {h.hour}h
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <div className="mt-6 text-xs text-slate-400 text-center">
+                            Highlighting peak performance hours to optimize large batch processing.
                         </div>
                     </div>
 
