@@ -14,6 +14,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
   const [showInput, setShowInput] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
   const [now, setNow] = useState(Date.now());
+  const [activeTab, setActiveTab] = useState<'keys' | 'health'>('keys');
 
   // Update time for cooldown countdowns
   useEffect(() => {
@@ -40,20 +41,35 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
   return (
     <div className="glass-panel p-6 rounded-2xl">
       <div className="flex justify-between items-center mb-6">
-        <h3 className="text-lg font-bold text-slate-100">API Keys</h3>
-        <button 
-          onClick={() => setShowInput(!showInput)}
-          className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all ${
-            showInput 
-              ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
-              : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
-          }`}
-        >
-          {showInput ? 'Cancel' : '+ Add Key'}
-        </button>
+        <div className="flex gap-4 items-center">
+          <button 
+            onClick={() => setActiveTab('keys')}
+            className={`text-lg font-bold transition-colors ${activeTab === 'keys' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
+          >
+            API Keys
+          </button>
+          <button 
+            onClick={() => setActiveTab('health')}
+            className={`text-lg font-bold transition-colors ${activeTab === 'health' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
+          >
+            Health Status
+          </button>
+        </div>
+        {activeTab === 'keys' && (
+          <button 
+            onClick={() => setShowInput(!showInput)}
+            className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all ${
+              showInput 
+                ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
+                : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
+            }`}
+          >
+            {showInput ? 'Cancel' : '+ Add Key'}
+          </button>
+        )}
       </div>
 
-      {showInput && (
+      {activeTab === 'keys' && showInput && (
         <form onSubmit={handleSubmit} className="mb-6 bg-slate-800/50 p-4 rounded-xl border border-white/5 animate-in fade-in slide-in-from-top-2">
           <div className="space-y-3 mb-4">
             <div>
@@ -83,6 +99,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
         </form>
       )}
 
+      {activeTab === 'keys' && (
       <div className="space-y-2 max-h-52 overflow-y-auto pr-2 custom-scrollbar">
         {keys.length === 0 && !showInput && (
           <div className="text-center py-6 bg-slate-800/30 rounded-xl border border-dashed border-slate-700">
@@ -107,7 +124,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
         };
 
           const flashLimit = usage.flash >= 10000;
-          const liteLimit = usage.lite >= 10000;
+          const liteLimit = usage.lite >= 20;
           const flash_3_Limit = usage.flash_3 >= 10000;
           const flash_3_1_lite_Limit = usage.flash_3_1_lite >= 10000;
           const flash_3_5_Limit = (usage.flash_3_5 || 0) >= 10000;
@@ -207,7 +224,56 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
             </div>
           );
         })}
-      </div>
+            </div>
+      )}
+
+      {/* API Key Health Status */}
+      {activeTab === 'health' && keys.length > 0 && (
+          <div className="mt-4 pt-2">
+              <div className="space-y-3">
+                  {keys.map(k => {
+                      const totalSuccess = Object.keys(k.usage).reduce((acc, key) => {
+                          if (key !== 'date' && typeof (k.usage)[key] === 'number') {
+                              return acc + (k.usage)[key];
+                          }
+                          return acc;
+                      }, 0);
+                      const totalAttempts = totalSuccess + k.errorCount;
+                      const successRate = totalAttempts > 0 ? (totalSuccess / totalAttempts) * 100 : 100;
+                      const health = Math.max(0, Math.min(100, successRate - (k.errorCount > 0 ? (k.errorCount / 20) * 100 : 0))); // penalize heavily for raw error count
+                      
+                      const isDead = k.errorCount >= 20;
+                      let colorClass = "bg-emerald-500";
+                      if (isDead) colorClass = "bg-red-600";
+                      else if (health < 50) colorClass = "bg-red-500";
+                      else if (health < 80) colorClass = "bg-amber-500";
+
+                      return (
+                          <div key={k.id} className="text-sm">
+                              <div className="flex justify-between items-center mb-1 px-1 text-xs">
+                                  <span className={`font-medium truncate max-w-[120px] ${isDead ? 'text-red-400' : 'text-slate-300'}`} title={k.label}>{k.label}</span>
+                                  <div className="flex items-center gap-2">
+                                      <span className="text-[10px] text-slate-500 font-mono" title="Errors">
+                                          {k.errorCount} err
+                                      </span>
+                                      <span className={`font-mono ${health >= 80 ? 'text-emerald-400' : health >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
+                                          {isDead ? 'DEAD' : `${health.toFixed(0)}%`}
+                                      </span>
+                                  </div>
+                              </div>
+                              <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                                  <div 
+                                      className={`h-full rounded-full transition-all duration-500 ${colorClass}`}
+                                      style={{ width: `${isDead ? 100 : health}%` }}
+                                  />
+                              </div>
+                          </div>
+                      );
+                  })}
+              </div>
+          </div>
+      )}
+
     </div>
   );
 };

@@ -61,6 +61,7 @@ const transparencyDirective = config.forceTransparency
     - "index": integer (0-based index corresponding to the input order)
     - "title": string
     - "keywords": array of strings
+    - "category": string (MUST be exactly one of these 21 options: "Animals", "Buildings and Architecture", "Business", "Drinks", "The Environment", "States of Mind", "Food", "Graphic Resources", "Hobbies and Leisure", "Industry", "Landscapes", "Lifestyle", "People", "Plants and Flowers", "Culture and Religion", "Science", "Social Issues", "Sports", "Technology", "Transport", "Travel")
   `;
 
   promptParts.push({ text: promptText });
@@ -76,11 +77,12 @@ const transparencyDirective = config.forceTransparency
           items: {
             type: Type.OBJECT,
             properties: {
-              index: { type: Type.INTEGER },
+                            index: { type: Type.INTEGER },
               title: { type: Type.STRING },
               keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+              category: { type: Type.STRING },
             },
-            required: ["index", "title", "keywords"]
+            required: ["index", "title", "keywords", "category"]
           }
         }
       }
@@ -155,7 +157,8 @@ const transparencyDirective = config.forceTransparency
 
           results[originalId] = {
             title: finalTitle,
-            keywords: keywordsList.join(', ')
+            keywords: keywordsList.join(', '),
+            category: resItem.category || ""
           };
        }
     });

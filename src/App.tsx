@@ -25,7 +25,7 @@ const MODELS = [
   { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (500 RPD)', rpm: 10 },
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview (20 RPD)', rpm: 5 },
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (20 RPD)', rpm: 5 },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite (500 RPD)', rpm: 10 }
+  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite (20 RPD)', rpm: 10 }
 ];
 
 // Helper: Get Session Date (Resets at 2:00 PM GMT+6)
@@ -59,9 +59,39 @@ interface Toast {
   type?: 'success' | 'info' | 'warning' | 'error';
 }
 
+
+const getCategoryId = (categoryName?: string) => {
+    if (!categoryName) return '';
+    const map: Record<string, string> = {
+        "animals": "1",
+        "buildings and architecture": "2",
+        "business": "3",
+        "drinks": "4",
+        "the environment": "5",
+        "states of mind": "6",
+        "food": "7",
+        "graphic resources": "8",
+        "hobbies and leisure": "9",
+        "industry": "10",
+        "landscapes": "11",
+        "lifestyle": "12",
+        "people": "13",
+        "plants and flowers": "14",
+        "culture and religion": "15",
+        "science": "16",
+        "social issues": "17",
+        "sports": "18",
+        "technology": "19",
+        "transport": "20",
+        "travel": "21"
+    };
+    return map[categoryName.trim().toLowerCase()] || categoryName;
+};
+
 export default function App() {
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
+    const [filter, setFilter] = useState<'all' | 'uncompleted'>('all');
   const [keys, setKeys] = useState<ApiKey[]>(() => {
     try {
       const loaded = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '[]');
@@ -376,7 +406,7 @@ export default function App() {
     if (fileInput) fileInput.value = '';
   };
 
-  const updateItem = (id: string, field: 'title' | 'keywords', value: string) => {
+  const updateItem = (id: string, field: 'title' | 'keywords' | 'category', value: string) => {
     setItems(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p));
   };
 
@@ -442,7 +472,8 @@ export default function App() {
     const safeName = `"${item.name.replace(/"/g, '""')}"`;
     const safeTitle = `"${item.title.replace(/"/g, '""')}"`;
     const safeKeys = `"${item.keywords.replace(/"/g, '""')}"`;
-    const row = `${safeName},${safeTitle},${safeKeys}`;
+    const safeCategory = `"${getCategoryId(item.category).replace(/"/g, '""')}"`;
+    const row = `${safeName},${safeTitle},${safeKeys},${safeCategory}`;
     navigator.clipboard.writeText(row);
   };
 
@@ -547,6 +578,7 @@ export default function App() {
                 status: 'done', 
                 title: results[p.id].title, 
                 keywords: results[p.id].keywords,
+                category: results[p.id].category,
                 assignedKeyId: undefined,
                 retryAfter: undefined,
                 failedKeyIds: [], // Success resets failures
@@ -682,7 +714,7 @@ export default function App() {
     const completedItems = items.filter(i => i.status === 'done');
     if (completedItems.length === 0) return;
 
-    const headers = ['Filename', 'Title', 'Keywords'];
+    const headers = ['Filename', 'Title', 'Keywords', 'Category'];
     const rows = completedItems.map(i => {
       let fileName = i.name;
       if (config.targetExtension) {
@@ -697,7 +729,8 @@ export default function App() {
       const safeName = `"${fileName.replace(/"/g, '""')}"`;
       const safeTitle = `"${i.title.replace(/"/g, '""')}"`;
       const safeKeys = `"${i.keywords.replace(/"/g, '""')}"`;
-      return `${safeName},${safeTitle},${safeKeys}`;
+      const safeCategory = `"${getCategoryId(i.category).replace(/"/g, '""')}"`;
+      return `${safeName},${safeTitle},${safeKeys},${safeCategory}`;
     });
     const csvContent = [headers.join(','), ...rows].join('\n');
     
@@ -841,7 +874,7 @@ export default function App() {
 
         // Increased limits to 10,000 to effectively disable client-side blocking
         if (config.model === 'auto') {
-            return (u.flash_3_6 < 10000) || (u.flash_3_5_lite < 10000) || (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 10000);
+            return (u.flash_3_6 < 10000) || (u.flash_3_5_lite < 10000) || (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 20);
         } else if (config.model === 'gemini-3.6-flash') {
             return u.flash_3_6 < 10000;
         } else if (config.model === 'gemini-3.5-flash-lite') {
@@ -851,7 +884,7 @@ export default function App() {
         } else if (config.model.includes('gemini-3.1-flash-lite-preview')) {
             return u.flash_3_1_lite < 10000;
         } else if (config.model.includes('gemini-2.5-flash-lite')) {
-            return u.lite < 10000;
+            return u.lite < 20;
         } else if (config.model.includes('gemini-2.5-flash')) {
             return u.flash < 10000;
         } else if (config.model.includes('gemini-3-flash-preview')) {
@@ -933,6 +966,33 @@ export default function App() {
     }
 
   }, [items, keys, isProcessing, config.concurrency, config.batchSize, tick]);
+
+  // Auto retry failed items every 20 seconds while batch is running
+  useEffect(() => {
+      if (!isProcessing) return;
+      const interval = setInterval(() => {
+          setItems(prev => {
+              let changed = false;
+              const newItems = prev.map(p => {
+                  if (p.status === 'error' || (p.status === 'pending' && p.attempts > 3)) {
+                      changed = true;
+                      return {
+                          ...p,
+                          status: 'pending',
+                          errorMsg: undefined,
+                          assignedKeyId: undefined,
+                          failedKeyIds: p.errorMsg?.includes('All API keys') ? [] : p.failedKeyIds,
+                          attempts: 0,
+                          retryAfter: undefined
+                      };
+                  }
+                  return p;
+              });
+              return changed ? newItems : prev;
+          });
+      }, 20000);
+      return () => clearInterval(interval);
+  }, [isProcessing]);
 
   // --- SAVE PROJECT ---
   const handleSaveProject = async () => {
@@ -1168,6 +1228,15 @@ export default function App() {
                   </button>
               )}
 
+              <button
+                onClick={() => setShowStats(true)}
+                title="View Processing Statistics"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg transition-all font-semibold border border-white/5 text-sm flex items-center gap-2"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 20V10M12 20V4M6 20v-4"/></svg>
+                Stats
+              </button>
+
               <button 
                 id="save-btn"
                 type="button"
@@ -1252,8 +1321,17 @@ export default function App() {
                   </div>
                 </div>
 
+                {items.length > 0 && (
+                  <div className="flex justify-between items-center bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
+                      <div className="flex gap-2">
+                          <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All ({items.length})</button>
+                          <button onClick={() => setFilter('uncompleted')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'uncompleted' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Uncompleted ({items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()).length})</button>
+                      </div>
+                  </div>
+                )}
+
                 <ProcessingQueue 
-                  items={items} 
+                  items={filter === 'uncompleted' ? items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()) : items} 
                   itemRefs={itemRefs}
                   onRemove={removeItem}
                   onUpdate={updateItem}

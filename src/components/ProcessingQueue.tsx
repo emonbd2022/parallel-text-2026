@@ -4,7 +4,7 @@ import { ProcessingItem } from '../types';
 interface Props {
   items: ProcessingItem[];
   onRemove: (id: string) => void;
-  onUpdate: (id: string, field: 'title' | 'keywords', value: string) => void;
+  onUpdate: (id: string, field: 'title' | 'keywords' | 'category', value: string) => void;
   onRegenerate: (id: string) => void;
   onCopy: (item: ProcessingItem) => void;
   itemRefs: React.MutableRefObject<{[key: string]: HTMLDivElement | null}>;
@@ -219,6 +219,42 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                              className="w-full flex-1 min-h-[140px] bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3.5 text-sm text-slate-200 focus:border-purple-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-purple-500/50 outline-none resize-none transition-all placeholder:text-slate-700 shadow-inner leading-relaxed"
                              placeholder={item.status === 'pending' ? 'Waiting for generation...' : 'Processing keywords...'}
                           />
+                      </div>
+
+                      {/* Category Group */}
+                      <div className="space-y-2 flex-1 flex flex-col">
+                          <div className="flex justify-between items-end">
+                            <label className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Category</label>
+                          </div>
+                          <select 
+                            value={item.category || ""}
+                            onChange={(e) => onUpdate(item.id, 'category', e.target.value)}
+                            disabled={item.status === 'processing' || item.status === 'compressing'}
+                            className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3.5 text-sm text-slate-200 focus:border-purple-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-purple-500/50 outline-none transition-all shadow-inner appearance-none"
+                          >
+                            <option value="">Select a category...</option>
+                            <option value="Animals">Animals</option>
+                            <option value="Buildings and Architecture">Buildings and Architecture</option>
+                            <option value="Business">Business</option>
+                            <option value="Drinks">Drinks</option>
+                            <option value="The Environment">The Environment</option>
+                            <option value="States of Mind">States of Mind</option>
+                            <option value="Food">Food</option>
+                            <option value="Graphic Resources">Graphic Resources</option>
+                            <option value="Hobbies and Leisure">Hobbies and Leisure</option>
+                            <option value="Industry">Industry</option>
+                            <option value="Landscapes">Landscapes</option>
+                            <option value="Lifestyle">Lifestyle</option>
+                            <option value="People">People</option>
+                            <option value="Plants and Flowers">Plants and Flowers</option>
+                            <option value="Culture and Religion">Culture and Religion</option>
+                            <option value="Science">Science</option>
+                            <option value="Social Issues">Social Issues</option>
+                            <option value="Sports">Sports</option>
+                            <option value="Technology">Technology</option>
+                            <option value="Transport">Transport</option>
+                            <option value="Travel">Travel</option>
+                          </select>
                       </div>
                  </div>
             </div>
