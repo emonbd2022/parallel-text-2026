@@ -27,6 +27,7 @@ export interface ProcessingItem {
   thumb: string | null;
   blob: Blob | null;
   status: 'pending' | 'compressing' | 'processing' | 'done' | 'error';
+  progressMsg?: string;
   errorMsg?: string;
   attempts: number;
   retryAfter?: number; // Timestamp for delayed retries

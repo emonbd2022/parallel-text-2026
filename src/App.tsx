@@ -6,7 +6,7 @@ import { StatisticsModal } from './components/StatisticsModal';
 import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
-import { Clock, Key } from 'lucide-react';
+import { Clock, Key, Hourglass } from 'lucide-react';
 
 // Persistence Keys
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
@@ -126,6 +126,9 @@ export default function App() {
   });
 
   // Items are loaded from localStorage if available
+  const [lastAutoSave, setLastAutoSave] = useState<Date | null>(null);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportStats, setExportStats] = useState({ count: 0, path: '' });
   const [items, setItems] = useState<ProcessingItem[]>(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_ITEMS) || '[]');
@@ -246,6 +249,7 @@ export default function App() {
           }));
           try {
               localStorage.setItem(STORAGE_ITEMS, JSON.stringify(storableItems));
+              setLastAutoSave(new Date());
           } catch (e) {
               console.warn("Failed to auto-save items to localStorage:", e);
           }
@@ -292,12 +296,12 @@ export default function App() {
   // Auto-scroll to processing item
   useEffect(() => {
     if (!isProcessing) return;
-    if (Date.now() - lastUserScrollRef.current < 10000) return;
+    if (Date.now() - lastUserScrollRef.current < 2000) return;
 
     const activeItem = items.find(i => i.status === 'processing');
     if (activeItem && itemRefs.current[activeItem.id]) {
       setTimeout(() => {
-        if (Date.now() - lastUserScrollRef.current < 10000) return;
+        if (Date.now() - lastUserScrollRef.current < 2000) return;
         itemRefs.current[activeItem.id]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 100);
     }
@@ -539,7 +543,10 @@ export default function App() {
                 results = await generateMetadataBatch(
                   keyObj.key,
                   payload,
-                  { ...config, model: usedModel }
+                  { ...config, model: usedModel },
+                  (msg) => {
+                    setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
+                  }
                 );
                 success = true;
                 const elapsed = Date.now() - startTime;
@@ -563,7 +570,14 @@ export default function App() {
         }
       } else {
         const startTime = Date.now();
-        results = await generateMetadataBatch(keyObj.key, payload, config);
+        results = await generateMetadataBatch(
+            keyObj.key, 
+            payload, 
+            config,
+            (msg) => {
+              setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
+            }
+        );
         const elapsed = Date.now() - startTime;
         setModelStats(prev => {
             const current = prev[usedModel!] || { totalTimeMs: 0, count: 0, fails: 0 };
@@ -758,11 +772,11 @@ export default function App() {
         setItems([]);
         localStorage.removeItem(STORAGE_ITEMS);
         setStatusMsg("Export complete! CSV file has been downloaded. All items cleared.");
-        showNotification("Export Complete", `CSV file with ${completedItems.length} items has been downloaded.`);
     } else {
         setStatusMsg(`Exported partial CSV with ${completedItems.length} items.`);
-        showNotification("Partial Export", `Downloaded CSV with ${completedItems.length} completed items.`);
     }
+    setExportStats({ count: completedItems.length, path: `${items.length}.csv` });
+    setShowExportModal(true);
   };
 
   const playSuccessSound = () => {
@@ -1121,8 +1135,8 @@ export default function App() {
       const s = totalSeconds % 60;
       estimatedTimeNode = (
           <span className="inline-flex items-center ml-2 text-purple-400">
-             <Clock className="w-3.5 h-3.5 mr-1" />
-             ETA: {m > 0 ? `${m}m ` : ''}{s}s
+             <svg className="w-3.5 h-3.5 mr-1 hourglass-anim" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg>
+             Estimated Time: {m > 0 ? `${m}m ` : ''}{s}s
           </span>
       );
   }
@@ -1135,7 +1149,7 @@ export default function App() {
       const s = elapsedSecs % 60;
       elapsedTimeNode = (
           <span className="inline-flex items-center ml-2 text-slate-400 border-l border-white/10 pl-2">
-             Elapsed: {m > 0 ? `${m}m ` : ''}{s}s
+             Elapsed Time: {m > 0 ? `${m}m ` : ''}{s}s
           </span>
       );
   }
@@ -1173,6 +1187,17 @@ export default function App() {
   }, []);
 
   return (
+    <>
+      <style>{`
+        @keyframes hourglass-flip {
+          0% { transform: rotate(0deg); }
+          40% { transform: rotate(180deg); }
+          100% { transform: rotate(180deg); }
+        }
+        .hourglass-anim {
+          animation: hourglass-flip 2s ease-in-out infinite;
+        }
+      `}</style>
     <div className="h-screen w-screen bg-slate-950 text-slate-200 flex overflow-hidden selection:bg-purple-500/30 font-sans">
       
       {showStats && <StatisticsModal logs={logs} modelStats={modelStats} models={MODELS} onClose={() => setShowStats(false)} />}
@@ -1205,7 +1230,19 @@ export default function App() {
 
         <div className="p-8 border-b border-white/5 flex items-center justify-between bg-slate-950/50 backdrop-blur-md z-30">
            <div>
-             <h2 className="text-xl font-bold text-white">Queue</h2>
+             <h2 className="text-xl font-bold text-white flex items-center gap-2">
+               Queue
+               <div className="relative group flex items-center">
+                 <svg className="w-4 h-4 text-slate-500 hover:text-slate-300 transition-colors cursor-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                 <div className="absolute hidden group-hover:block bottom-full mb-2 left-0 md:left-1/2 md:-translate-x-1/2 w-64 p-3 bg-slate-800 border border-slate-700 rounded-xl shadow-xl text-xs text-slate-300 z-50 pointer-events-none">
+                   <p className="font-bold text-white mb-2 pb-1 border-b border-slate-700">Keyboard Shortcuts</p>
+                   <div className="flex justify-between mb-1"><span>Save Project</span><kbd className="font-mono bg-slate-950 border border-slate-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300 shadow-sm">Ctrl+S</kbd></div>
+                   <div className="flex justify-between mb-1"><span>Export CSV</span><kbd className="font-mono bg-slate-950 border border-slate-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300 shadow-sm">Ctrl+E</kbd></div>
+                   <div className="flex justify-between mb-1"><span>Start / Stop</span><kbd className="font-mono bg-slate-950 border border-slate-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300 shadow-sm">Ctrl+Enter</kbd></div>
+                   <div className="flex justify-between"><span>Clear All</span><kbd className="font-mono bg-slate-950 border border-slate-700 px-1.5 py-0.5 rounded text-[10px] text-slate-300 shadow-sm">Ctrl+Bksp</kbd></div>
+                 </div>
+               </div>
+             </h2>
              <p className="flex items-center text-sm text-slate-500">
                {items.length} items ({doneCount} done)
                {estimatedTimeNode}
@@ -1214,6 +1251,12 @@ export default function App() {
                  <Key className="w-3.5 h-3.5 mr-1" />
                  {activeKeysCount}/{keys.length} Healthy
                </span>
+               {lastAutoSave && (
+                 <span className="inline-flex items-center ml-2 border-l border-white/10 pl-2 text-slate-400" title="Last auto-saved to local storage">
+                   <svg className="w-3.5 h-3.5 mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                   {lastAutoSave.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                 </span>
+               )}
              </p>
            </div>
            <div className="flex gap-3">
@@ -1344,6 +1387,20 @@ export default function App() {
         <div className="text-center py-4 text-xs text-slate-500 border-t border-white/5 bg-slate-950/50 backdrop-blur-md shrink-0">
            All rights reserved. Developed and maintained by Shahin Alam Emon.
         </div>
+        {showExportModal && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-8 max-w-md w-full shadow-2xl animate-in zoom-in-95 relative mx-4">
+            <div className="text-emerald-400 mb-4 flex justify-center">
+               <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+            </div>
+            <h3 className="text-2xl font-bold text-center text-white mb-2">Export Complete</h3>
+            <p className="text-center text-slate-300 mb-6">Successfully downloaded <strong className="text-white">{exportStats.path}</strong> containing <strong className="text-emerald-400">{exportStats.count}</strong> items.</p>
+            <div className="flex justify-center">
+              <button onClick={() => setShowExportModal(false)} className="px-8 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all font-bold shadow-lg border border-white/5 hover:scale-105 active:scale-95">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
 
         <div className="absolute bottom-12 right-8 z-50 animate-in slide-in-from-bottom-5 fade-in pointer-events-none">
             <div className="glass-panel px-6 py-4 rounded-2xl flex items-center gap-4 shadow-[0_0_40px_rgba(0,0,0,0.5)] border border-white/10 bg-slate-900/90 backdrop-blur-xl">
@@ -1378,5 +1435,6 @@ export default function App() {
       </div>
 
     </div>
+  </>
   );
 }

@@ -18,10 +18,12 @@ export const generateMetadataBatch = async (
     negativeTitleWords?: string;
     negativeKeywords?: string;
     forceTransparency?: boolean;
-  }
+  },
+  onProgress?: (progressMsg: string) => void
 ): Promise<Record<string, GeminiResponse>> => {
   
   const ai = new GoogleGenAI({ apiKey });
+    if (onProgress) onProgress("Creating titles & keywords...");
   
   // Construct the multipart prompt
   // We feed images one by one, then a text prompt asking for a JSON array
@@ -42,12 +44,11 @@ const transparencyDirective = config.forceTransparency
 
   const promptText = `
     I have provided ${items.length} image(s). 
-    Generate Adobe Stock–ready metadata for EACH image in the exact order they were provided (Index 0 to ${items.length - 1}).
-
+    Generate Adobe Stock-ready metadata for EACH image in the exact order they were provided (Index 0 to ${items.length - 1}).
     For each image:
-    1. Create a highly commercial and descriptive title containing highly searched keywords. 
-       - The title MUST consist of 1 to 2 complete sentences. 
-       - The first sentence should vividly describe the main subject, setting, action, and lighting (e.g., "Grain pouring into a large pile in a warehouse.").
+    1. Create a highly commercial and descriptive title containing highly searched keywords.
+        - The title MUST consist of 1 to 2 complete sentences.
+        - The first sentence should vividly describe the main subject, setting, action, and lighting (e.g., "Grain pouring into a large pile in a warehouse.").
        - The final sentence MUST suggest a practical use case or conceptual theme for the image (e.g., "Food supply concept for industrial trade ads.").
        - ${transparencyDirective}
        - CRITICAL: The ENTIRE title MUST be precise, using a maximum of 25 words, and strictly UNDER ${config.titleMaxLen || 180} characters in length (including spaces). Be extremely concise.
@@ -61,7 +62,6 @@ const transparencyDirective = config.forceTransparency
     - "index": integer (0-based index corresponding to the input order)
     - "title": string
     - "keywords": array of strings
-    - "category": string (MUST be exactly one of these 21 options: "Animals", "Buildings and Architecture", "Business", "Drinks", "The Environment", "States of Mind", "Food", "Graphic Resources", "Hobbies and Leisure", "Industry", "Landscapes", "Lifestyle", "People", "Plants and Flowers", "Culture and Religion", "Science", "Social Issues", "Sports", "Technology", "Transport", "Travel")
   `;
 
   promptParts.push({ text: promptText });
@@ -77,12 +77,11 @@ const transparencyDirective = config.forceTransparency
           items: {
             type: Type.OBJECT,
             properties: {
-                            index: { type: Type.INTEGER },
+              index: { type: Type.INTEGER },
               title: { type: Type.STRING },
-              keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-              category: { type: Type.STRING },
+              keywords: { type: Type.ARRAY, items: { type: Type.STRING } }
             },
-            required: ["index", "title", "keywords", "category"]
+            required: ["index", "title", "keywords"]
           }
         }
       }
@@ -99,9 +98,11 @@ const transparencyDirective = config.forceTransparency
         throw new Error("Invalid JSON response from AI");
     }
 
-    // Process and Map results back to IDs
+    
+    // Process generated titles
     const results: Record<string, GeminiResponse> = {};
-
+    const titlesForCategory: string[] = [];
+    
     jsonArray.forEach((resItem) => {
        const index = resItem.index;
        if (index >= 0 && index < items.length) {
@@ -111,8 +112,6 @@ const transparencyDirective = config.forceTransparency
           let keywordsList = resItem.keywords || [];
           if (!Array.isArray(keywordsList)) keywordsList = String(keywordsList).split(',').map((s: string) => s.trim());
 
-          // --- Post Processing (same as before) ---
-          
           // Filter Negative Title
           if (config.negativeTitleWords) {
             const negatives = config.negativeTitleWords.split(',').map((w: string) => w.trim()).filter(Boolean);
@@ -139,17 +138,14 @@ const transparencyDirective = config.forceTransparency
           let finalTitle = title.trim();
           const maxLen = config.titleMaxLen || 180;
           if (finalTitle.length > maxLen) {
-              // Truncate to maxLen and ensure we don't cut off in the middle of a word if possible
               let truncated = finalTitle.substring(0, maxLen - 1);
               const lastSpace = truncated.lastIndexOf(' ');
               if (lastSpace > 0) {
                   truncated = truncated.substring(0, lastSpace);
               }
-              // Add a full stop
               finalTitle = truncated.replace(/[\s,.;:-]+$/, '') + '.';
           }
 
-          // Limit Keywords to maximum 45
           const maxKeywords = 45;
           if (keywordsList.length > maxKeywords) {
               keywordsList = keywordsList.slice(0, maxKeywords);
@@ -158,13 +154,68 @@ const transparencyDirective = config.forceTransparency
           results[originalId] = {
             title: finalTitle,
             keywords: keywordsList.join(', '),
-            category: resItem.category || ""
+            category: ""
           };
+          
+          titlesForCategory.push(`Index ${index}: ${finalTitle}`);
        }
     });
+    
+    if (onProgress) onProgress("Getting specific categories...");
+    
+    // Step 2: Request Categories
+    const categoryPromptText = `
+      I will provide ${items.length} titles. Please categorize each into exactly one of these 21 options:
+      "Animals", "Buildings and Architecture", "Business", "Drinks", "The Environment", "States of Mind", "Food", "Graphic Resources", "Hobbies and Leisure", "Industry", "Landscapes", "Lifestyle", "People", "Plants and Flowers", "Culture and Religion", "Science", "Social Issues", "Sports", "Technology", "Transport", "Travel"
+      
+      Titles:
+      ${titlesForCategory.join('\n')}
+      
+      Return a strictly valid JSON array where each object contains:
+      - "index": integer (0-based index)
+      - "category": string
+    `;
+    
+    const catResponse = await ai.models.generateContent({
+      model: config.model,
+      contents: categoryPromptText,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              index: { type: Type.INTEGER },
+              category: { type: Type.STRING }
+            },
+            required: ["index", "category"]
+          }
+        }
+      }
+    });
+    
+    const catText = catResponse.text;
+    if (catText) {
+       try {
+           const catArray = JSON.parse(catText);
+           if (Array.isArray(catArray)) {
+               catArray.forEach(catItem => {
+                   const idx = catItem.index;
+                   if (idx >= 0 && idx < items.length) {
+                       const originalId = items[idx].id;
+                       if (results[originalId]) {
+                           results[originalId].category = catItem.category || "";
+                       }
+                   }
+               });
+           }
+       } catch (e) {
+           console.warn("Failed to parse categories", e);
+       }
+    }
 
     return results;
-
   } catch (error: any) {
     // Error handling logic reused from previous version
     console.error("Gemini API Error:", error);

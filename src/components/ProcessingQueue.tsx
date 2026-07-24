@@ -153,7 +153,7 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                               }`}>
                                 {item.status === 'processing' && <div className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"/>}
                                 {item.status === 'done' && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"/>}
-                                <span>{item.status === 'processing' ? 'Processing...' : isWaitingRetry(item) ? `Retrying (${item.attempts})...` : item.status}</span>
+                                <span>{item.status === 'processing' ? (item.progressMsg || 'Processing...') : isWaitingRetry(item) ? `Retrying (${item.attempts})...` : item.status}</span>
                                 {item.usedModel && <span className="ml-1 text-slate-500 tracking-normal lowercase border-l border-white/10 pl-1.5">{item.usedModel.replace('gemini-', '')}</span>}
                               </div>
                         </div>
@@ -195,7 +195,7 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                             onChange={(e) => onUpdate(item.id, 'title', e.target.value)}
                             disabled={item.status === 'processing' || item.status === 'compressing'}
                             className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3.5 text-sm text-slate-200 focus:border-purple-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-purple-500/50 outline-none transition-all placeholder:text-slate-700 shadow-inner"
-                            placeholder={item.status === 'pending' ? 'Waiting for generation...' : 'Processing title...'}
+                            placeholder={item.status === 'pending' ? 'Waiting for generation...' : (item.status === 'processing' ? (item.progressMsg || 'Processing title...') : 'Processing title...')}
                           />
                       </div>
 
@@ -217,7 +217,7 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                              onChange={(e) => onUpdate(item.id, 'keywords', e.target.value)}
                              disabled={item.status === 'processing' || item.status === 'compressing'}
                              className="w-full flex-1 min-h-[140px] bg-slate-900/50 border border-slate-700/50 rounded-xl px-4 py-3.5 text-sm text-slate-200 focus:border-purple-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-purple-500/50 outline-none resize-none transition-all placeholder:text-slate-700 shadow-inner leading-relaxed"
-                             placeholder={item.status === 'pending' ? 'Waiting for generation...' : 'Processing keywords...'}
+                             placeholder={item.status === 'pending' ? 'Waiting for generation...' : (item.status === 'processing' ? (item.progressMsg || 'Processing keywords...') : 'Processing keywords...')}
                           />
                       </div>
 
