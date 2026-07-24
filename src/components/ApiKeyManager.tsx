@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Key } from 'lucide-react';
 import { ApiKey } from '../types';
 
 interface Props {
@@ -46,7 +47,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
             onClick={() => setActiveTab('keys')}
             className={`text-lg font-bold transition-colors ${activeTab === 'keys' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
           >
-            API Keys
+            <span className="flex items-center gap-1.5"><Key className="w-4 h-4" /> API Keys ({keys.length})</span>
           </button>
           <button 
             onClick={() => setActiveTab('health')}
@@ -185,14 +186,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                   {visibleKeys.has(k.id) ? k.key : `${k.key.substring(0, 6)}••••••••${k.key.substring(k.key.length - 4)}`}
                 </span>
                 
-                {/* Health Progress Bar */}
-                <div className="w-full h-1 mt-1.5 bg-slate-800 rounded-full overflow-hidden flex items-center">
-                    <div 
-                        className={`h-full rounded-full transition-all duration-500 ${health >= 80 ? 'bg-emerald-500' : health >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
-                        style={{ width: `${health}%` }}
-                        title={`Recent health trend: ${health}%`}
-                    />
-                </div>
+
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -251,7 +245,10 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                       return (
                           <div key={k.id} className="text-sm">
                               <div className="flex justify-between items-center mb-1 px-1 text-xs">
-                                  <span className={`font-medium truncate max-w-[120px] ${isDead ? 'text-red-400' : 'text-slate-300'}`} title={k.label}>{k.label}</span>
+                                  <div className="flex flex-col">
+                                    <span className={`font-medium truncate max-w-[120px] ${isDead ? 'text-red-400' : 'text-slate-300'}`} title={k.label}>{k.label}</span>
+                                    <span className="text-[10px] text-slate-500 mt-0.5">Lifetime: {totalSuccess}</span>
+                                  </div>
                                   <div className="flex items-center gap-2">
                                       <span className="text-[10px] text-slate-500 font-mono" title="Errors">
                                           {k.errorCount} err

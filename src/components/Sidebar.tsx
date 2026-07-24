@@ -237,6 +237,19 @@ export const Sidebar: React.FC<Props> = ({
                     <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.autoExport ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
                 </div>
+                {/* Auto Scroll Toggle */}
+                <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-purple-500/30 transition-colors">
+                <div>
+                    <span className="block text-sm font-bold text-slate-200">Auto-Scroll</span>
+                    <span className="text-[10px] text-slate-500 block mt-0.5">Scroll to processing image automatically</span>
+                </div>
+                <button 
+                    onClick={() => setConfig(prev => ({...prev, autoScroll: config.autoScroll === false ? true : false}))}
+                    className={`w-11 h-6 rounded-full transition-all relative ${config.autoScroll !== false ? 'bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.4)]' : 'bg-slate-700'}`}
+                >
+                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.autoScroll !== false ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+                </div>
 
                 {/* Prioritize Faster Items Toggle */}
                 <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-purple-500/30 transition-colors">

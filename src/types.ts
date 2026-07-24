@@ -68,6 +68,7 @@ export interface ProcessingConfig {
   targetExtension?: string; // .jpg, .png, etc.
   forceTransparency?: boolean; // Forces "isolated on transparent background" tag
   autoExport?: boolean;
+  autoScroll?: boolean;
   migratedTo31Lite?: boolean;
   prioritizeFastest?: boolean;
 }
