@@ -91,7 +91,7 @@ const getCategoryId = (categoryName?: string) => {
 export default function App() {
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
-    const [filter, setFilter] = useState<'all' | 'uncompleted' | 'failed'>('all');
+    const [filter, setFilter] = useState<'all' | 'ongoing' | 'uncompleted' | 'failed'>('all');
     const [keys, setKeys] = useState<ApiKey[]>(() => {
     try {
       const loaded = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '[]');
@@ -128,7 +128,7 @@ export default function App() {
   // Items are loaded from localStorage if available
   const [lastAutoSave, setLastAutoSave] = useState<Date | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
-  const [exportStats, setExportStats] = useState({ count: 0, path: '', elapsedTime: '0s', requestCount: 0 });
+  const [exportStats, setExportStats] = useState({ count: 0, path: '', elapsedTime: '0s', requestCount: 0, timeSaved: '0s' });
   const sessionRequestCountRef = useRef(0);
   const [items, setItems] = useState<ProcessingItem[]>(() => {
     try {
@@ -541,7 +541,7 @@ export default function App() {
             usedModel = autoModels[i];
             const startTime = Date.now();
             try {
-                sessionRequestCountRef.current += (payload.length + 1);
+                sessionRequestCountRef.current += 2;
                 results = await generateMetadataBatch(
                   keyObj.key,
                   payload,
@@ -572,6 +572,7 @@ export default function App() {
         }
       } else {
         const startTime = Date.now();
+        sessionRequestCountRef.current += 2;
         results = await generateMetadataBatch(
             keyObj.key, 
             payload, 
@@ -780,15 +781,46 @@ export default function App() {
     const totalRequests = sessionRequestCountRef.current;
     
     let timeStr = '0s';
+    let timeSavedStr = '0s';
+    const manualSecondsPerImage = 120; // Assume 2 mins per image manually
+    
     if (startTimeMs) {
       const elapsedMs = Math.max(0, Date.now() - startTimeMs);
       const elapsedSecs = Math.floor(elapsedMs / 1000);
       const m = Math.floor(elapsedSecs / 60);
       const s = elapsedSecs % 60;
       timeStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
+      
+      const totalManualSeconds = completedItems.length * manualSecondsPerImage;
+      const savedSecs = Math.max(0, totalManualSeconds - elapsedSecs);
+      
+      const savedH = Math.floor(savedSecs / 3600);
+      const savedM = Math.floor((savedSecs % 3600) / 60);
+      const savedS = savedSecs % 60;
+      
+      if (savedH > 0) {
+        timeSavedStr = `${savedH}h ${savedM}m`;
+      } else if (savedM > 0) {
+        timeSavedStr = `${savedM}m ${savedS}s`;
+      } else {
+        timeSavedStr = `${savedS}s`;
+      }
+    } else {
+      const savedSecs = completedItems.length * manualSecondsPerImage;
+      const savedH = Math.floor(savedSecs / 3600);
+      const savedM = Math.floor((savedSecs % 3600) / 60);
+      const savedS = savedSecs % 60;
+      
+      if (savedH > 0) {
+        timeSavedStr = `~${savedH}h ${savedM}m`;
+      } else if (savedM > 0) {
+        timeSavedStr = `~${savedM}m ${savedS}s`;
+      } else {
+        timeSavedStr = `~${savedS}s`;
+      }
     }
     
-    setExportStats({ count: completedItems.length, path: `${items.length}.csv`, elapsedTime: timeStr, requestCount: totalRequests });
+    setExportStats({ count: completedItems.length, path: `${items.length}.csv`, elapsedTime: timeStr, requestCount: totalRequests, timeSaved: timeSavedStr });
     setShowExportModal(true);
   };
 
@@ -1026,6 +1058,7 @@ export default function App() {
     if (items.length === 0) return;
     try {
         await saveProject(items);
+        setLastAutoSave(new Date());
         setStatusMsg("Project saved successfully.");
         const btn = document.getElementById('save-btn');
         if (btn) {
@@ -1047,6 +1080,7 @@ export default function App() {
   const handleClear = async () => {
       if (window.confirm('Are you sure you want to clear all items and delete the saved project?')) {
           setIsProcessing(false);
+          setStartTimeMs(null);
           setItems([]);
           localStorage.removeItem(STORAGE_ITEMS);
           setStatusMsg("Clearing project...");
@@ -1301,19 +1335,26 @@ export default function App() {
                 Stats
               </button>
 
-              <button 
-                id="save-btn"
-                type="button"
-                onClick={handleSaveProject}
-                disabled={items.length === 0}
-                title="Save Project (Ctrl+S / Cmd+S)"
-                className="px-4 py-2 bg-slate-800 hover:bg-purple-900/40 text-slate-300 hover:text-purple-400 rounded-lg transition-all font-semibold border border-white/5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Save Project
-              </button>
+              <div className="relative flex flex-col justify-center items-center group">
+                <button 
+                  id="save-btn"
+                  type="button"
+                  onClick={handleSaveProject}
+                  disabled={items.length === 0}
+                  title="Save Project (Ctrl+S / Cmd+S)"
+                  className="px-4 py-2 bg-slate-800 hover:bg-purple-900/40 text-slate-300 hover:text-purple-400 rounded-lg transition-all font-semibold border border-white/5 text-sm disabled:opacity-50 disabled:cursor-not-allowed relative"
+                >
+                  Save Project
+                </button>
+                {lastAutoSave && (
+                  <span className="text-[10px] text-slate-500 absolute -bottom-5 whitespace-nowrap pointer-events-none opacity-80 group-hover:opacity-100 transition-opacity">
+                    Last saved: {lastAutoSave.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+              </div>
               
               <button
-                onClick={() => setIsProcessing(!isProcessing)}
+                onClick={handleStartStop}
                 disabled={items.length === 0}
                 title={isProcessing ? 'Stop Processing (Ctrl+Enter / Cmd+Enter)' : 'Start Processing (Ctrl+Enter / Cmd+Enter)'}
                 className={`px-6 py-2 rounded-lg font-bold text-sm shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0 ${
@@ -1366,21 +1407,36 @@ export default function App() {
           }}
         >
              <div 
-                  className="group relative border-2 border-dashed border-slate-800 bg-slate-900/20 hover:bg-slate-900/40 hover:border-purple-500/30 transition-all duration-300 rounded-3xl p-8 text-center cursor-pointer overflow-hidden min-h-[200px] flex flex-col items-center justify-center"
+                  className="group relative border-2 border-dashed border-slate-700/50 hover:border-purple-500/50 bg-slate-900/20 hover:bg-slate-900/50 transition-all duration-500 rounded-[2rem] p-12 text-center cursor-pointer overflow-hidden min-h-[300px] flex flex-col items-center justify-center"
                   onClick={(e) => {
                     e.stopPropagation();
                     document.getElementById('fileInput')?.click();
                   }}
                 >
-                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 to-fuchsia-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-fuchsia-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                   <input id="fileInput" type="file" multiple accept="image/*,.eps,.svg" className="hidden" onChange={(e) => handleAddFiles(e.target.files)} />
-                  <div className="relative z-10 flex flex-col items-center gap-3">
-                    <div className="p-4 bg-slate-800 rounded-full text-purple-400 shadow-xl group-hover:scale-110 transition-transform duration-300 ring-1 ring-white/10">
-                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  
+                  <div className="relative z-10 flex flex-col items-center gap-6">
+                    <div className="relative mt-4">
+                      <div className="absolute inset-0 bg-blue-500/20 blur-3xl rounded-full scale-150 animate-pulse delay-75"></div>
+                      <div className="relative p-6 bg-slate-800/80 backdrop-blur-sm rounded-3xl text-blue-400 shadow-2xl shadow-blue-900/20 group-hover:-translate-y-2 transition-all duration-500 border border-white/5 flex items-center justify-center">
+                        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="drop-shadow-[0_0_15px_rgba(59,130,246,0.5)]">
+                           <path d="M12 13v8"/>
+                           <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
+                           <path d="m8 17 4-4 4 4"/>
+                        </svg>
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[20%] flex gap-3 pointer-events-none group-hover:animate-bounce">
+                           <div className="w-1.5 h-1.5 bg-white rounded-full shadow-[0_0_5px_white]"></div>
+                           <div className="w-1.5 h-1.5 bg-white rounded-full shadow-[0_0_5px_white]"></div>
+                        </div>
+                      </div>
                     </div>
                     <div>
-                      <p className="text-xl font-bold text-slate-200">Upload Images</p>
-                      <p className="text-sm text-slate-500">JPG, PNG, WEBP, SVG, EPS</p>
+                      <h3 className="text-2xl font-bold text-slate-100 mb-2">Drop your creativity here</h3>
+                      <p className="text-slate-400 max-w-md mx-auto leading-relaxed">
+                        Drag and drop your images to automatically generate Adobe Stock-ready titles, keywords, and categories. 
+                        <br/><span className="text-xs text-slate-500 mt-2 block font-medium">Supports JPG, PNG, WEBP, SVG, EPS</span>
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -1389,6 +1445,7 @@ export default function App() {
                   <div className="flex justify-between items-center bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
                       <div className="flex gap-2">
                           <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All ({items.length})</button>
+                          <button onClick={() => setFilter('ongoing')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'ongoing' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>On going ({items.filter(i => i.status === 'processing' || i.status === 'compressing').length})</button>
                           <button onClick={() => setFilter('uncompleted')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'uncompleted' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Uncompleted ({items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()).length})</button>
                           <button onClick={() => setFilter('failed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'failed' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Failed ({items.filter(i => i.status === 'error').length})</button>
                       </div>
@@ -1396,7 +1453,7 @@ export default function App() {
                 )}
 
                 <ProcessingQueue 
-                  items={filter === 'failed' ? items.filter(i => i.status === 'error') : filter === 'uncompleted' ? items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()) : items} 
+                  items={filter === 'failed' ? items.filter(i => i.status === 'error') : filter === 'uncompleted' ? items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()) : filter === 'ongoing' ? items.filter(i => i.status === 'processing' || i.status === 'compressing') : items} 
                   itemRefs={itemRefs}
                   onRemove={removeItem}
                   onUpdate={updateItem}
@@ -1430,6 +1487,10 @@ export default function App() {
                 <span className="text-purple-400 font-bold">{exportStats.elapsedTime || 'N/A'}</span>
               </div>
               <div className="flex justify-between items-center text-sm">
+                <span className="text-slate-400">Est. Time Saved:</span>
+                <span className="text-amber-400 font-bold">{exportStats.timeSaved}</span>
+              </div>
+              <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400">File Downloaded:</span>
                 <span className="text-slate-200">{exportStats.path}</span>
               </div>
@@ -1454,7 +1515,15 @@ export default function App() {
 
         <div className="absolute bottom-12 right-8 z-50 animate-in slide-in-from-bottom-5 fade-in pointer-events-none">
             <div className="glass-panel px-6 py-4 rounded-2xl flex items-center gap-4 shadow-[0_0_40px_rgba(0,0,0,0.5)] border border-white/10 bg-slate-900/90 backdrop-blur-xl">
-                <div className={`w-3 h-3 rounded-full ${isProcessing ? 'bg-emerald-400 animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.5)]' : 'bg-slate-500'}`}></div>
+                {isProcessing ? (
+                   <div className="relative w-6 h-6 flex items-center justify-center">
+                     <svg className="w-5 h-5 text-emerald-400 animate-bounce drop-shadow-[0_0_8px_rgba(52,211,153,0.8)]" viewBox="0 0 24 24" fill="currentColor">
+                       <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                     </svg>
+                   </div>
+                ) : (
+                   <div className="w-3 h-3 rounded-full bg-slate-500"></div>
+                )}
                 <span className="text-base font-medium text-slate-100 font-mono tracking-tight shadow-black drop-shadow-sm">{statusMsg}</span>
             </div>
         </div>
