@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { X, Calendar } from 'lucide-react';
 import { ProcessingLog } from '../types';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LineChart, Line, Cell } from 'recharts';
@@ -11,10 +11,18 @@ interface Props {
 }
 
 export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onClose }) => {
+    const [isListExpanded, setIsListExpanded] = useState(false);
     const [dateRange, setDateRange] = useState({ start: '', end: '' });
+    const [tick, setTick] = useState(0);
+
+    // Auto-refresh data while modal is open
+    useEffect(() => {
+        const interval = setInterval(() => setTick(t => t + 1), 1000);
+        return () => clearInterval(interval);
+    }, []);
 
     // Ensure logs are sorted
-    const sortedLogs = [...logs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const sortedLogs = useMemo(() => [...logs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()), [logs]);
 
     // 1. Daily, Weekly, Monthly total counts
     const stats = useMemo(() => {
@@ -31,7 +39,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
             if (time >= startOfMonth) monthly += log.itemCount;
         });
         return { daily, weekly, monthly };
-    }, [sortedLogs]);
+    }, [sortedLogs, tick]);
 
     // 2. Custom Range Total
     const customRangeTotal = useMemo(() => {
@@ -44,7 +52,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
             if (time >= start && time <= end) total += log.itemCount;
         });
         return total;
-    }, [sortedLogs, dateRange]);
+    }, [sortedLogs, dateRange, tick]);
 
     // 3. Daily Activity Graph (last 14 days)
     const dailyData = useMemo(() => {
@@ -101,7 +109,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
             best: sortedByScore[0],
             worst: sortedByScore[sortedByScore.length - 1]
         };
-    }, [modelStats, models]);
+    }, [modelStats, models, tick]);
 
     // 7. Hourly Performance Heatmap
     const heatmapData = useMemo(() => {
@@ -325,6 +333,38 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
+                    </div>
+
+                    {/* Individual Logs Expandable List */}
+                    <div className="bg-slate-800/30 rounded-xl border border-white/5 overflow-hidden">
+                        <button 
+                            onClick={() => setIsListExpanded(!isListExpanded)}
+                            className="w-full p-4 flex items-center justify-between hover:bg-slate-800/50 transition-colors text-left"
+                        >
+                            <h3 className="font-semibold text-slate-200">Individual Processing Times</h3>
+                            <svg className={`w-5 h-5 text-slate-400 transition-transform ${isListExpanded ? 'rotate-180' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                        </button>
+                        {isListExpanded && (
+                            <div className="p-4 pt-0 border-t border-white/5 max-h-64 overflow-y-auto">
+                                {logs.length === 0 ? (
+                                    <p className="text-sm text-slate-500 italic text-center py-4">No processing logs available.</p>
+                                ) : (
+                                    <div className="space-y-2 mt-2">
+                                        {[...logs].reverse().map((log) => (
+                                            <div key={log.id} className="flex items-center justify-between p-2 rounded-lg bg-slate-900/50 border border-slate-700/50 text-sm">
+                                                <div className="text-slate-400">
+                                                    <span className="text-slate-300">{new Date(log.timestamp).toLocaleString()}</span>
+                                                </div>
+                                                <div className="flex items-center gap-4">
+                                                    <span className="text-slate-400"><span className="text-slate-200">{log.itemCount}</span> items</span>
+                                                    <span className="font-mono text-emerald-400">{(log.durationMs / 1000).toFixed(1)}s</span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     {/* Model Performance Summary */}

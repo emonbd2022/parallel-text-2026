@@ -66,6 +66,7 @@ export interface ProcessingConfig {
   negativeTitleWords?: string;
   negativeKeywords?: string;
   targetExtension?: string; // .jpg, .png, etc.
+  exportFilenameTemplate?: string;
   forceTransparency?: boolean; // Forces "isolated on transparent background" tag
   autoExport?: boolean;
   autoScroll?: boolean;

@@ -1,10 +1,10 @@
 const fs = require('fs');
 let content = fs.readFileSync('src/types.ts', 'utf8');
 
-if (!content.includes('autoScroll?: boolean;')) {
+if (!content.includes('exportFilenameTemplate')) {
     content = content.replace(
-        'autoExport?: boolean;',
-        'autoExport?: boolean;\n  autoScroll?: boolean;'
+        "targetExtension?: string; // .jpg, .png, etc.",
+        "targetExtension?: string; // .jpg, .png, etc.\n  exportFilenameTemplate?: string;"
     );
     fs.writeFileSync('src/types.ts', content);
 }

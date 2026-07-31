@@ -6,7 +6,8 @@ import { StatisticsModal } from './components/StatisticsModal';
 import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
-import { Clock, Key, Hourglass } from 'lucide-react';
+import { Clock, Key, Hourglass, Cat } from 'lucide-react';
+import confetti from 'canvas-confetti';
 
 // Persistence Keys
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
@@ -160,6 +161,7 @@ export default function App() {
   const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
   const [startTimeMs, setStartTimeMs] = useState<number | null>(null);
   const [showStats, setShowStats] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   
   const [config, setConfig] = useState<ProcessingConfig>(() => {
     try {
@@ -363,9 +365,11 @@ export default function App() {
     
     const existingNames = new Set(items.map(p => p.name));
     
-    const newItems: ProcessingItem[] = Array.from(files)
-      .filter(f => (f.type.startsWith('image/') || f.name.toLowerCase().endsWith('.eps') || f.name.toLowerCase().endsWith('.svg')) && !existingNames.has(f.name))
-      .map(f => ({
+    const newItems: ProcessingItem[] = [];
+    for (const f of Array.from(files)) {
+      if ((f.type.startsWith('image/') || f.name.toLowerCase().endsWith('.eps') || f.name.toLowerCase().endsWith('.svg')) && !existingNames.has(f.name)) {
+        existingNames.add(f.name);
+        newItems.push({
         id: Math.random().toString(36).slice(2, 11),
         file: f,
         name: f.name,
@@ -377,7 +381,9 @@ export default function App() {
         title: '',
         keywords: '',
         failedKeyIds: []
-      }));
+      });
+      }
+    }
 
     if (newItems.length > 0) {
       setItems(prev => [...prev, ...newItems]);
@@ -755,7 +761,20 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `${items.length}.csv`);
+    
+    const dateObj = new Date();
+    const dateStr = dateObj.toISOString().split('T')[0];
+    const timeStrFormat = dateObj.toTimeString().split(' ')[0].replace(/:/g, '-');
+    let exportFileName = `${items.length}.csv`;
+    if (config.exportFilenameTemplate) {
+        exportFileName = config.exportFilenameTemplate
+            .replace('{count}', items.length.toString())
+            .replace('{date}', dateStr)
+            .replace('{time}', timeStrFormat);
+        if (!exportFileName.toLowerCase().endsWith('.csv')) exportFileName += '.csv';
+    }
+    
+    link.setAttribute('download', exportFileName);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -820,7 +839,7 @@ export default function App() {
       }
     }
     
-    setExportStats({ count: completedItems.length, path: `${items.length}.csv`, elapsedTime: timeStr, requestCount: totalRequests, timeSaved: timeSavedStr });
+    setExportStats({ count: completedItems.length, path: exportFileName, elapsedTime: timeStr, requestCount: totalRequests, timeSaved: timeSavedStr });
     setShowExportModal(true);
   };
 
@@ -885,6 +904,12 @@ export default function App() {
             if (allDone) {
                 setStatusMsg('Processing complete.');
                 playSuccessSound();
+                confetti({
+                    particleCount: 150,
+                    spread: 80,
+                    origin: { y: 0.6 },
+                    colors: ['#a855f7', '#d946ef', '#10b981', '#3b82f6', '#f59e0b']
+                });
                 if (config.autoExport) {
                     handleExport();
                 } else {
@@ -1270,13 +1295,30 @@ export default function App() {
       />
 
       <main 
-        className="flex-1 flex flex-col h-full overflow-hidden relative"
+        className="flex-1 flex flex-col h-full overflow-hidden relative pt-4"
       >
-        <div className="h-1 bg-slate-900 w-full shrink-0 z-50">
+        <div className="h-1.5 bg-slate-900 w-full shrink-0 z-50 relative flex items-center">
            <div 
                style={{ width: `${items.length ? (items.filter(i => i.status === 'done').length / items.length) * 100 : 0}%` }}
-               className="h-full bg-gradient-to-r from-purple-500 via-fuchsia-500 to-purple-600 transition-all duration-300 ease-out shadow-[0_0_15px_rgba(168,85,247,0.5)]"
+               className="h-full bg-gradient-to-r from-purple-500 via-fuchsia-500 to-emerald-500 transition-all duration-300 ease-out shadow-[0_0_15px_rgba(168,85,247,0.5)]"
            />
+           {items.length > 0 && (
+             <div 
+               className="absolute transition-all duration-300 ease-out flex flex-col items-center justify-center -translate-x-1/2"
+               style={{ left: `${Math.round((items.filter(i => i.status === 'done').length / items.length) * 100)}%` }}
+             >
+               <div className="bg-slate-950 rounded-full p-0.5">
+                 <Cat 
+                   className={`w-6 h-6 ${isProcessing ? 'animate-bounce' : ''}`} 
+                   style={{ 
+                     color: `hsl(${Math.round((items.filter(i => i.status === 'done').length / items.length) * 120)}, 80%, 60%)`,
+                     filter: `drop-shadow(0 0 8px hsl(${Math.round((items.filter(i => i.status === 'done').length / items.length) * 120)}, 80%, 60%))`,
+                     fill: '#020617' // Extra mask for internal transparency
+                   }}
+                 />
+               </div>
+             </div>
+           )}
         </div>
 
         <div className="p-8 border-b border-white/5 flex items-center justify-between bg-slate-950/50 backdrop-blur-md z-30">
@@ -1307,6 +1349,8 @@ export default function App() {
                  
 
                </div>
+               
+               
                
                <div className="flex flex-col text-[11px] font-mono mt-1 w-fit bg-slate-900/50 p-2 rounded border border-white/5 gap-1.5 min-h-[30px] justify-center">
                    {estimatedTimeNode && <div className="flex items-center gap-2">{estimatedTimeNode}</div>}
@@ -1392,22 +1436,40 @@ export default function App() {
 
         <div 
           ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto p-8 custom-scrollbar scroll-smooth space-y-8"
+          className="flex-1 overflow-y-auto p-8 custom-scrollbar scroll-smooth space-y-8 relative"
           id="main-scroll-area"
           onWheel={() => lastUserScrollRef.current = Date.now()}
           onTouchMove={() => lastUserScrollRef.current = Date.now()}
           onMouseDown={handleMouseDown}
-          onMouseLeave={handleMouseUp}
+          onMouseLeave={(e) => {
+             handleMouseUp(e);
+             setIsDragging(false);
+          }}
           onMouseUp={handleMouseUp}
           onMouseMove={handleMouseMove}
-          onDragOver={(e) => e.preventDefault()}
+          onDragEnter={(e) => {
+             e.preventDefault();
+             setIsDragging(true);
+          }}
+          onDragOver={(e) => {
+             e.preventDefault();
+             setIsDragging(true);
+          }}
+          onDragLeave={(e) => {
+             e.preventDefault();
+             setIsDragging(false);
+          }}
           onDrop={(e) => {
             e.preventDefault();
+            setIsDragging(false);
             handleAddFiles(e.dataTransfer.files);
           }}
         >
              <div 
-                  className="group relative border-2 border-dashed border-slate-700/50 hover:border-purple-500/50 bg-slate-900/20 hover:bg-slate-900/50 transition-all duration-500 rounded-[2rem] p-12 text-center cursor-pointer overflow-hidden min-h-[300px] flex flex-col items-center justify-center"
+                  className={`group relative border-2 border-dashed transition-all duration-500 rounded-[2rem] p-12 text-center cursor-pointer overflow-hidden min-h-[300px] flex flex-col items-center justify-center ${isDragging ? 'border-purple-500 bg-purple-500/10 shadow-[0_0_50px_rgba(168,85,247,0.3)] scale-[1.02] z-10' : 'border-slate-700/50 hover:border-purple-500/50 bg-slate-900/20 hover:bg-slate-900/50 scale-100'}`}
+                  style={{
+                      boxShadow: isDragging ? '0 0 40px -10px rgba(168, 85, 247, 0.4), inset 0 0 20px -5px rgba(168, 85, 247, 0.2)' : 'none'
+                  }}
                   onClick={(e) => {
                     e.stopPropagation();
                     document.getElementById('fileInput')?.click();
