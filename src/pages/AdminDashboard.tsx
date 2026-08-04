@@ -113,7 +113,7 @@ export const AdminDashboard: React.FC = () => {
                   <th className="pb-3 font-semibold w-1/4">User</th>
                   <th className="pb-3 font-semibold">Nickname</th>
                   <th className="pb-3 font-semibold">Credits</th>
-                  <th className="pb-3 font-semibold">Unlimited</th>
+                  <th className="pb-3 font-semibold">Plan</th>
                   <th className="pb-3 font-semibold">Processed</th>
                   <th className="pb-3 font-semibold">Status</th>
                   <th className="pb-3 font-semibold text-right">Actions</th>
@@ -164,15 +164,33 @@ export const AdminDashboard: React.FC = () => {
                         </td>
                         <td className="py-4">
                           {isEditing ? (
-                            <input 
-                              type="checkbox" 
-                              checked={editForm.unlimited}
-                              onChange={(e) => setEditForm({...editForm, unlimited: e.target.checked})}
-                              className="w-4 h-4 accent-purple-500"
-                            />
+                            <select
+                              value={editForm.unlimited ? 'pro' : (editForm.credits >= 500 ? 'basic' : 'free')}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                if (val === 'pro') {
+                                  setEditForm(prev => ({ ...prev, unlimited: true }));
+                                } else if (val === 'basic') {
+                                  setEditForm(prev => ({ ...prev, unlimited: false, credits: Math.max(prev.credits, 500) }));
+                                } else {
+                                  setEditForm(prev => ({ ...prev, unlimited: false }));
+                                }
+                              }}
+                              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none text-slate-200"
+                            >
+                              <option value="free">Free</option>
+                              <option value="basic">Basic</option>
+                              <option value="pro">Pro (Unlimited)</option>
+                            </select>
                           ) : (
                             <div className="flex items-center">
-                              {user.unlimited ? <CheckCircle className="w-5 h-5 text-emerald-400" /> : <span className="text-slate-600">-</span>}
+                              {user.unlimited ? (
+                                <span className="px-2 py-1 bg-purple-500/20 text-purple-400 rounded text-xs font-semibold">Pro</span>
+                              ) : user.credits >= 500 ? (
+                                <span className="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs font-semibold">Basic</span>
+                              ) : (
+                                <span className="px-2 py-1 bg-slate-700/50 text-slate-400 rounded text-xs font-semibold">Free</span>
+                              )}
                             </div>
                           )}
                         </td>

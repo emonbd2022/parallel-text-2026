@@ -175,7 +175,7 @@ export default function App() {
       const saved = localStorage.getItem(STORAGE_CONFIG);
       if (saved) {
           const parsed = JSON.parse(saved);
-          return { ...parsed, batchSize: parsed.batchSize || 5, model: parsed.model || 'auto' };
+          return { ...parsed, batchSize: parsed.batchSize || 5, model: parsed.model || 'gemini-3.5-flash-lite' };
       }
     } catch (e) { /* ignore */ }
     
@@ -185,7 +185,7 @@ export default function App() {
       maxRetries: 3,
       titleMaxLen: 120,
       keywordsCount: 40,
-      model: 'auto', 
+      model: 'gemini-3.5-flash-lite', 
       titlePrefix: '',
       titleSuffix: '',
       negativeTitleWords: '',

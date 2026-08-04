@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { logout } from '../lib/firebase';
-import { Menu, LogOut, Home, User, CreditCard, Shield, X } from 'lucide-react';
+import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers } from 'lucide-react';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { userData } = useAuth();
@@ -16,7 +16,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   };
 
   const navItems = [
-    { name: 'App', path: '/', icon: Home },
     { name: 'Pricing', path: '/pricing', icon: CreditCard },
   ];
 
@@ -32,8 +31,18 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     <div className="h-screen w-screen bg-slate-950 flex flex-col overflow-hidden text-slate-200 selection:bg-purple-500/30 font-sans">
       <header className="h-16 shrink-0 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6 z-50">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-emerald-500 flex items-center justify-center font-bold text-white shadow-lg">PT</div>
-          <span className="font-bold text-lg hidden sm:block">Parallel Text</span>
+          {location.pathname !== '/' ? (
+            <button onClick={() => navigate(-1)} className="p-2 -ml-2 text-slate-400 hover:text-white transition-colors flex items-center gap-1 font-semibold rounded-lg hover:bg-slate-800">
+              <ChevronLeft className="w-5 h-5" />
+              <span className="hidden sm:inline">Back</span>
+            </button>
+          ) : null}
+          <button onClick={() => navigate('/')} className="flex items-center gap-3 hover:opacity-80 transition-opacity outline-none animate-float group">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-emerald-500 flex items-center justify-center text-white shadow-lg group-hover:animate-pulse-glow">
+              <Layers className="w-5 h-5 group-hover:animate-spin-slow" />
+            </div>
+            <span className="font-bold text-lg hidden sm:block bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-emerald-400">Parallel Text</span>
+          </button>
         </div>
         
         {/* Desktop Nav */}
