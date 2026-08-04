@@ -11,7 +11,7 @@ export const Pricing: React.FC = () => {
 
   const handleBuy = (planName: string) => {
     const text = encodeURIComponent(`Hi, I would like to buy the ${planName} plan for Parallel Text.`);
-    window.open(`https://wa.me/8801629781937?text=${text}`, '_blank');
+    window.open(`https://wa.me/8801601934495?text=${text}`, '_blank');
   };
 
   return (
