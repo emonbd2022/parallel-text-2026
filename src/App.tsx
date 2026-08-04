@@ -11,6 +11,7 @@ import confetti from 'canvas-confetti';
 import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
 import { doc, updateDoc, increment, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { syncUserDataToCloud } from './lib/sync';
 
 // Persistence Keys
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
@@ -134,6 +135,7 @@ export default function App() {
   });
 
   // Items are loaded from localStorage if available
+  const [cloudLoaded, setCloudLoaded] = useState(false);
   const [lastAutoSave, setLastAutoSave] = useState<Date | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportStats, setExportStats] = useState({ count: 0, path: '', elapsedTime: '0s', requestCount: 0, timeSaved: '0s' });
@@ -235,13 +237,32 @@ export default function App() {
   const startYRef = useRef(0);
   const startScrollTopRef = useRef(0);
 
+  // Load from cloud
+  useEffect(() => {
+    if (userData && !cloudLoaded) {
+      if (userData.appData) {
+        if (userData.appData.keys) setKeys(userData.appData.keys);
+        if (userData.appData.config) setConfig(userData.appData.config);
+        if (userData.appData.modelStats) setModelStats(userData.appData.modelStats);
+        if (userData.appData.logs) setLogs(userData.appData.logs);
+      }
+      setCloudLoaded(true);
+    }
+  }, [userData, cloudLoaded]);
+
   // Persist State
-  useEffect(() => localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys)), [keys]);
-  useEffect(() => localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history)), [history]);
-  useEffect(() => localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs)), [logs]);
-  useEffect(() => localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config)), [config]);
-  useEffect(() => localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats)), [modelStats]);
-  
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys));
+    localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
+    localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs));
+    localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
+    localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats));
+    if (cloudLoaded && userData) {
+      syncUserDataToCloud(userData.uid, { keys, config, modelStats, logs });
+    }
+  }, [keys, history, logs, config, modelStats, cloudLoaded, userData?.uid]);
+
+            
   // Auto-save items every 30 seconds
   const itemsRef = useRef(items);
   useEffect(() => {

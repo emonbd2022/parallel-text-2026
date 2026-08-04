@@ -26,10 +26,10 @@ export const Dashboard: React.FC = () => {
 
   useEffect(() => {
     try {
-      setLogs(JSON.parse(localStorage.getItem('parrarel_logs_v1') || '[]'));
-      setModelStats(JSON.parse(localStorage.getItem('parrarel_stats_v1') || '{}'));
+      setLogs(userData?.appData?.logs || JSON.parse(localStorage.getItem('parrarel_logs_v1') || '[]'));
+      setModelStats(userData?.appData?.modelStats || JSON.parse(localStorage.getItem('parrarel_stats_v1') || '{}'));
     } catch {}
-  }, []);
+  }, [userData]);
 
   useEffect(() => {
     if (!userData) return;

@@ -15,6 +15,7 @@ export interface UserData {
   joinDate: string;
   blocked: boolean;
   role: 'admin' | 'user';
+  appData?: any;
 }
 
 interface AuthContextType {

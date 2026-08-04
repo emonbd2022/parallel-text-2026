@@ -1,47 +1,61 @@
 const fs = require('fs');
-let content = fs.readFileSync('src/App.tsx', 'utf8');
 
-const mappingCode = `
-const getCategoryId = (categoryName?: string) => {
-    if (!categoryName) return '';
-    const map: Record<string, string> = {
-        "animals": "1",
-        "buildings and architecture": "2",
-        "business": "3",
-        "drinks": "4",
-        "the environment": "5",
-        "states of mind": "6",
-        "food": "7",
-        "graphic resources": "8",
-        "hobbies and leisure": "9",
-        "industry": "10",
-        "landscapes": "11",
-        "lifestyle": "12",
-        "people": "13",
-        "plants and flowers": "14",
-        "culture and religion": "15",
-        "science": "16",
-        "social issues": "17",
-        "sports": "18",
-        "technology": "19",
-        "transport": "20",
-        "travel": "21"
-    };
-    return map[categoryName.trim().toLowerCase()] || categoryName;
-};
-`;
+let content = fs.readFileSync('src/App.tsx', 'utf-8');
 
-content = content.replace(/export default function App\(\) \{/, mappingCode + '\\nexport default function App() {');
+// Add import
+if (!content.includes('syncUserDataToCloud')) {
+    content = content.replace(
+        "import { doc, updateDoc, increment, collection, addDoc, serverTimestamp } from 'firebase/firestore';",
+        "import { doc, updateDoc, increment, collection, addDoc, serverTimestamp } from 'firebase/firestore';\nimport { syncUserDataToCloud } from './lib/sync';"
+    );
+}
 
+// Add state
+if (!content.includes('const [cloudLoaded, setCloudLoaded]')) {
+    content = content.replace(
+        "const [lastAutoSave, setLastAutoSave] = useState<Date | null>(null);",
+        "const [cloudLoaded, setCloudLoaded] = useState(false);\n  const [lastAutoSave, setLastAutoSave] = useState<Date | null>(null);"
+    );
+}
+
+// Add load effect
+if (!content.includes('// Load from cloud')) {
+    content = content.replace(
+        "// Persist State",
+        `// Load from cloud
+  useEffect(() => {
+    if (userData && !cloudLoaded) {
+      if (userData.appData) {
+        if (userData.appData.keys) setKeys(userData.appData.keys);
+        if (userData.appData.config) setConfig(userData.appData.config);
+        if (userData.appData.modelStats) setModelStats(userData.appData.modelStats);
+        if (userData.appData.logs) setLogs(userData.appData.logs);
+      }
+      setCloudLoaded(true);
+    }
+  }, [userData, cloudLoaded]);
+
+  // Persist State`
+    );
+}
+
+// Update effects
 content = content.replace(
-    /const safeCategory = \`"\$\{\(item\.category \|\| 'Technology'\)\.replace\(\/"\/g, '""'\)\}"\`;/,
-    `const safeCategory = \`"\${getCategoryId(item.category).replace(/"/g, '""')}"\`;`
+    "useEffect(() => localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys)), [keys]);",
+    "useEffect(() => { localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys)); if (cloudLoaded && userData) syncUserDataToCloud(userData.uid, { keys, config, modelStats, logs }); }, [keys, cloudLoaded, userData]);"
 );
-
 content = content.replace(
-    /const safeCategory = \`"\$\{\(i\.category \|\| 'Technology'\)\.replace\(\/"\/g, '""'\)\}"\`;/,
-    `const safeCategory = \`"\${getCategoryId(i.category).replace(/"/g, '""')}"\`;`
+    "useEffect(() => localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs)), [logs]);",
+    "useEffect(() => { localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs)); if (cloudLoaded && userData) syncUserDataToCloud(userData.uid, { keys, config, modelStats, logs }); }, [logs, cloudLoaded, userData]);"
+);
+content = content.replace(
+    "useEffect(() => localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config)), [config]);",
+    "useEffect(() => { localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config)); if (cloudLoaded && userData) syncUserDataToCloud(userData.uid, { keys, config, modelStats, logs }); }, [config, cloudLoaded, userData]);"
+);
+content = content.replace(
+    "useEffect(() => localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats)), [modelStats]);",
+    "useEffect(() => { localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats)); if (cloudLoaded && userData) syncUserDataToCloud(userData.uid, { keys, config, modelStats, logs }); }, [modelStats, cloudLoaded, userData]);"
 );
 
 fs.writeFileSync('src/App.tsx', content);
-console.log("Success");
+console.log('App patched.');
