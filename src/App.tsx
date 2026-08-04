@@ -8,6 +8,9 @@ import { generateMetadataBatch } from './services/geminiService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
 import { Clock, Key, Hourglass, Cat } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { useAuth } from './contexts/AuthContext';
+import { db } from './lib/firebase';
+import { doc, updateDoc, increment, collection, addDoc, serverTimestamp } from 'firebase/firestore';
 
 // Persistence Keys
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
@@ -89,7 +92,11 @@ const getCategoryId = (categoryName?: string) => {
     return map[categoryName.trim().toLowerCase()] || categoryName;
 };
 
+import { useNavigate } from 'react-router-dom';
+
 export default function App() {
+  const { userData } = useAuth();
+  const navigate = useNavigate();
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
     const [filter, setFilter] = useState<'all' | 'ongoing' | 'uncompleted' | 'failed'>('all');
@@ -594,6 +601,24 @@ export default function App() {
         });
       }
 
+      if (results && Object.keys(results).length > 0 && userData) {
+        const numSuccess = Object.keys(results).length;
+        try {
+          if (!userData.unlimited) {
+            await updateDoc(doc(db, 'users', userData.uid), {
+              credits: increment(-numSuccess),
+              totalProcessedImages: increment(numSuccess)
+            });
+          } else {
+            await updateDoc(doc(db, 'users', userData.uid), {
+              totalProcessedImages: increment(numSuccess)
+            });
+          }
+        } catch (e) {
+          console.error('Failed to update credits', e);
+        }
+      }
+
       setItems(prev => prev.map(p => {
           if (results[p.id]) {
               return { 
@@ -781,6 +806,16 @@ export default function App() {
     
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
+    // Save to Firestore for 7-day retention in dashboard
+    if (userData) {
+      addDoc(collection(db, 'csv_exports'), {
+        uid: userData.uid,
+        filename: exportFileName,
+        csvData: csvContent,
+        createdAt: serverTimestamp()
+      }).catch(err => console.error("Failed to save CSV to Firestore:", err));
+    }
+
     const newRecord: HistoryRecord = {
       id: Math.random().toString(36).slice(2),
       timestamp: new Date().toISOString(),
@@ -868,6 +903,13 @@ export default function App() {
 
   useEffect(() => {
     if (!isProcessing) return;
+
+    if (userData && !userData.unlimited && userData.credits <= 0) {
+        setIsProcessing(false);
+        setStatusMsg('Processing stopped. Insufficient credits.');
+        showNotification('Insufficient Credits', 'Please purchase more credits to continue processing.');
+        return;
+    }
 
     // 1. Calculate slots (Unlimited concurrency - limited only by available keys)
     const activeKeyIds = new Set(items.filter(i => i.status === 'processing' && i.assignedKeyId).map(i => i.assignedKeyId));
@@ -1141,6 +1183,11 @@ export default function App() {
   };
 
   const handleStartStop = async () => {
+      if (!userData) {
+          navigate('/login');
+          return;
+      }
+
       if (isProcessing) {
           setIsProcessing(false);
           setStatusMsg("Processing paused.");
@@ -1274,10 +1321,8 @@ export default function App() {
           animation: hourglass-flip 2s ease-in-out infinite;
         }
       `}</style>
-    <div className="h-screen w-screen bg-slate-950 text-slate-200 flex overflow-hidden selection:bg-purple-500/30 font-sans">
+    <div className="h-full w-full flex overflow-hidden">
       
-      {showStats && <StatisticsModal logs={logs} modelStats={modelStats} models={MODELS} onClose={() => setShowStats(false)} />}
-
       <Sidebar 
          keys={keys}
          setKeys={setKeys}
@@ -1370,15 +1415,6 @@ export default function App() {
                   </button>
               )}
 
-              <button
-                onClick={() => setShowStats(true)}
-                title="View Processing Statistics"
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg transition-all font-semibold border border-white/5 text-sm flex items-center gap-2"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 20V10M12 20V4M6 20v-4"/></svg>
-                Stats
-              </button>
-
               <div className="relative flex flex-col justify-center items-center group">
                 <button 
                   id="save-btn"
@@ -1442,7 +1478,7 @@ export default function App() {
           onTouchMove={() => lastUserScrollRef.current = Date.now()}
           onMouseDown={handleMouseDown}
           onMouseLeave={(e) => {
-             handleMouseUp(e);
+             handleMouseUp();
              setIsDragging(false);
           }}
           onMouseUp={handleMouseUp}
