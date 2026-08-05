@@ -165,7 +165,7 @@ const transparencyDirective = config.forceTransparency
     
     // Step 2: Request Categories
     const categoryPromptText = `
-      I will provide ${items.length} titles. Please categorize each into exactly one of these 21 options:
+      I will provide ${items.length} titles. Please categorize each into the ONE best Adobe Stock category by its primary subject and commercial meaning, not keywords. exactly one of these 21 options:
       "Animals", "Buildings and Architecture", "Business", "Drinks", "The Environment", "States of Mind", "Food", "Graphic Resources", "Hobbies and Leisure", "Industry", "Landscapes", "Lifestyle", "People", "Plants and Flowers", "Culture and Religion", "Science", "Social Issues", "Sports", "Technology", "Transport", "Travel"
       
       Titles:
