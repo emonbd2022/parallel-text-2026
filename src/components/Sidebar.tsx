@@ -68,19 +68,7 @@ export const Sidebar: React.FC<Props> = ({
 
   return (
     <aside className="w-1/3 min-w-[360px] max-w-[600px] border-r border-white/5 bg-slate-900/20 flex flex-col h-full z-20">
-         <div className="p-8 pb-4 shrink-0 flex items-center gap-4">
-            <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-fuchsia-600 rounded-xl flex items-center justify-center shadow-lg shadow-purple-500/20 ring-1 ring-white/10">
-                <Layers className="text-white w-7 h-7" />
-            </div>
-            <div>
-                <h1 className="text-2xl font-extrabold tracking-tight leading-none">
-                  <span className="bg-clip-text text-transparent bg-gradient-to-r from-fuchsia-400 via-purple-400 to-purple-400">
-                    Parallel Text
-                  </span>
-                </h1>
-                <p className="text-xs text-slate-400 font-medium mt-1">Bulk AI Metadata Generator</p>
-            </div>
-         </div>
+         
          
          <div className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar space-y-6">
             <ApiKeyManager 
