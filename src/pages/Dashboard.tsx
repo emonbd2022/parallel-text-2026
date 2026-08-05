@@ -1,3 +1,4 @@
+import { motion } from 'motion/react';
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { User, Calendar, Image as ImageIcon, Zap, Crown, BarChart2, Download, FileText } from 'lucide-react';
@@ -90,7 +91,12 @@ export const Dashboard: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+    <motion.div 
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      className="flex-1 overflow-y-auto p-8 custom-scrollbar"
+    >
       <div className="max-w-4xl mx-auto space-y-8">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <h1 className="text-3xl font-bold text-white flex items-center gap-3">
@@ -132,7 +138,7 @@ export const Dashboard: React.FC = () => {
             {userData.plan && userData.plan !== 'free' ? (
               <p className="text-slate-400">
                 {userData.planEndDate ? (
-                   <>Valid until <strong className="text-white">{new Date(userData.planEndDate).toLocaleDateString()}</strong></>
+                   userData.plan === 'unlimited' ? <>Lifetime</> : <>Valid until <strong className="text-white">{new Date(userData.planEndDate).toLocaleDateString()}</strong></>
                 ) : (
                    'Active Subscription'
                 )}
@@ -226,6 +232,6 @@ export const Dashboard: React.FC = () => {
           onClose={() => setShowStats(false)} 
         />
       )}
-    </div>
+    </motion.div>
   );
 };

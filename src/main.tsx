@@ -1,6 +1,7 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { AnimatePresence, motion } from 'motion/react';
 import App from './App.tsx';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Login } from './pages/Login';
@@ -34,6 +35,23 @@ const ProtectedRoute = ({ children, adminOnly = false }: { children: React.React
 };
 
 import React from 'react';
+const AnimatedRoutes = () => {
+  const location = useLocation();
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div key={location.pathname} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col h-full w-full relative">
+        <Routes location={location}>
+        <Route path="/login" element={<Login />} />
+        <Route path="/" element={<PublicRoute><App /></PublicRoute>} />
+        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/pricing" element={<PublicRoute><Pricing /></PublicRoute>} />
+        <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
+      </Routes>
+      </motion.div>
+    </AnimatePresence>
+  );
+};
+
 const PublicRoute = ({ children }: { children: React.ReactNode }) => {
   const { userData, loading } = useAuth();
   if (loading) return <div className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center text-slate-200">
@@ -54,13 +72,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <AuthProvider>
       <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/" element={<PublicRoute><App /></PublicRoute>} />
-          <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-          <Route path="/pricing" element={<PublicRoute><Pricing /></PublicRoute>} />
-          <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
-        </Routes>
+        <AnimatedRoutes />
       </BrowserRouter>
     </AuthProvider>
   </StrictMode>,

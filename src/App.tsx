@@ -8,6 +8,7 @@ import { generateMetadataBatch } from './services/geminiService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
 import { Clock, Key, Hourglass, Cat, Layers } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
 import { doc, updateDoc, increment, collection, addDoc, serverTimestamp } from 'firebase/firestore';
@@ -100,6 +101,8 @@ export default function App() {
   const navigate = useNavigate();
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const pendingCreditsRef = useRef(0);
+  const pendingImagesRef = useRef(0);
     const [filter, setFilter] = useState<'all' | 'ongoing' | 'uncompleted' | 'failed'>('all');
     const [keys, setKeys] = useState<ApiKey[]>(() => {
     try {
@@ -144,6 +147,36 @@ export default function App() {
     const idx = setInterval(() => localStorage.setItem('sessionReqCount', sessionRequestCountRef.current.toString()), 5000);
     return () => clearInterval(idx);
   }, []);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if ((pendingCreditsRef.current > 0 || pendingImagesRef.current > 0) && userData) {
+        const creditsToDeduct = pendingCreditsRef.current;
+        const imagesToAdd = pendingImagesRef.current;
+        
+        pendingCreditsRef.current = 0;
+        pendingImagesRef.current = 0;
+
+        try {
+          if (!userData.unlimited) {
+            await updateDoc(doc(db, 'users', userData.uid), {
+              credits: increment(-creditsToDeduct),
+              totalProcessedImages: increment(imagesToAdd)
+            });
+          } else {
+            await updateDoc(doc(db, 'users', userData.uid), {
+              totalProcessedImages: increment(imagesToAdd)
+            });
+          }
+        } catch (e) {
+          console.error('Failed to update credits', e);
+          pendingCreditsRef.current += creditsToDeduct;
+          pendingImagesRef.current += imagesToAdd;
+        }
+      }
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [userData]);
   const [items, setItems] = useState<ProcessingItem[]>(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_ITEMS) || '[]');
@@ -264,14 +297,23 @@ export default function App() {
   // Persist State
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys));
-    localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
-    localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs));
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
-    localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats));
     if (cloudLoaded && userData) {
-      syncUserDataToCloud(userData.uid, { keys, config, modelStats, logs });
+      syncUserDataToCloud(userData.uid, { keys, config });
     }
-  }, [keys, history, logs, config, modelStats, cloudLoaded, userData?.uid]);
+  }, [keys, config, cloudLoaded, userData?.uid]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
+  }, [history]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs));
+  }, [logs]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats));
+  }, [modelStats]);
 
             
   // Auto-save items every 30 seconds
@@ -635,20 +677,8 @@ export default function App() {
 
       if (results && Object.keys(results).length > 0 && userData) {
         const numSuccess = Object.keys(results).length;
-        try {
-          if (!userData.unlimited) {
-            await updateDoc(doc(db, 'users', userData.uid), {
-              credits: increment(-numSuccess),
-              totalProcessedImages: increment(numSuccess)
-            });
-          } else {
-            await updateDoc(doc(db, 'users', userData.uid), {
-              totalProcessedImages: increment(numSuccess)
-            });
-          }
-        } catch (e) {
-          console.error('Failed to update credits', e);
-        }
+        pendingCreditsRef.current += numSuccess;
+        pendingImagesRef.current += numSuccess;
       }
 
       setItems(prev => prev.map(p => {
@@ -1355,7 +1385,13 @@ export default function App() {
           animation: hourglass-flip 2s ease-in-out infinite;
         }
       `}</style>
-    <div className="h-full w-full flex overflow-hidden">
+    <motion.div 
+      initial={{ opacity: 0, x: -20 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 20 }}
+      transition={{ duration: 0.3 }}
+      className="h-full w-full flex overflow-hidden"
+    >
       
       <Sidebar 
          keys={keys}
@@ -1685,7 +1721,7 @@ export default function App() {
         ))}
       </div>
 
-    </div>
+    </motion.div>
   </>
   );
 }

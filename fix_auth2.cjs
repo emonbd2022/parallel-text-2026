@@ -1,13 +1,31 @@
 const fs = require('fs');
-let code = fs.readFileSync('src/contexts/AuthContext.tsx', 'utf-8');
+let code = fs.readFileSync('src/contexts/AuthContext.tsx', 'utf8');
 
 code = code.replace(
-  /} else \{\s*\/\/ Setup real-time listener for user data\s*onSnapshot\(userRef, \(doc\) => \{/g,
-  `} else {
-            // Set initial data
-            setUserData(docSnap.data() as UserData);
-            // Setup real-time listener for user data
-            onSnapshot(userRef, (doc) => {`
+  /    const unsubscribe = onAuthStateChanged\(auth, async \(currentUser\) => \{/,
+  `    let userUnsub: (() => void) | null = null;
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {`
+);
+
+code = code.replace(
+  /            \/\/ We need to clean this up, so store it\.\s*if \(\(window as any\)\._userUnsub\) \{\s*\(\(window as any\)\._userUnsub\)\(\);\s*\}\s*\(\(window as any\)\._userUnsub = unsubSnapshot;/,
+  `            if (userUnsub) userUnsub();
+            userUnsub = unsubSnapshot;`
+);
+
+code = code.replace(
+  /        if \(\(window as any\)\._userUnsub\) \{\s*\(\(window as any\)\._userUnsub\)\(\);\s*\(\(window as any\)\._userUnsub = null;\s*\}/,
+  `        if (userUnsub) {
+            userUnsub();
+            userUnsub = null;
+        }`
+);
+
+code = code.replace(
+  /      if \(\(window as any\)\._userUnsub\) \{\s*\(\(window as any\)\._userUnsub\)\(\);\s*\(\(window as any\)\._userUnsub = null;\s*\}/,
+  `      if (userUnsub) {
+        userUnsub();
+      }`
 );
 
 fs.writeFileSync('src/contexts/AuthContext.tsx', code);

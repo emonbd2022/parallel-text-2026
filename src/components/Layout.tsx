@@ -16,7 +16,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   };
 
   const navItems = [
-    { name: 'Pricing', path: '/pricing', icon: CreditCard },
+    { name: userData?.plan && userData.plan !== 'free' ? 'Upgrade' : 'Pricing', path: '/pricing', icon: CreditCard },
   ];
 
   if (userData) {
@@ -70,10 +70,14 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               <div className="flex items-center gap-3 mr-4">
                 <span className="text-sm text-slate-400">{userData.credits === -1 || userData.unlimited ? '∞ Credits' : `${userData.credits || 0} Credits`}</span>
                 <div className="relative">
-                  <img src={userData.photoURL || 'https://via.placeholder.com/32'} alt="User" className={`w-8 h-8 rounded-full border ${(userData.plan && userData.plan !== 'free') ? 'border-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]' : 'border-slate-700'}`} />
-                  {(userData.plan && userData.plan !== 'free') && (
-                     <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-purple-500 border border-slate-900 rounded-full" title={userData.plan.toUpperCase()} />
-                  )}
+                  <div className="relative group cursor-pointer" onClick={() => navigate('/dashboard')}>
+                    <img src={userData.photoURL || 'https://via.placeholder.com/32'} alt="User" className="w-8 h-8 rounded-full border border-slate-700" />
+                    {(userData.plan && userData.plan !== 'free') && (
+                       <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-gradient-to-r from-purple-600 to-fuchsia-600 text-[8px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider shadow-sm border border-white/10 whitespace-nowrap z-10 pointer-events-none">
+                         {userData.plan}
+                       </div>
+                    )}
+                  </div>
                 </div>
               </div>
               <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-red-400 transition-colors" title="Logout">
@@ -98,8 +102,15 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         <div className="md:hidden absolute top-16 left-0 right-0 bg-slate-900 border-b border-slate-800 z-50 p-4 flex flex-col gap-2 shadow-2xl">
           {userData ? (
             <div className="flex items-center gap-3 mb-4 p-2">
-              <img src={userData.photoURL || 'https://via.placeholder.com/32'} alt="User" className="w-10 h-10 rounded-full border border-slate-700" />
-              <div>
+              <div className="relative cursor-pointer" onClick={() => { navigate('/dashboard'); setMobileMenu(false); }}>
+                 <img src={userData.photoURL || 'https://via.placeholder.com/32'} alt="User" className="w-10 h-10 rounded-full border border-slate-700" />
+                 {(userData.plan && userData.plan !== 'free') && (
+                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-gradient-to-r from-purple-600 to-fuchsia-600 text-[8px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider shadow-sm border border-white/10 whitespace-nowrap z-10 pointer-events-none">
+                      {userData.plan}
+                    </div>
+                 )}
+               </div>
+              <div className="ml-2">
                 <div className="font-bold">{userData.nickname}</div>
                 <div className="text-sm text-slate-400">{userData.credits === -1 || userData.unlimited ? '∞ Credits' : `${userData.credits || 0} Credits`}</div>
               </div>

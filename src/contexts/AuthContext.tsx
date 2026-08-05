@@ -39,6 +39,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
       return;
     }
+    let userUnsub: (() => void) | null = null;
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
@@ -70,13 +71,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             // Set initial data
             setUserData(docSnap.data() as UserData);
             // Setup real-time listener for user data
-            onSnapshot(userRef, (doc) => {
+            const unsubSnapshot = onSnapshot(userRef, (doc) => {
               if (doc.exists()) {
                 setUserData(doc.data() as UserData);
               }
-            }, (err) => {
+            }, (err) => { 
                console.error("Error listening to user data:", err);
             });
+            // We need to clean this up, so store it.
+            if ((window as any)._userUnsub) {
+                (window as any)._userUnsub();
+            }
+            (window as any)._userUnsub = unsubSnapshot;
           }
         } catch (error) {
           console.error("Error fetching user data:", error);
@@ -98,11 +104,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } else {
         setUserData(null);
+        if ((window as any)._userUnsub) {
+            (window as any)._userUnsub();
+            (window as any)._userUnsub = null;
+        }
       }
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if ((window as any)._userUnsub) {
+        (window as any)._userUnsub();
+        (window as any)._userUnsub = null;
+      }
+    };
   }, []);
 
   return (

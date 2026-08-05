@@ -1,7 +1,10 @@
 import React from 'react';
 import { CreditCard, Check } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { motion } from 'motion/react';
 
 export const Pricing: React.FC = () => {
+  const { userData } = useAuth();
   const plans = [
     { name: 'Starter', credits: '2,000', price: '৳200', popular: false, validity: '1 Month' },
     { name: 'Pro', credits: '5,000', price: '৳400', popular: true, validity: '2 Months' },
@@ -10,12 +13,18 @@ export const Pricing: React.FC = () => {
   ];
 
   const handleBuy = (planName: string) => {
-    const text = encodeURIComponent(`Hi, I would like to buy the ${planName} plan for Parallel Text.`);
+    const isUpgrade = userData?.plan && userData.plan !== 'free';
+    const text = encodeURIComponent(`Hi, I would like to ${isUpgrade ? 'upgrade to' : 'buy'} the ${planName} plan for Parallel Text.`);
     window.open(`https://wa.me/8801601934495?text=${text}`, '_blank');
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -20 }}
+      className="flex-1 overflow-y-auto p-8 custom-scrollbar"
+    >
       <div className="max-w-6xl mx-auto space-y-12">
         <div className="text-center space-y-4">
           <h1 className="text-4xl font-bold text-white flex items-center justify-center gap-3">
@@ -63,16 +72,23 @@ export const Pricing: React.FC = () => {
                 </li>
               </ul>
 
-              <button 
-                onClick={() => handleBuy(plan.name)}
-                className={`w-full py-4 rounded-xl font-bold transition-all ${plan.popular ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-lg shadow-purple-900/50' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
-              >
-                Buy Now
-              </button>
+              {(() => {
+                const isCurrentPlan = userData?.plan === plan.name.toLowerCase();
+                const hasPlan = userData?.plan && userData.plan !== 'free';
+                return (
+                  <button 
+                    onClick={() => !isCurrentPlan && handleBuy(plan.name)}
+                    disabled={isCurrentPlan}
+                    className={`w-full py-4 rounded-xl font-bold transition-all ${isCurrentPlan ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700' : plan.popular ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-lg shadow-purple-900/50' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+                  >
+                    {isCurrentPlan ? 'Current Plan' : (hasPlan ? 'Upgrade' : 'Buy Now')}
+                  </button>
+                );
+              })()}
             </div>
           ))}
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 };

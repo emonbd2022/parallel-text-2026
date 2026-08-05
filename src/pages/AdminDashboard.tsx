@@ -1,3 +1,4 @@
+import { motion } from 'motion/react';
 import React, { useEffect, useState } from 'react';
 import { collection, getDocs, updateDoc, doc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -15,6 +16,7 @@ export const AdminDashboard: React.FC = () => {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [dateRangeImages, setDateRangeImages] = useState(0);
+  const [showStats, setShowStats] = useState(false);
 
   const fetchUsers = async () => {
     try {
@@ -106,7 +108,12 @@ export const AdminDashboard: React.FC = () => {
   );
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+    <motion.div 
+      initial={{ opacity: 0, y: -20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 20 }}
+      className="flex-1 overflow-y-auto p-8 custom-scrollbar"
+    >
       <div className="max-w-7xl mx-auto space-y-8">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <h1 className="text-3xl font-bold text-white flex items-center gap-3">
@@ -244,6 +251,33 @@ export const AdminDashboard: React.FC = () => {
           </div>
         </div>
       </div>
-    </div>
+      {showStats && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl max-w-lg w-full">
+            <h2 className="text-2xl font-bold mb-6 text-white flex items-center gap-3">
+               <Calendar className="w-6 h-6 text-purple-400" />
+               Date Range Statistics
+            </h2>
+            <div className="space-y-4 mb-8">
+               <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 flex justify-between items-center">
+                  <span className="text-slate-400">Total Users</span>
+                  <span className="text-xl font-bold text-white">{filteredUsers.length}</span>
+               </div>
+               <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 flex justify-between items-center">
+                  <span className="text-slate-400">Total Images (All Time)</span>
+                  <span className="text-xl font-bold text-white">{totalSiteImages}</span>
+               </div>
+               <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 flex justify-between items-center">
+                  <span className="text-slate-400">Images in Date Range</span>
+                  <span className="text-xl font-bold text-emerald-400">{dateRangeImages}</span>
+               </div>
+            </div>
+            <button onClick={() => setShowStats(false)} className="w-full py-3 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-white transition-colors">
+               Close
+            </button>
+          </motion.div>
+        </div>
+      )}
+    </motion.div>
   );
 };
