@@ -5,7 +5,7 @@ import { logout } from '../lib/firebase';
 import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers } from 'lucide-react';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { userData } = useAuth();
+  const { userData, loading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenu, setMobileMenu] = useState(false);
@@ -37,7 +37,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               <span className="hidden sm:inline">Back</span>
             </button>
           ) : null}
-          <button onClick={() => navigate('/')} className="flex items-center gap-3 hover:opacity-80 transition-opacity outline-none animate-float group">
+          <button onClick={() => navigate('/')} className="flex items-center gap-3 hover:opacity-80 transition-opacity outline-none group">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-emerald-500 flex items-center justify-center text-white shadow-lg group-hover:animate-pulse-glow">
               <Layers className="w-5 h-5 group-hover:animate-spin-slow" />
             </div>
@@ -46,7 +46,14 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         </div>
         
         {/* Desktop Nav */}
+        {loading ? (
         <nav className="hidden md:flex items-center gap-2">
+          <div className="w-20 h-8 bg-slate-800 rounded-lg animate-pulse" />
+          <div className="w-px h-6 bg-slate-800 mx-2" />
+          <div className="w-24 h-8 bg-slate-800 rounded-lg animate-pulse" />
+          <div className="w-8 h-8 rounded-full bg-slate-800 animate-pulse ml-2" />
+        </nav>
+) : (<nav className="hidden md:flex items-center gap-2">
           {navItems.map(item => (
             <button
               key={item.path}
@@ -62,7 +69,12 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <>
               <div className="flex items-center gap-3 mr-4">
                 <span className="text-sm text-slate-400">{userData.credits === -1 || userData.unlimited ? '∞ Credits' : `${userData.credits || 0} Credits`}</span>
-                <img src={userData.photoURL || 'https://via.placeholder.com/32'} alt="User" className="w-8 h-8 rounded-full border border-slate-700" />
+                <div className="relative">
+                  <img src={userData.photoURL || 'https://via.placeholder.com/32'} alt="User" className={`w-8 h-8 rounded-full border ${(userData.plan && userData.plan !== 'free') ? 'border-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]' : 'border-slate-700'}`} />
+                  {(userData.plan && userData.plan !== 'free') && (
+                     <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-purple-500 border border-slate-900 rounded-full" title={userData.plan.toUpperCase()} />
+                  )}
+                </div>
               </div>
               <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-red-400 transition-colors" title="Logout">
                 <LogOut className="w-5 h-5" />
@@ -73,7 +85,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               Sign In
             </button>
           )}
-        </nav>
+        </nav>)}
 
         {/* Mobile Nav Toggle */}
         <button className="md:hidden p-2 text-slate-400 hover:text-white" onClick={() => setMobileMenu(!mobileMenu)}>

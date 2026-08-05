@@ -15,6 +15,9 @@ export interface UserData {
   joinDate: string;
   blocked: boolean;
   role: 'admin' | 'user';
+  plan?: 'free' | 'starter' | 'pro' | 'elite' | 'unlimited';
+  planStartDate?: string;
+  planEndDate?: string;
   appData?: any;
 }
 
@@ -58,11 +61,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               joinDate: new Date().toISOString(),
               blocked: false,
               role: isFirstUser ? 'admin' : 'user',
+              plan: 'free',
             };
             
             await setDoc(userRef, newUserData);
             setUserData(newUserData as UserData);
           } else {
+            // Set initial data
+            setUserData(docSnap.data() as UserData);
             // Setup real-time listener for user data
             onSnapshot(userRef, (doc) => {
               if (doc.exists()) {
@@ -87,6 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             joinDate: new Date().toISOString(),
             blocked: false,
             role: 'user',
+            plan: 'free',
           });
         }
       } else {

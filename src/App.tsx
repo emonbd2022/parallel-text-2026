@@ -6,7 +6,7 @@ import { StatisticsModal } from './components/StatisticsModal';
 import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
-import { Clock, Key, Hourglass, Cat } from 'lucide-react';
+import { Clock, Key, Hourglass, Cat, Layers } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
@@ -139,7 +139,11 @@ export default function App() {
   const [lastAutoSave, setLastAutoSave] = useState<Date | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportStats, setExportStats] = useState({ count: 0, path: '', elapsedTime: '0s', requestCount: 0, timeSaved: '0s' });
-  const sessionRequestCountRef = useRef(0);
+  const sessionRequestCountRef = useRef(parseInt(localStorage.getItem('sessionReqCount') || '0'));
+  useEffect(() => {
+    const idx = setInterval(() => localStorage.setItem('sessionReqCount', sessionRequestCountRef.current.toString()), 5000);
+    return () => clearInterval(idx);
+  }, []);
   const [items, setItems] = useState<ProcessingItem[]>(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_ITEMS) || '[]');
@@ -168,7 +172,14 @@ export default function App() {
   const [statusMsg, setStatusMsg] = useState<string>('Ready');
   const [tick, setTick] = useState(0); 
   const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
-  const [startTimeMs, setStartTimeMs] = useState<number | null>(null);
+  const [startTimeMs, setStartTimeMs] = useState<number | null>(() => {
+    const s = localStorage.getItem('startTimeMs');
+    return s ? parseInt(s) : null;
+  });
+  useEffect(() => {
+    if (startTimeMs) localStorage.setItem('startTimeMs', startTimeMs.toString());
+    else localStorage.removeItem('startTimeMs');
+  }, [startTimeMs]);
   const [showStats, setShowStats] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   
@@ -1169,6 +1180,8 @@ export default function App() {
       if (window.confirm('Are you sure you want to clear all items and delete the saved project?')) {
           setIsProcessing(false);
           setStartTimeMs(null);
+          sessionRequestCountRef.current = 0;
+          localStorage.setItem('sessionReqCount', '0');
           setItems([]);
           localStorage.removeItem(STORAGE_ITEMS);
           setStatusMsg("Clearing project...");
@@ -1539,14 +1552,11 @@ export default function App() {
                     <div className="relative mt-4">
                       <div className="absolute inset-0 bg-blue-500/20 blur-3xl rounded-full scale-150 animate-pulse delay-75"></div>
                       <div className="relative p-6 bg-slate-800/80 backdrop-blur-sm rounded-3xl text-blue-400 shadow-2xl shadow-blue-900/20 group-hover:-translate-y-2 transition-all duration-500 border border-white/5 flex items-center justify-center">
-                        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="drop-shadow-[0_0_15px_rgba(59,130,246,0.5)]">
-                           <path d="M12 13v8"/>
-                           <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
-                           <path d="m8 17 4-4 4 4"/>
-                        </svg>
-                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[20%] flex gap-3 pointer-events-none group-hover:animate-bounce">
-                           <div className="w-1.5 h-1.5 bg-white rounded-full shadow-[0_0_5px_white]"></div>
-                           <div className="w-1.5 h-1.5 bg-white rounded-full shadow-[0_0_5px_white]"></div>
+                        <div className="flex flex-col items-center gap-4">
+                            <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-purple-500 to-emerald-500 flex items-center justify-center text-white shadow-[0_0_30px_rgba(168,85,247,0.5)] group-hover:animate-pulse-glow">
+                                <Layers className="w-12 h-12 group-hover:animate-spin-slow" />
+                            </div>
+                            <span className="font-extrabold text-3xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-emerald-400">Parallel Text</span>
                         </div>
                       </div>
                     </div>

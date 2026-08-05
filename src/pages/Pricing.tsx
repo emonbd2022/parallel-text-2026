@@ -3,10 +3,10 @@ import { CreditCard, Check } from 'lucide-react';
 
 export const Pricing: React.FC = () => {
   const plans = [
-    { name: 'Starter', credits: '2,000', price: '৳200', popular: false },
-    { name: 'Pro', credits: '5,000', price: '৳400', popular: true },
-    { name: 'Elite', credits: '10,000', price: '৳600', popular: false },
-    { name: 'Unlimited', credits: '∞', price: '৳2,000', popular: false, desc: 'Unlimited lifetime processing' },
+    { name: 'Starter', credits: '2,000', price: '৳200', popular: false, validity: '1 Month' },
+    { name: 'Pro', credits: '5,000', price: '৳400', popular: true, validity: '2 Months' },
+    { name: 'Elite', credits: '10,000', price: '৳600', popular: false, validity: '6 Months' },
+    { name: 'Unlimited', credits: '∞', price: '৳2,000', popular: false, desc: 'Unlimited lifetime processing', validity: 'Lifetime' },
   ];
 
   const handleBuy = (planName: string) => {
@@ -48,6 +48,10 @@ export const Pricing: React.FC = () => {
                 <li className="flex items-center gap-3 text-slate-300">
                   <Check className="w-5 h-5 text-emerald-400 shrink-0" />
                   <span>{plan.credits} Images</span>
+                </li>
+                <li className="flex items-center gap-3 text-slate-300">
+                  <Check className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <span>{plan.validity} Validity</span>
                 </li>
                 <li className="flex items-center gap-3 text-slate-300">
                   <Check className="w-5 h-5 text-emerald-400 shrink-0" />

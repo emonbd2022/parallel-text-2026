@@ -16,7 +16,7 @@ service cloud.firestore {
       allow update: if isAuthenticated() && (
         isAdmin() || 
         (request.auth.uid == userId && (
-          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'unlimited', 'blocked'])
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'unlimited', 'blocked', 'plan', 'planStartDate', 'planEndDate'])
         ))
       );
       allow delete: if isAdmin();

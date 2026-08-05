@@ -126,12 +126,20 @@ export const Dashboard: React.FC = () => {
             <h3 className="text-slate-400 font-medium flex items-center gap-2 mb-4">
               <Crown className="w-5 h-5 text-amber-400" /> Current Plan
             </h3>
-            <div className="text-4xl font-black text-white mb-2">
-              {userData.unlimited ? 'Unlimited' : 'Standard'}
+            <div className="text-4xl font-black text-white mb-2 capitalize">
+              {userData.plan && userData.plan !== 'free' ? userData.plan : (userData.unlimited ? 'Unlimited' : 'Free')}
             </div>
-            {!userData.unlimited && (
+            {userData.plan && userData.plan !== 'free' ? (
               <p className="text-slate-400">
-                You are on the pay-as-you-go plan.
+                {userData.planEndDate ? (
+                   <>Valid until <strong className="text-white">{new Date(userData.planEndDate).toLocaleDateString()}</strong></>
+                ) : (
+                   'Active Subscription'
+                )}
+              </p>
+            ) : (
+              <p className="text-slate-400">
+                You are on the free plan. Upgrade for more credits.
               </p>
             )}
           </div>

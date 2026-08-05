@@ -1,30 +1,22 @@
 const fs = require('fs');
-let content = fs.readFileSync('src/App.tsx', 'utf8');
+let code = fs.readFileSync('src/App.tsx', 'utf8');
 
-const regex = /const headers = \['Filename', 'Title', 'Keywords'\];\s+const rows = completedItems\.map\(i => \{[\s\S]*?return \`\$\{safeName\},\$\{safeTitle\},\$\{safeKeys\}\`;/g;
+// Replace sessionRequestCountRef initialization
+code = code.replace(
+    "const sessionRequestCountRef = useRef(0);",
+    "const sessionRequestCountRef = useRef(parseInt(localStorage.getItem('sessionReqCount') || '0'));\n  useEffect(() => {\n    const idx = setInterval(() => localStorage.setItem('sessionReqCount', sessionRequestCountRef.current.toString()), 5000);\n    return () => clearInterval(idx);\n  }, []);"
+);
 
-const replacement = `const headers = ['Filename', 'Title', 'Keywords', 'Category'];
-    const rows = completedItems.map(i => {
-      let fileName = i.name;
-      if (config.targetExtension) {
-        const lastDotIndex = fileName.lastIndexOf('.');
-        if (lastDotIndex !== -1) {
-            fileName = fileName.substring(0, lastDotIndex) + config.targetExtension;
-        } else {
-            fileName = fileName + config.targetExtension;
-        }
-      }
+// Replace startTimeMs initialization
+code = code.replace(
+    "const [startTimeMs, setStartTimeMs] = useState<number | null>(null);",
+    "const [startTimeMs, setStartTimeMs] = useState<number | null>(() => {\n    const s = localStorage.getItem('startTimeMs');\n    return s ? parseInt(s) : null;\n  });\n  useEffect(() => {\n    if (startTimeMs) localStorage.setItem('startTimeMs', startTimeMs.toString());\n    else localStorage.removeItem('startTimeMs');\n  }, [startTimeMs]);"
+);
 
-      const safeName = \`"\${fileName.replace(/"/g, '""')}"\`;
-      const safeTitle = \`"\${i.title.replace(/"/g, '""')}"\`;
-      const safeKeys = \`"\${i.keywords.replace(/"/g, '""')}"\`;
-      const safeCategory = \`"\${(i.category || 'Technology').replace(/"/g, '""')}"\`;
-      return \`\${safeName},\${safeTitle},\${safeKeys},\${safeCategory}\`;`;
+// reset sessionRequestCountRef when clearing
+code = code.replace(
+    "setStartTimeMs(null);\n          setItems([]);\n          localStorage.removeItem(STORAGE_ITEMS);",
+    "setStartTimeMs(null);\n          sessionRequestCountRef.current = 0;\n          localStorage.setItem('sessionReqCount', '0');\n          setItems([]);\n          localStorage.removeItem(STORAGE_ITEMS);"
+);
 
-if (regex.test(content)) {
-    content = content.replace(regex, replacement);
-    fs.writeFileSync('src/App.tsx', content);
-    console.log("Success");
-} else {
-    console.log("Target not found!");
-}
+fs.writeFileSync('src/App.tsx', code);

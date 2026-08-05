@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from 'react';
+const fs = require('fs');
+
+const content = `import React, { useEffect, useState } from 'react';
 import { collection, getDocs, updateDoc, doc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
@@ -94,7 +96,7 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const handleResetCredits = async (uid: string) => {
-    if (confirm('Are you sure you want to reset this user\'s credits to 0?')) {
+    if (confirm('Are you sure you want to reset this user\\'s credits to 0?')) {
         await handleUpdateUser(uid, { credits: 0, plan: 'free', unlimited: false });
     }
   };
@@ -247,3 +249,5 @@ export const AdminDashboard: React.FC = () => {
     </div>
   );
 };
+`;
+fs.writeFileSync('src/pages/AdminDashboard.tsx', content);
