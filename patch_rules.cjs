@@ -1,9 +1,23 @@
 const fs = require('fs');
-let content = fs.readFileSync('firestore.rules', 'utf-8');
+let rules = fs.readFileSync('firestore.rules', 'utf8');
 
-content = content.replace(
-  "['role', 'unlimited', 'blocked']",
-  "['role', 'unlimited', 'blocked', 'plan', 'planStartDate', 'planEndDate']"
-);
+const exportRules = `    match /csv_exports/{exportId} {
+      allow read, delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow update: if false;
+    }`;
 
-fs.writeFileSync('firestore.rules', content);
+const newRules = `    match /csv_exports/{exportId} {
+      allow read, delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow update: if false;
+    }
+    
+    match /activity_logs/{logId} {
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow read: if isAdmin();
+      allow update, delete: if false;
+    }`;
+
+rules = rules.replace(exportRules, newRules);
+fs.writeFileSync('firestore.rules', rules);

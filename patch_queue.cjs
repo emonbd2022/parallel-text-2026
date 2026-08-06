@@ -1,13 +1,9 @@
 const fs = require('fs');
-let code = fs.readFileSync('src/components/ProcessingQueue.tsx', 'utf-8');
+let code = fs.readFileSync('src/components/ProcessingQueue.tsx', 'utf8');
 
-code = code.replace(
-  "{item.status === 'processing' && <div className=\"w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse\"/>}",
-  "{item.status === 'processing' && <Cat className=\"w-4 h-4 text-purple-400 animate-bounce\"/>}"
-);
+const oldStatusLine = `<span>{item.status === 'processing' ? (item.progressMsg || 'Processing...') : isWaitingRetry(item) ? \`Retrying (\${item.attempts})...\` : item.status}</span>`;
+const newStatusLine = `<span>{item.status === 'processing' ? (item.progressMsg || 'Processing...') : isWaitingRetry(item) ? \`Retrying (\${item.attempts})...\` : (item.status === 'pending' && item.title && !item.category) ? 'pending category' : item.status}</span>`;
 
-if (!code.includes('import { Cat')) {
-    code = code.replace("import { Trash2, Image as ImageIcon, Copy, Check, RefreshCw } from 'lucide-react';", "import { Trash2, Image as ImageIcon, Copy, Check, RefreshCw, Cat } from 'lucide-react';");
-}
+code = code.replace(oldStatusLine, newStatusLine);
 
 fs.writeFileSync('src/components/ProcessingQueue.tsx', code);

@@ -154,7 +154,7 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                               }`}>
                                 {item.status === 'processing' && <Cat className="w-4 h-4 text-purple-400 animate-bounce"/>}
                                 {item.status === 'done' && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400"/>}
-                                <span>{item.status === 'processing' ? (item.progressMsg || 'Processing...') : isWaitingRetry(item) ? `Retrying (${item.attempts})...` : item.status}</span>
+                                <span>{item.status === 'processing' ? (item.progressMsg || 'Processing...') : isWaitingRetry(item) ? `Retrying (${item.attempts})...` : (item.status === 'pending' && item.title && !item.category) ? 'pending category' : item.status}</span>
                                 {item.usedModel && <span className="ml-1 text-slate-500 tracking-normal lowercase border-l border-white/10 pl-1.5">{item.usedModel.replace('gemini-', '')}</span>}
                               </div>
                         </div>

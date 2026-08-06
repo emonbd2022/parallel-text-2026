@@ -1,9 +1,11 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState } from 'react';
-import { collection, getDocs, updateDoc, doc } from 'firebase/firestore';
+import { collection, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, getAggregateFromServer, sum, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
 import { Shield, Search, RefreshCw, Calendar } from 'lucide-react';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
 
 export const AdminDashboard: React.FC = () => {
   const { userData: currentAdmin } = useAuth();
@@ -11,26 +13,75 @@ export const AdminDashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [totalSiteImages, setTotalSiteImages] = useState(0);
+  const [lastVisible, setLastVisible] = useState<any>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [page, setPage] = useState(0);
 
   // Date range filter
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [startDate, setStartDate] = useState<Date | null>(null);
+  const [endDate, setEndDate] = useState<Date | null>(null);
   const [dateRangeImages, setDateRangeImages] = useState(0);
   const [showStats, setShowStats] = useState(false);
 
-  const fetchUsers = async () => {
+  
+  const fetchTotalAggregate = async () => {
     try {
-      const querySnapshot = await getDocs(collection(db, 'users'));
-      const usersData: UserData[] = [];
-      let total = 0;
-      querySnapshot.forEach((d) => {
-        const data = d.data() as UserData;
-        usersData.push(data);
-        total += (data.totalProcessedImages || 0);
+      const coll = collection(db, 'users');
+      const snapshot = await getAggregateFromServer(coll, {
+        totalImages: sum('totalProcessedImages')
       });
-      usersData.sort((a, b) => (b.totalProcessedImages || 0) - (a.totalProcessedImages || 0));
-      setUsers(usersData);
-      setTotalSiteImages(total);
+      setTotalSiteImages(snapshot.data().totalImages);
+    } catch (e) {
+      console.warn("Aggregate query failed", e);
+    }
+  };
+
+  const fetchUsers = async (isNextPage = false) => {
+    try {
+      setLoading(true);
+      let q = query(
+        collection(db, 'users'), 
+        orderBy('totalProcessedImages', 'desc'),
+        limit(10)
+      );
+      
+      if (isNextPage && lastVisible) {
+        q = query(
+          collection(db, 'users'),
+          orderBy('totalProcessedImages', 'desc'),
+          startAfter(lastVisible),
+          limit(10)
+        );
+      } else if (!isNextPage) {
+        setUsers([]);
+        setPage(0);
+      }
+
+      const querySnapshot = await getDocs(q);
+      const usersData: UserData[] = [];
+      querySnapshot.forEach((d) => {
+        usersData.push(d.data() as UserData);
+      });
+
+      if (querySnapshot.docs.length > 0) {
+          setLastVisible(querySnapshot.docs[querySnapshot.docs.length - 1]);
+      }
+      
+      setHasMore(querySnapshot.docs.length >= 10);
+
+      if (isNextPage) {
+          setUsers(prev => {
+              const newUsers = [...prev];
+              usersData.forEach(u => {
+                  if (!newUsers.find(x => x.uid === u.uid)) newUsers.push(u);
+              });
+              return newUsers;
+          });
+          setPage(p => p + 1);
+      } else {
+          setUsers(usersData);
+          setPage(1);
+      }
     } catch (error) {
       console.error("Error fetching users:", error);
     } finally {
@@ -39,19 +90,37 @@ export const AdminDashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchUsers();
+    fetchTotalAggregate();
+    fetchUsers(false);
   }, []);
 
-  // Simplified calculation for processed in date range
+
   useEffect(() => {
-    // In a real app we'd track processing logs with dates in Firestore.
-    // For now we'll just mock the visual or assume totalProcessedImages if no logs.
-    // Since we don't store per-date processed count globally, this is just a placeholder.
-    if (startDate && endDate) {
-       setDateRangeImages(0); // Needs backend aggregation
-    } else {
-       setDateRangeImages(totalSiteImages);
-    }
+    const fetchDateRangeActivity = async () => {
+        if (startDate && endDate) {
+            try {
+                // Ensure endDate includes the full day
+                const endOfDay = new Date(endDate);
+                endOfDay.setHours(23, 59, 59, 999);
+                
+                const q = query(
+                    collection(db, 'activity_logs'),
+                    where('timestamp', '>=', startDate),
+                    where('timestamp', '<=', endOfDay)
+                );
+                const snapshot = await getAggregateFromServer(q, {
+                    imagesProcessed: sum('imagesProcessed')
+                });
+                setDateRangeImages(snapshot.data().imagesProcessed || 0);
+            } catch (error) {
+                console.error("Error fetching date range activity:", error);
+                setDateRangeImages(0);
+            }
+        } else {
+            setDateRangeImages(totalSiteImages);
+        }
+    };
+    fetchDateRangeActivity();
   }, [startDate, endDate, totalSiteImages]);
 
   const handleUpdateUser = async (uid: string, updates: Partial<UserData>) => {
@@ -130,9 +199,26 @@ export const AdminDashboard: React.FC = () => {
             <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg">
               <div className="text-sm text-slate-400">Date Range Stats</div>
               <div className="flex items-center gap-2 mt-1">
-                 <input type="date" className="bg-slate-950 border border-slate-700 text-xs rounded px-1 text-slate-300" value={startDate} onChange={e => setStartDate(e.target.value)} />
+                 <DatePicker
+                    selected={startDate}
+                    onChange={(date) => setStartDate(date)}
+                    selectsStart
+                    startDate={startDate}
+                    endDate={endDate}
+                    placeholderText="Start Date"
+                    className="bg-slate-950 border border-slate-700 text-xs rounded px-2 py-1 text-slate-300 w-24 focus:outline-none focus:border-purple-500"
+                 />
                  <span className="text-slate-500">-</span>
-                 <input type="date" className="bg-slate-950 border border-slate-700 text-xs rounded px-1 text-slate-300" value={endDate} onChange={e => setEndDate(e.target.value)} />
+                 <DatePicker
+                    selected={endDate}
+                    onChange={(date) => setEndDate(date)}
+                    selectsEnd
+                    startDate={startDate}
+                    endDate={endDate}
+                    minDate={startDate}
+                    placeholderText="End Date"
+                    className="bg-slate-950 border border-slate-700 text-xs rounded px-2 py-1 text-slate-300 w-24 focus:outline-none focus:border-purple-500"
+                 />
               </div>
             </div>
           </div>
@@ -265,6 +351,18 @@ export const AdminDashboard: React.FC = () => {
               </tbody>
             </table>
           </div>
+          {hasMore && !searchTerm && (
+            <div className="flex justify-center mt-6">
+                <button 
+                  onClick={() => fetchUsers(true)}
+                  disabled={loading}
+                  className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-sm text-slate-300 transition-colors disabled:opacity-50"
+                >
+                    {loading ? 'Loading...' : 'Load More Users'}
+                </button>
+            </div>
+          )}
+
         </div>
       </div>
       {showStats && (

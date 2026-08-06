@@ -4,7 +4,7 @@ import { ProcessingQueue } from './components/ProcessingQueue';
 import { Sidebar } from './components/Sidebar';
 import { StatisticsModal } from './components/StatisticsModal';
 import { compressImage } from './services/imageUtils';
-import { generateMetadataBatch } from './services/geminiService';
+import { generateMetadataBatch, generateCategoriesBatch } from './services/geminiService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
 import { Clock, Key, Hourglass, Cat, Layers } from 'lucide-react';
 import confetti from 'canvas-confetti';
@@ -158,15 +158,20 @@ export default function App() {
         pendingImagesRef.current = 0;
 
         try {
+          const updates: any = {
+              totalProcessedImages: increment(imagesToAdd)
+          };
           if (!userData.unlimited) {
-            await updateDoc(doc(db, 'users', userData.uid), {
-              credits: increment(-creditsToDeduct),
-              totalProcessedImages: increment(imagesToAdd)
-            });
-          } else {
-            await updateDoc(doc(db, 'users', userData.uid), {
-              totalProcessedImages: increment(imagesToAdd)
-            });
+              updates.credits = increment(-creditsToDeduct);
+          }
+          await updateDoc(doc(db, 'users', userData.uid), updates);
+          
+          if (imagesToAdd > 0) {
+              await addDoc(collection(db, 'activity_logs'), {
+                  uid: userData.uid,
+                  imagesProcessed: imagesToAdd,
+                  timestamp: serverTimestamp()
+              });
           }
         } catch (e) {
           console.error('Failed to update credits', e);
@@ -291,6 +296,7 @@ export default function App() {
   const isDraggingRef = useRef(false);
   const startYRef = useRef(0);
   const startScrollTopRef = useRef(0);
+  const lastPhaseRef = useRef<'metadata' | 'category' | null>(null);
 
   // Load from cloud
   useEffect(() => {
@@ -589,7 +595,138 @@ export default function App() {
     return (60000 / model.rpm) + 500;
   };
 
-  const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey) => {
+  
+  const startCategoryBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey) => {
+    // 1. Mark all as processing
+    setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { 
+      ...p, 
+      status: 'processing', 
+      assignedKeyId: keyObj.id 
+    } : p));
+
+    setStatusMsg(`Fetching categories for ${batchItems.length} items (${keyObj.label})...`);
+    const batchStartTime = Date.now();
+
+    try {
+      const payload = batchItems.map(item => ({ id: item.id, title: item.title }));
+      let results: any;
+      let usedModel = config.model;
+
+      if (config.model === 'auto') {
+        const autoModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-flash-lite'];
+        let success = false;
+        let lastError = null;
+
+        for (let i = 0; i < autoModels.length; i++) {
+            usedModel = autoModels[i];
+            const startTime = Date.now();
+            try {
+                sessionRequestCountRef.current += 1;
+                results = await generateCategoriesBatch(
+                  keyObj.key,
+                  payload,
+                  usedModel,
+                  (msg) => {
+                    setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
+                  }
+                );
+                success = true;
+                break;
+            } catch (err) {
+                console.warn(`Auto category: ${usedModel} failed, retrying...`, err);
+                lastError = err;
+            }
+        }
+        
+        if (!success) {
+            throw lastError;
+        }
+      } else {
+        sessionRequestCountRef.current += 1;
+        results = await generateCategoriesBatch(
+            keyObj.key, 
+            payload, 
+            config.model,
+            (msg) => {
+              setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
+            }
+        );
+      }
+
+      setItems(prev => prev.map(p => {
+          if (results && results[p.id]) {
+              return { 
+                 ...p, 
+                 status: 'done', 
+                 category: results[p.id].category,
+                 assignedKeyId: undefined,
+                 retryAfter: undefined,
+                 failedKeyIds: []
+              };
+          }
+          return p;
+      }));
+      
+      const cooldownMs = getModelDelay(config.model);
+      
+      setKeys(prev => prev.map(k => {
+        if (k.id === keyObj.id) {
+            return { 
+                 ...k, 
+                 errorCount: Math.max(0, k.errorCount - 1),
+                 cooldownUntil: Date.now() + cooldownMs
+            };
+        }
+        return k;
+      }));
+      
+      const batchDuration = Date.now() - batchStartTime;
+      const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), itemCount: batchItems.length, durationMs: batchDuration };
+      setLogs(prev => [newLog, ...prev].slice(0, 50));
+      setStatusMsg("Waiting...");
+
+    } catch (error: any) {
+      console.error("Batch processing error:", error);
+      
+      // Error handling similar to startBatchProcessing
+      const errorMessage = error.message || "Unknown error";
+      const isQuota = errorMessage.includes('QUOTA_EXCEEDED');
+      const isInvalid = errorMessage.includes('INVALID_KEY');
+      
+      const cooldownMs = isQuota ? 3600000 : (isInvalid ? 86400000 : 30000); 
+
+      setKeys(prev => prev.map(k => {
+          if (k.id === keyObj.id) {
+              return { 
+                  ...k, 
+                  errorCount: k.errorCount + 1,
+                  cooldownUntil: Date.now() + cooldownMs
+              };
+          }
+          return k;
+      }));
+
+      setItems(prev => prev.map(p => {
+          if (batchItems.find(b => b.id === p.id)) {
+              const newFailedKeys = [...p.failedKeyIds, keyObj.id];
+              return {
+                  ...p,
+                  status: 'error',
+                  errorMsg: errorMessage,
+                  progressMsg: undefined,
+                  assignedKeyId: undefined,
+                  failedKeyIds: newFailedKeys,
+                  attempts: p.attempts + 1,
+                  retryAfter: Date.now() + 5000
+              };
+          }
+          return p;
+      }));
+      
+      setStatusMsg(`Error: ${errorMessage.substring(0, 40)}`);
+    }
+  };
+const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey) => {
     // 1. Mark all as processing
     setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { 
       ...p, 
@@ -692,18 +829,19 @@ export default function App() {
         pendingImagesRef.current += numSuccess;
       }
 
-      setItems(prev => prev.map(p => {
+            setItems(prev => prev.map(p => {
           if (results[p.id]) {
               return { 
-                ...p, 
-                status: 'done', 
-                title: results[p.id].title, 
-                keywords: results[p.id].keywords,
-                category: results[p.id].category,
-                assignedKeyId: undefined,
-                retryAfter: undefined,
-                failedKeyIds: [], // Success resets failures
-                usedModel: usedModel
+                 ...p, 
+                 status: 'pending', // Pending for category phase
+                 title: results[p.id].title, 
+                 keywords: results[p.id].keywords,
+                 category: '',
+                 assignedKeyId: undefined,
+                 retryAfter: undefined,
+                 failedKeyIds: [],
+                 usedModel: usedModel,
+                 attempts: 0
               };
           }
           return p;
@@ -976,8 +1114,21 @@ export default function App() {
     // No concurrency limit check here
 
     // 2. Get pending items
-    // Filter pending items that have thumbnail ready
-    const pendingItems = items.filter(i => i.status === 'pending' && i.thumb);
+    const pendingMetadataItems = items.filter(i => i.status === 'pending' && !i.title && i.thumb);
+    const pendingCategoryItems = items.filter(i => i.status === 'pending' && i.title && !i.category);
+    
+    const isProcessingMetadata = items.some(i => (i.status === 'processing' || i.status === 'compressing') && !i.title);
+    
+    // Phase 1 is incomplete if there are pending metadata items OR items currently processing metadata.
+    const isMetadataPhase = pendingMetadataItems.length > 0 || isProcessingMetadata;
+    const pendingItems = isMetadataPhase ? pendingMetadataItems : pendingCategoryItems;
+
+    if (!isMetadataPhase && pendingCategoryItems.length > 0 && lastPhaseRef.current !== 'category') {
+        lastPhaseRef.current = 'category';
+        showNotification('Phase 2 Started', 'Metadata complete. Now generating categories...');
+    } else if (isMetadataPhase && lastPhaseRef.current !== 'metadata') {
+        lastPhaseRef.current = 'metadata';
+    }
     
     if (config.prioritizeFastest) {
         let totalMs = 0;
@@ -1146,7 +1297,11 @@ export default function App() {
         currentItemIndex = 0;
 
         if (batch.length > 0) {
-            startBatchProcessing(batch, chosenKey);
+            if (isMetadataPhase) {
+                startBatchProcessing(batch, chosenKey);
+            } else {
+                startCategoryBatchProcessing(batch, chosenKey);
+            }
         }
     }
 

@@ -22,7 +22,7 @@ try {
     const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
     
     const firestoreSettings = {
-      experimentalAutoDetectLongPolling: true,
+      experimentalForceLongPolling: true,
     };
     
     if (dbId) {
