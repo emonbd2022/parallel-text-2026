@@ -28,6 +28,7 @@ export const AdminDashboard: React.FC = () => {
         usersData.push(data);
         total += (data.totalProcessedImages || 0);
       });
+      usersData.sort((a, b) => (b.totalProcessedImages || 0) - (a.totalProcessedImages || 0));
       setUsers(usersData);
       setTotalSiteImages(total);
     } catch (error) {
@@ -153,23 +154,34 @@ export const AdminDashboard: React.FC = () => {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 text-sm">
+                  <th className="pb-3 font-semibold w-16">Rank</th>
                   <th className="pb-3 font-semibold w-1/4">User</th>
                   <th className="pb-3 font-semibold">Nickname</th>
                   <th className="pb-3 font-semibold">Credits</th>
                   <th className="pb-3 font-semibold">Plan & Validity</th>
                   <th className="pb-3 font-semibold">Processed</th>
+                  <th className="pb-3 font-semibold">Avg/Day</th>
                   <th className="pb-3 font-semibold">Status</th>
                   <th className="pb-3 font-semibold text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
                 {loading ? (
-                  <tr><td colSpan={7} className="py-8 text-center text-slate-500">Loading users...</td></tr>
+                  <tr><td colSpan={9} className="py-8 text-center text-slate-500">Loading users...</td></tr>
                 ) : filteredUsers.length === 0 ? (
-                  <tr><td colSpan={7} className="py-8 text-center text-slate-500">No users found.</td></tr>
+                  <tr><td colSpan={9} className="py-8 text-center text-slate-500">No users found.</td></tr>
                 ) : (
-                  filteredUsers.map(user => (
+                  filteredUsers.map((user, index) => {
+                        const rank = index + 1;
+                        let avgPerDay = 0;
+                        if (user.joinDate) {
+                          const joinDate = new Date(user.joinDate);
+                          const days = Math.max(1, Math.floor((Date.now() - joinDate.getTime()) / (1000 * 60 * 60 * 24)));
+                          avgPerDay = Math.round((user.totalProcessedImages || 0) / days);
+                        }
+                        return (
                       <tr key={user.uid} className="hover:bg-slate-800/30 transition-colors">
+                        <td className="py-4 font-bold text-slate-400">#{rank}</td>
                         <td className="py-4">
                           <div className="flex items-center gap-3">
                             <img src={user.photoURL || 'https://via.placeholder.com/32'} alt="" className="w-8 h-8 rounded-full" />
@@ -221,8 +233,11 @@ export const AdminDashboard: React.FC = () => {
                            </div>
                         </td>
                         
-                        <td className="py-4 text-slate-400 font-mono">
-                          {user.totalProcessedImages || 0}
+                        <td className="py-4 font-bold text-white">
+                          {(user.totalProcessedImages || 0).toLocaleString()}
+                        </td>
+                        <td className="py-4 text-emerald-400 font-medium">
+                          {avgPerDay.toLocaleString()}/d
                         </td>
                         
                         <td className="py-4">
@@ -244,7 +259,8 @@ export const AdminDashboard: React.FC = () => {
                             </button>
                         </td>
                       </tr>
-                  ))
+                  );
+                })
                 )}
               </tbody>
             </table>

@@ -174,7 +174,7 @@ export default function App() {
           pendingImagesRef.current += imagesToAdd;
         }
       }
-    }, 5000);
+    }, 30000);
     return () => clearInterval(interval);
   }, [userData]);
   const [items, setItems] = useState<ProcessingItem[]>(() => {
@@ -205,14 +205,25 @@ export default function App() {
   const [statusMsg, setStatusMsg] = useState<string>('Ready');
   const [tick, setTick] = useState(0); 
   const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
-  const [startTimeMs, setStartTimeMs] = useState<number | null>(() => {
-    const s = localStorage.getItem('startTimeMs');
-    return s ? parseInt(s) : null;
+  const [elapsedMs, setElapsedMs] = useState<number>(() => {
+    const s = localStorage.getItem('elapsedMs');
+    return s ? parseInt(s, 10) : 0;
   });
   useEffect(() => {
-    if (startTimeMs) localStorage.setItem('startTimeMs', startTimeMs.toString());
-    else localStorage.removeItem('startTimeMs');
-  }, [startTimeMs]);
+    localStorage.setItem('elapsedMs', elapsedMs.toString());
+  }, [elapsedMs]);
+  
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+    if (isProcessing) {
+      interval = setInterval(() => {
+        setElapsedMs(prev => prev + 1000);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isProcessing]);
   const [showStats, setShowStats] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   
@@ -898,10 +909,9 @@ export default function App() {
     
     let timeStr = '0s';
     let timeSavedStr = '0s';
-    const manualSecondsPerImage = 120; // Assume 2 mins per image manually
+    const manualSecondsPerImage = 120;
     
-    if (startTimeMs) {
-      const elapsedMs = Math.max(0, Date.now() - startTimeMs);
+    {
       const elapsedSecs = Math.floor(elapsedMs / 1000);
       const m = Math.floor(elapsedSecs / 60);
       const s = elapsedSecs % 60;
@@ -920,19 +930,6 @@ export default function App() {
         timeSavedStr = `${savedM}m ${savedS}s`;
       } else {
         timeSavedStr = `${savedS}s`;
-      }
-    } else {
-      const savedSecs = completedItems.length * manualSecondsPerImage;
-      const savedH = Math.floor(savedSecs / 3600);
-      const savedM = Math.floor((savedSecs % 3600) / 60);
-      const savedS = savedSecs % 60;
-      
-      if (savedH > 0) {
-        timeSavedStr = `~${savedH}h ${savedM}m`;
-      } else if (savedM > 0) {
-        timeSavedStr = `~${savedM}m ${savedS}s`;
-      } else {
-        timeSavedStr = `~${savedS}s`;
       }
     }
     
@@ -1209,7 +1206,7 @@ export default function App() {
   const handleClear = async () => {
       if (window.confirm('Are you sure you want to clear all items and delete the saved project?')) {
           setIsProcessing(false);
-          setStartTimeMs(null);
+          setElapsedMs(0);
           sessionRequestCountRef.current = 0;
           localStorage.setItem('sessionReqCount', '0');
           setItems([]);
@@ -1294,7 +1291,7 @@ export default function App() {
       }
 
       setIsProcessing(true);
-      if (!startTimeMs) setStartTimeMs(Date.now());
+      
       setStatusMsg("Starting processing...");
   };
   
@@ -1325,8 +1322,7 @@ export default function App() {
   }
 
   let elapsedTimeNode: React.ReactNode = null;
-  if (startTimeMs) {
-      const elapsedMs = Math.max(0, Date.now() - startTimeMs);
+  if (elapsedMs > 0) {
       const elapsedSecs = Math.floor(elapsedMs / 1000);
       const m = Math.floor(elapsedSecs / 60);
       const s = elapsedSecs % 60;

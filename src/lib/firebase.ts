@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { initializeFirestore } from 'firebase/firestore';
+import { initializeFirestore, enableMultiTabIndexedDbPersistence } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -30,6 +30,11 @@ try {
     } else {
       db = initializeFirestore(app, firestoreSettings);
     }
+    
+    // Enable offline persistence
+    enableMultiTabIndexedDbPersistence(db).catch((err) => {
+      console.warn("Firebase persistence error:", err.code);
+    });
     
     auth = getAuth(app);
   }
