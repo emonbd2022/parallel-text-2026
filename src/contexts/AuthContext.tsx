@@ -67,6 +67,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             
             await setDoc(userRef, newUserData);
             setUserData(newUserData as UserData);
+            
+            // Send admin notification
+            if (!isFirstUser) {
+                try {
+                    await addDoc(collection(db, 'notifications'), {
+                        targetUid: 'admin',
+                        type: 'signup',
+                        message: `New user signed up: ${currentUser.email}`,
+                        read: false,
+                        createdAt: serverTimestamp()
+                    });
+                } catch (e) {
+                    console.error("Failed to notify admin", e);
+                }
+            }
           } else {
             // Set initial data
             setUserData(docSnap.data() as UserData);

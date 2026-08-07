@@ -1,9 +1,9 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState } from 'react';
-import { collection, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, getAggregateFromServer, sum, where } from 'firebase/firestore';
+import { collection, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, getAggregateFromServer, sum, where, deleteDoc, getDoc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Calendar } from 'lucide-react';
+import { Shield, Search, RefreshCw, Calendar, Trash2 } from 'lucide-react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
@@ -22,6 +22,61 @@ export const AdminDashboard: React.FC = () => {
   const [endDate, setEndDate] = useState<Date | null>(null);
   const [dateRangeImages, setDateRangeImages] = useState(0);
   const [showStats, setShowStats] = useState(false);
+  const [isDeletingCsvs, setIsDeletingCsvs] = useState(false);
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
+  
+  useEffect(() => {
+    const fetchMaintenance = async () => {
+      const docRef = doc(db, 'settings', 'general');
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        setMaintenanceMode(snap.data().maintenanceMode || false);
+      }
+    };
+    fetchMaintenance();
+  }, []);
+  
+  const toggleMaintenance = async () => {
+    const newMode = !maintenanceMode;
+    setMaintenanceMode(newMode);
+    await setDoc(doc(db, 'settings', 'general'), { maintenanceMode: newMode }, { merge: true });
+    alert(`Maintenance mode is now ${newMode ? 'ON' : 'OFF'}`);
+  };
+
+  const handleDeleteOldCsvs = async () => {
+    if (!confirm('Are you sure you want to delete CSV exports older than 30 days?')) return;
+    setIsDeletingCsvs(true);
+    try {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const q = query(collection(db, 'csv_exports'), where('createdAt', '<', thirtyDaysAgo));
+      const snapshot = await getDocs(q);
+      const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
+      await Promise.all(deletePromises);
+      alert(`Deleted ${deletePromises.length} old CSV exports.`);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to delete old CSV exports.');
+    } finally {
+      setIsDeletingCsvs(false);
+    }
+  };
+
+  const handleDeleteAllCsvs = async () => {
+    if (!confirm('WARNING: Are you sure you want to delete ALL CSV exports? This cannot be undone.')) return;
+    setIsDeletingCsvs(true);
+    try {
+      const snapshot = await getDocs(collection(db, 'csv_exports'));
+      const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
+      await Promise.all(deletePromises);
+      alert(`Deleted all ${deletePromises.length} CSV exports.`);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to delete all CSV exports.');
+    } finally {
+      setIsDeletingCsvs(false);
+    }
+  };
 
   
   const fetchTotalAggregate = async () => {
@@ -165,6 +220,24 @@ export const AdminDashboard: React.FC = () => {
     });
   };
 
+  const handleSendNotification = async (uid: string) => {
+      const msg = prompt('Enter notification message for this user:');
+      if (!msg) return;
+      try {
+          await addDoc(collection(db, 'notifications'), {
+              targetUid: uid,
+              type: 'admin_msg',
+              message: msg,
+              read: false,
+              createdAt: serverTimestamp()
+          });
+          alert('Notification sent!');
+      } catch (e) {
+          console.error(e);
+          alert('Failed to send notification');
+      }
+  };
+
   const handleResetCredits = async (uid: string) => {
     if (confirm('Are you sure you want to reset this user\'s credits to 0?')) {
         await handleUpdateUser(uid, { credits: 0, plan: 'free', unlimited: false });
@@ -191,10 +264,25 @@ export const AdminDashboard: React.FC = () => {
             Admin Dashboard
           </h1>
           
-          <div className="flex gap-4">
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="flex items-center gap-2 cursor-pointer bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 shadow-lg">
+                <input type="checkbox" checked={maintenanceMode} onChange={toggleMaintenance} className="w-4 h-4 accent-red-500" />
+                <span className="text-sm font-bold text-red-400">Maintenance Mode</span>
+            </label>
             <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg">
               <div className="text-sm text-slate-400">Total Site Images Processed</div>
               <div className="text-2xl font-bold text-white">{totalSiteImages.toLocaleString()}</div>
+            </div>
+            <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg flex flex-col gap-2">
+              <div className="text-sm text-slate-400">Storage Management</div>
+              <div className="flex items-center gap-2">
+                 <button disabled={isDeletingCsvs} onClick={handleDeleteOldCsvs} className="px-3 py-1 bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 rounded text-xs font-bold transition-colors">
+                    Delete &gt; 30 Days
+                 </button>
+                 <button disabled={isDeletingCsvs} onClick={handleDeleteAllCsvs} className="px-3 py-1 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs font-bold transition-colors flex items-center gap-1">
+                    <Trash2 className="w-3 h-3"/> All CSVs
+                 </button>
+              </div>
             </div>
             <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg">
               <div className="text-sm text-slate-400">Date Range Stats</div>
