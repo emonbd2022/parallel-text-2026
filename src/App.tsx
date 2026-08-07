@@ -101,8 +101,7 @@ export default function App() {
   const navigate = useNavigate();
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const pendingCreditsRef = useRef(0);
-  const pendingImagesRef = useRef(0);
+
     const [filter, setFilter] = useState<'all' | 'ongoing' | 'uncompleted' | 'failed'>('all');
     const [keys, setKeys] = useState<ApiKey[]>(() => {
     try {
@@ -148,44 +147,6 @@ export default function App() {
     return () => clearInterval(idx);
   }, []);
 
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      if ((pendingCreditsRef.current > 0 || pendingImagesRef.current > 0) && userData) {
-        const creditsToDeduct = pendingCreditsRef.current;
-        const imagesToAdd = pendingImagesRef.current;
-        
-        pendingCreditsRef.current = 0;
-        pendingImagesRef.current = 0;
-
-        try {
-          const updates: any = {
-              totalProcessedImages: increment(imagesToAdd)
-          };
-          if (!userData.unlimited) {
-              updates.credits = increment(-creditsToDeduct);
-          }
-          await updateDoc(doc(db, 'users', userData.uid), updates);
-          
-          if (imagesToAdd > 0) {
-              try {
-                  await addDoc(collection(db, 'activity_logs'), {
-                      uid: userData.uid,
-                      imagesProcessed: imagesToAdd,
-                      timestamp: serverTimestamp()
-                  });
-              } catch (e) {
-                  console.error('Failed to add activity log', e);
-              }
-          }
-        } catch (e) {
-          console.error('Failed to update credits', e);
-          pendingCreditsRef.current += creditsToDeduct;
-          pendingImagesRef.current += imagesToAdd;
-        }
-      }
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [userData]);
   const [items, setItems] = useState<ProcessingItem[]>(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_ITEMS) || '[]');
@@ -827,11 +788,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
         });
       }
 
-      if (results && Object.keys(results).length > 0 && userData) {
-        const numSuccess = Object.keys(results).length;
-        pendingCreditsRef.current += numSuccess;
-        pendingImagesRef.current += numSuccess;
-      }
+
 
             setItems(prev => prev.map(p => {
           if (results[p.id]) {
@@ -1021,8 +978,27 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
-    // Save to Firestore for 7-day retention in dashboard
+    // Update stats and save to Firestore
     if (userData) {
+      const numExported = completedItems.length;
+      const totalRequests = sessionRequestCountRef.current;
+      
+      const updates: any = {
+          totalProcessedImages: increment(numExported)
+      };
+      if (!userData.unlimited) {
+          updates.credits = increment(-numExported);
+      }
+      
+      updateDoc(doc(db, 'users', userData.uid), updates).catch(e => console.error("Failed to update user stats:", e));
+      
+      addDoc(collection(db, 'activity_logs'), {
+          uid: userData.uid,
+          imagesProcessed: numExported,
+          apiRequests: totalRequests,
+          timestamp: serverTimestamp()
+      }).catch(e => console.error("Failed to add activity log:", e));
+
       addDoc(collection(db, 'csv_exports'), {
         uid: userData.uid,
         filename: exportFileName,

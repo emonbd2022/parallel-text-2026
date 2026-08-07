@@ -3,7 +3,8 @@ import React, { useEffect, useState } from 'react';
 import { collection, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, getAggregateFromServer, sum, where, deleteDoc, getDoc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Calendar, Trash2 } from 'lucide-react';
+import { Shield, Search, RefreshCw, Calendar, Trash2, Activity } from 'lucide-react';
+import { UserActivityModal } from '../components/UserActivityModal';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
@@ -24,6 +25,7 @@ export const AdminDashboard: React.FC = () => {
   const [showStats, setShowStats] = useState(false);
   const [isDeletingCsvs, setIsDeletingCsvs] = useState(false);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [selectedUserForActivity, setSelectedUserForActivity] = useState<UserData | null>(null);
   
   useEffect(() => {
     const fetchMaintenance = async () => {
@@ -147,6 +149,24 @@ export const AdminDashboard: React.FC = () => {
   useEffect(() => {
     fetchTotalAggregate();
     fetchUsers(false);
+
+    // Auto-delete CSVs older than 30 days silently on load
+    const autoCleanup = async () => {
+      try {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const q = query(collection(db, 'csv_exports'), where('createdAt', '<', thirtyDaysAgo));
+        const snapshot = await getDocs(q);
+        if (!snapshot.empty) {
+            const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
+            await Promise.all(deletePromises);
+            console.log(`Auto-cleaned ${deletePromises.length} old CSVs`);
+        }
+      } catch (e) {
+        console.error("Auto-cleanup failed:", e);
+      }
+    };
+    autoCleanup();
   }, []);
 
 
@@ -251,6 +271,8 @@ export const AdminDashboard: React.FC = () => {
   );
 
   return (
+    <>
+    {selectedUserForActivity && <UserActivityModal user={selectedUserForActivity} onClose={() => setSelectedUserForActivity(null)} />}
     <motion.div 
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -481,5 +503,6 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
     </motion.div>
+    </>
   );
 };
