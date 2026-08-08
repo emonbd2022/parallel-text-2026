@@ -30,37 +30,33 @@ export const Dashboard: React.FC = () => {
       setLogs(userData?.appData?.logs || JSON.parse(localStorage.getItem('parrarel_logs_v1') || '[]'));
       setModelStats(userData?.appData?.modelStats || JSON.parse(localStorage.getItem('parrarel_stats_v1') || '{}'));
     } catch {}
-  }, [userData]);
+  }, [userData?.appData]);
 
   useEffect(() => {
     if (!userData) return;
-    const fetchExports = async () => {
+    const fetchExports = () => {
       try {
-        const q = query(
-          collection(db, 'csv_exports'),
-          where('uid', '==', userData.uid)
-        );
-        const snapshot = await getDocs(q);
-        const exports: any[] = [];
+        const localExports = JSON.parse(localStorage.getItem('parrarel_exports_v1') || '[]');
+        const userExports = localExports.filter((e: any) => e.uid === userData.uid);
         const now = new Date();
-        const deletePromises: Promise<void>[] = [];
         
-        snapshot.forEach(docSnap => {
-          const data = docSnap.data();
+        const validExports = userExports.filter((data: any) => {
           if (data.createdAt) {
-            const createdAtDate = data.createdAt.toDate();
+            const createdAtDate = new Date(data.createdAt);
             const daysOld = (now.getTime() - createdAtDate.getTime()) / (1000 * 3600 * 24);
-            if (daysOld <= 7) {
-              exports.push({ id: docSnap.id, ...data });
-            } else {
-              deletePromises.push(deleteDoc(doc(db, 'csv_exports', docSnap.id)));
-            }
+            return daysOld <= 7;
           }
+          return false;
         });
         
-        await Promise.all(deletePromises);
-        exports.sort((a, b) => b.createdAt.toDate().getTime() - a.createdAt.toDate().getTime());
-        setCsvExports(exports);
+        // Update local storage if any were expired
+        if (validExports.length !== userExports.length) {
+            const otherUsersExports = localExports.filter((e: any) => e.uid !== userData.uid);
+            localStorage.setItem('parrarel_exports_v1', JSON.stringify([...otherUsersExports, ...validExports]));
+        }
+        
+        validExports.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setCsvExports(validExports);
       } catch (err) {
         console.error("Error fetching exports:", err);
       } finally {
@@ -68,7 +64,7 @@ export const Dashboard: React.FC = () => {
       }
     };
     fetchExports();
-  }, [userData]);
+  }, [userData?.uid]);
 
   if (!userData) return null;
 
@@ -207,7 +203,7 @@ export const Dashboard: React.FC = () => {
                     </div>
                     <div>
                       <div className="font-semibold text-slate-200">{exp.filename}</div>
-                      <div className="text-xs text-slate-400">{exp.createdAt?.toDate().toLocaleString()}</div>
+                      <div className="text-xs text-slate-400">{new Date(exp.createdAt).toLocaleString()}</div>
                     </div>
                   </div>
                   <button 

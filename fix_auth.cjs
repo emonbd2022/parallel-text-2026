@@ -1,4 +1,6 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+const fs = require('fs');
+
+const code = `import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, onAuthStateChanged } from 'firebase/auth';
 import { doc, setDoc, onSnapshot, serverTimestamp, addDoc, collection } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
@@ -30,18 +32,16 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({ user: null, userData: null, loading: true });
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const cachedData = (() => {
+  const [user, setUser] = useState<User | null>(null);
+  const [userData, setUserData] = useState<UserData | null>(() => {
     try {
       const cached = localStorage.getItem('cachedUserData');
       return cached ? JSON.parse(cached) : null;
     } catch {
       return null;
     }
-  })();
-
-  const [user, setUser] = useState<User | null>(cachedData ? { uid: cachedData.uid } as User : null);
-  const [userData, setUserData] = useState<UserData | null>(cachedData);
-  const [loading, setLoading] = useState(cachedData ? false : true);
+  });
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (userData) {
@@ -93,7 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                       await addDoc(collection(db, 'notifications'), {
                           targetUid: 'admin',
                           type: 'signup',
-                          message: `New user signed up: ${currentUser.email}`,
+                          message: \`New user signed up: \${currentUser.email}\`,
                           read: false,
                           createdAt: serverTimestamp()
                       });
@@ -142,3 +142,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 };
 
 export const useAuth = () => useContext(AuthContext);
+`;
+
+fs.writeFileSync('src/contexts/AuthContext.tsx', code);

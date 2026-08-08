@@ -32,7 +32,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         console.warn("Error setting up notifications listener:", e);
     }
     return () => unsub();
-  }, [userData]);
+  }, [userData?.uid, userData?.role]);
   
   const unreadCount = notifications.filter(n => !n.read).length;
   
