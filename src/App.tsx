@@ -647,8 +647,8 @@ export default function App() {
       }));
       
       const batchDuration = Date.now() - batchStartTime;
-      const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), itemCount: batchItems.length, durationMs: batchDuration };
-      setLogs(prev => [newLog, ...prev].slice(0, 5000));
+      // const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), itemCount: batchItems.length, durationMs: batchDuration };
+      // setLogs(prev => [newLog, ...prev].slice(0, 5000));
       setStatusMsg("Waiting...");
 
     } catch (error: any) {
@@ -982,31 +982,37 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
 
     // Update stats and save to Firestore
     if (userData) {
-      const numExported = completedItems.length;
-      const totalRequests = sessionRequestCountRef.current;
+      const newlyExportedItems = completedItems.filter(i => !(i as any).exported);
+      const numExported = newlyExportedItems.length;
       
-      const updates: any = {
-          totalProcessedImages: increment(numExported)
-      };
-      if (!userData.unlimited) {
-          updates.credits = increment(-numExported);
+      if (numExported > 0) {
+          const totalRequests = sessionRequestCountRef.current;
+          
+          const updates: any = {
+              totalProcessedImages: increment(numExported)
+          };
+          if (!userData.unlimited) {
+              updates.credits = increment(-numExported);
+          }
+          
+          updateDoc(doc(db, 'users', userData.uid), updates).catch(e => console.error("Failed to update user stats:", e));
+          
+          addDoc(collection(db, 'activity_logs'), {
+              uid: userData.uid,
+              imagesProcessed: numExported,
+              apiRequests: totalRequests,
+              timestamp: serverTimestamp()
+          }).catch(e => console.error("Failed to add activity log:", e));
+    
+          addDoc(collection(db, 'csv_exports'), {
+            uid: userData.uid,
+            filename: exportFileName,
+            csvData: csvContent,
+            createdAt: serverTimestamp()
+          }).catch(err => console.error("Failed to save CSV to Firestore:", err));
+          
+          setItems(prev => prev.map(i => i.status === 'done' ? { ...i, exported: true } : i));
       }
-      
-      updateDoc(doc(db, 'users', userData.uid), updates).catch(e => console.error("Failed to update user stats:", e));
-      
-      addDoc(collection(db, 'activity_logs'), {
-          uid: userData.uid,
-          imagesProcessed: numExported,
-          apiRequests: totalRequests,
-          timestamp: serverTimestamp()
-      }).catch(e => console.error("Failed to add activity log:", e));
-
-      addDoc(collection(db, 'csv_exports'), {
-        uid: userData.uid,
-        filename: exportFileName,
-        csvData: csvContent,
-        createdAt: serverTimestamp()
-      }).catch(err => console.error("Failed to save CSV to Firestore:", err));
     }
 
     const newRecord: HistoryRecord = {

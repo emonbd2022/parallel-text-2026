@@ -36,7 +36,8 @@ export interface ProcessingItem {
   category?: string;
   assignedKeyId?: string;
   metadataKeyId?: string; // Tracks which key is currently processing this item
-  failedKeyIds: string[]; // Tracks which keys have already failed for this item
+  failedKeyIds: string[];
+  exported?: boolean; // Tracks which keys have already failed for this item
   usedModel?: string; // The model used to generate the metadata
 }
 

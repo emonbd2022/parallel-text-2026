@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { collection, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, getAggregateFromServer, sum, where, deleteDoc, getDoc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Calendar, Trash2, Activity } from 'lucide-react';
+import { Shield, Search, RefreshCw, Calendar, Trash2, Activity, MessageSquare, AlertTriangle } from 'lucide-react';
 import { UserActivityModal } from '../components/UserActivityModal';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
@@ -29,6 +29,9 @@ export const AdminDashboard: React.FC = () => {
   const [showGlobalNotif, setShowGlobalNotif] = useState(false);
   const [globalNotifMsg, setGlobalNotifMsg] = useState("");
   const [isSendingGlobal, setIsSendingGlobal] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<{title: string, message: string, onConfirm: () => void} | null>(null);
+  const [notifModal, setNotifModal] = useState<{isOpen: boolean, targetUid?: string, targetName?: string, message: string}>({isOpen: false, message: ''});
+
   
   useEffect(() => {
     const fetchMaintenance = async () => {
@@ -45,12 +48,15 @@ export const AdminDashboard: React.FC = () => {
     const newMode = !maintenanceMode;
     setMaintenanceMode(newMode);
     await setDoc(doc(db, 'settings', 'general'), { maintenanceMode: newMode }, { merge: true });
-    alert(`Maintenance mode is now ${newMode ? 'ON' : 'OFF'}`);
+    console.log(`Maintenance mode is now ${newMode ? 'ON' : 'OFF'}`);
   };
 
-  const handleDeleteOldCsvs = async () => {
-    if (!confirm('Are you sure you want to delete CSV exports older than 30 days?')) return;
-    setIsDeletingCsvs(true);
+  const handleDeleteOldCsvs = () => {
+    setConfirmAction({
+      title: 'Delete Old CSVs',
+      message: 'Are you sure you want to delete CSV exports older than 30 days?',
+      onConfirm: async () => {
+        setIsDeletingCsvs(true);
     try {
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -58,29 +64,32 @@ export const AdminDashboard: React.FC = () => {
       const snapshot = await getDocs(q);
       const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
       await Promise.all(deletePromises);
-      alert(`Deleted ${deletePromises.length} old CSV exports.`);
-    } catch (e) {
-      console.error(e);
-      alert('Failed to delete old CSV exports.');
-    } finally {
-      setIsDeletingCsvs(false);
-    }
+      setConfirmAction(null);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setIsDeletingCsvs(false);
+      }
+    }});
   };
 
-  const handleDeleteAllCsvs = async () => {
-    if (!confirm('WARNING: Are you sure you want to delete ALL CSV exports? This cannot be undone.')) return;
-    setIsDeletingCsvs(true);
+  const handleDeleteAllCsvs = () => {
+    setConfirmAction({
+      title: 'Delete All CSVs',
+      message: 'WARNING: Are you sure you want to delete ALL CSV exports? This cannot be undone.',
+      onConfirm: async () => {
+        setIsDeletingCsvs(true);
     try {
       const snapshot = await getDocs(collection(db, 'csv_exports'));
       const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
       await Promise.all(deletePromises);
-      alert(`Deleted all ${deletePromises.length} CSV exports.`);
-    } catch (e) {
-      console.error(e);
-      alert('Failed to delete all CSV exports.');
-    } finally {
-      setIsDeletingCsvs(false);
-    }
+      setConfirmAction(null);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setIsDeletingCsvs(false);
+      }
+    }});
   };
 
   
@@ -207,7 +216,7 @@ export const AdminDashboard: React.FC = () => {
       setUsers(prev => prev.map(u => u.uid === uid ? { ...u, ...updates } : u));
     } catch (error) {
       console.error("Error updating user:", error);
-      alert("Failed to update user");
+      console.log("Failed to update user");
     }
   };
 
@@ -244,13 +253,22 @@ export const AdminDashboard: React.FC = () => {
   };
 
   
-  const handleSendGlobalNotification = async () => {
-      if (!globalNotifMsg.trim()) return;
+  const handleSendNotificationAction = async () => {
+      if (!notifModal.message.trim()) return;
       setIsSendingGlobal(true);
       try {
           const allUsersSnap = await getDocs(collection(db, 'users'));
           let count = 0;
-          for (const docSnap of allUsersSnap.docs) {
+          if (notifModal.targetUid) {
+              await addDoc(collection(db, 'notifications'), {
+                  targetUid: notifModal.targetUid,
+                  type: 'admin_msg',
+                  message: notifModal.message,
+                  read: false,
+                  createdAt: serverTimestamp()
+              });
+          } else {
+            for (const docSnap of allUsersSnap.docs) {
               await addDoc(collection(db, 'notifications'), {
                   targetUid: docSnap.id,
                   type: 'admin_msg',
@@ -260,34 +278,17 @@ export const AdminDashboard: React.FC = () => {
               });
               count++;
           }
-          alert(`Sent to ${count} users`);
-          setShowGlobalNotif(false);
-          setGlobalNotifMsg("");
+          }
+          setNotifModal({isOpen: false, message: ''});
       } catch (e) {
           console.error(e);
-          alert("Failed to send global notification");
+          
       } finally {
           setIsSendingGlobal(false);
       }
   };
 
-const handleSendNotification = async (uid: string) => {
-      const msg = prompt('Enter notification message for this user:');
-      if (!msg) return;
-      try {
-          await addDoc(collection(db, 'notifications'), {
-              targetUid: uid,
-              type: 'admin_msg',
-              message: msg,
-              read: false,
-              createdAt: serverTimestamp()
-          });
-          alert('Notification sent!');
-      } catch (e) {
-          console.error(e);
-          alert('Failed to send notification');
-      }
-  };
+
 
   const handleResetCredits = async (uid: string) => {
     if (confirm('Are you sure you want to reset this user\'s credits to 0?')) {
@@ -325,7 +326,7 @@ const handleSendNotification = async (uid: string) => {
             
             <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg flex flex-col gap-2">
               <div className="text-sm text-slate-400">Notifications</div>
-              <button onClick={() => setShowGlobalNotif(true)} className="px-3 py-1 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-xs font-bold transition-colors">
+              <button onClick={() => setNotifModal({isOpen: true, message: ''})} className="px-3 py-1 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-xs font-bold transition-colors">
                  Send Global Message
               </button>
             </div>
@@ -488,10 +489,18 @@ const handleSendNotification = async (uid: string) => {
                             </label>
                         </td>
                         
-                        <td className="py-4 text-right">
-                            <button onClick={() => handleResetCredits(user.uid)} className="p-1.5 bg-orange-500/10 text-orange-400 rounded hover:bg-orange-500/20 transition-colors" title="Reset Credits & Plan">
-                               <RefreshCw className="w-4 h-4" />
-                            </button>
+                        <td className="py-4">
+                            <div className="flex items-center gap-2 justify-end">
+                              <button onClick={() => setSelectedUserForActivity(user)} className="p-1.5 bg-blue-500/10 text-blue-400 rounded hover:bg-blue-500/20 transition-colors" title="View User Analytics">
+                                 <Activity className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => setNotifModal({isOpen: true, targetUid: user.uid, targetName: user.name, message: ''})} className="p-1.5 bg-purple-500/10 text-purple-400 rounded hover:bg-purple-500/20 transition-colors" title="Send Notification">
+                                 <MessageSquare className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => handleResetCredits(user.uid)} className="p-1.5 bg-orange-500/10 text-orange-400 rounded hover:bg-orange-500/20 transition-colors" title="Reset Credits & Plan">
+                                 <RefreshCw className="w-4 h-4" />
+                              </button>
+                            </div>
                         </td>
                       </tr>
                   );
@@ -542,26 +551,43 @@ const handleSendNotification = async (uid: string) => {
         </div>
       )}
 
-        {showGlobalNotif && (
+                {notifModal.isOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
              <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl relative">
-                <h3 className="text-xl font-bold text-white mb-4">Send Global Notification</h3>
+                <h3 className="text-xl font-bold text-white mb-4">Send Notification {notifModal.targetName ? `to ${notifModal.targetName}` : 'to All Users'}</h3>
                 <textarea 
                    className="w-full h-32 bg-slate-950 border border-slate-700 rounded-lg p-3 text-slate-200 outline-none focus:border-purple-500 mb-4 resize-none"
-                   placeholder="Enter message for ALL users..."
-                   value={globalNotifMsg}
-                   onChange={e => setGlobalNotifMsg(e.target.value)}
+                   placeholder="Enter message..."
+                   value={notifModal.message}
+                   onChange={e => setNotifModal(prev => ({...prev, message: e.target.value}))}
                 />
                 <div className="flex gap-3 justify-end">
-                   <button onClick={() => setShowGlobalNotif(false)} disabled={isSendingGlobal} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
-                   <button onClick={handleSendGlobalNotification} disabled={isSendingGlobal || !globalNotifMsg.trim()} className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-500 font-bold flex items-center gap-2">
-                      {isSendingGlobal ? 'Sending...' : 'Send to All Users'}
+                   <button onClick={() => setNotifModal({isOpen: false, message: ''})} disabled={isSendingGlobal} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
+                   <button onClick={handleSendNotificationAction} disabled={isSendingGlobal || !notifModal.message.trim()} className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-500 font-bold flex items-center gap-2">
+                      {isSendingGlobal ? 'Sending...' : 'Send'}
                    </button>
                 </div>
              </div>
           </div>
         )}
-
+        
+        {confirmAction && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+             <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl relative">
+                <div className="flex items-center gap-3 mb-4">
+                  <AlertTriangle className="w-6 h-6 text-red-500" />
+                  <h3 className="text-xl font-bold text-white">{confirmAction.title}</h3>
+                </div>
+                <p className="text-slate-300 mb-6">{confirmAction.message}</p>
+                <div className="flex gap-3 justify-end">
+                   <button onClick={() => setConfirmAction(null)} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
+                   <button onClick={confirmAction.onConfirm} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-500 font-bold">
+                      Confirm
+                   </button>
+                </div>
+             </div>
+          </div>
+        )}
     </motion.div>
     </>
   );
