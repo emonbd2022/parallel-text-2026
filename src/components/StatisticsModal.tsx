@@ -29,8 +29,8 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
         let daily = 0, weekly = 0, monthly = 0;
         const now = new Date();
         const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-        const startOfWeek = startOfDay - (now.getDay() * 24 * 60 * 60 * 1000);
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+        const startOfWeek = now.getTime() - (7 * 24 * 60 * 60 * 1000);
+        const startOfMonth = now.getTime() - (30 * 24 * 60 * 60 * 1000);
 
         sortedLogs.forEach(log => {
             const time = new Date(log.timestamp).getTime();
@@ -171,12 +171,12 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
                             <p className="text-xs text-slate-500 mt-1">images processed</p>
                         </div>
                         <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5">
-                            <p className="text-sm font-semibold text-slate-400">This Week</p>
+                            <p className="text-sm font-semibold text-slate-400">Last 7 Days</p>
                             <p className="text-3xl font-bold text-blue-400 mt-1">{stats.weekly}</p>
                             <p className="text-xs text-slate-500 mt-1">images processed</p>
                         </div>
                         <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5">
-                            <p className="text-sm font-semibold text-slate-400">This Month</p>
+                            <p className="text-sm font-semibold text-slate-400">Last 30 Days</p>
                             <p className="text-3xl font-bold text-emerald-400 mt-1">{stats.monthly}</p>
                             <p className="text-xs text-slate-500 mt-1">images processed</p>
                         </div>
