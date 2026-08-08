@@ -41,6 +41,17 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   };
 
   
+
+  const handleOpenNotifications = () => {
+      const willShow = !showNotifications;
+      setShowNotifications(willShow);
+      if (willShow) {
+          notifications.filter(n => !n.read).forEach(n => {
+              updateDoc(doc(db, 'notifications', n.id), { read: true }).catch(console.error);
+          });
+      }
+  };
+
   useEffect(() => {
     let unsub = () => {};
     try {
@@ -126,7 +137,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           <div className="w-px h-6 bg-slate-800 mx-2" />
           {userData ? (
             <>
-              <div className="relative cursor-pointer mr-2 flex items-center" onClick={() => setShowNotifications(!showNotifications)}>
+              <div className="relative cursor-pointer mr-2 flex items-center" onClick={handleOpenNotifications}>
                  <Bell className="w-5 h-5 text-slate-400 hover:text-white transition-colors" />
                  {unreadCount > 0 && <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">{unreadCount}</span>}
               </div>

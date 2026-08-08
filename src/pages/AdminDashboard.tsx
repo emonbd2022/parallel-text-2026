@@ -26,6 +26,9 @@ export const AdminDashboard: React.FC = () => {
   const [isDeletingCsvs, setIsDeletingCsvs] = useState(false);
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [selectedUserForActivity, setSelectedUserForActivity] = useState<UserData | null>(null);
+  const [showGlobalNotif, setShowGlobalNotif] = useState(false);
+  const [globalNotifMsg, setGlobalNotifMsg] = useState("");
+  const [isSendingGlobal, setIsSendingGlobal] = useState(false);
   
   useEffect(() => {
     const fetchMaintenance = async () => {
@@ -240,7 +243,35 @@ export const AdminDashboard: React.FC = () => {
     });
   };
 
-  const handleSendNotification = async (uid: string) => {
+  
+  const handleSendGlobalNotification = async () => {
+      if (!globalNotifMsg.trim()) return;
+      setIsSendingGlobal(true);
+      try {
+          const allUsersSnap = await getDocs(collection(db, 'users'));
+          let count = 0;
+          for (const docSnap of allUsersSnap.docs) {
+              await addDoc(collection(db, 'notifications'), {
+                  targetUid: docSnap.id,
+                  type: 'admin_msg',
+                  message: globalNotifMsg,
+                  read: false,
+                  createdAt: serverTimestamp()
+              });
+              count++;
+          }
+          alert(`Sent to ${count} users`);
+          setShowGlobalNotif(false);
+          setGlobalNotifMsg("");
+      } catch (e) {
+          console.error(e);
+          alert("Failed to send global notification");
+      } finally {
+          setIsSendingGlobal(false);
+      }
+  };
+
+const handleSendNotification = async (uid: string) => {
       const msg = prompt('Enter notification message for this user:');
       if (!msg) return;
       try {
@@ -291,6 +322,14 @@ export const AdminDashboard: React.FC = () => {
                 <input type="checkbox" checked={maintenanceMode} onChange={toggleMaintenance} className="w-4 h-4 accent-red-500" />
                 <span className="text-sm font-bold text-red-400">Maintenance Mode</span>
             </label>
+            
+            <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg flex flex-col gap-2">
+              <div className="text-sm text-slate-400">Notifications</div>
+              <button onClick={() => setShowGlobalNotif(true)} className="px-3 py-1 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-xs font-bold transition-colors">
+                 Send Global Message
+              </button>
+            </div>
+
             <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg">
               <div className="text-sm text-slate-400">Total Site Images Processed</div>
               <div className="text-2xl font-bold text-white">{totalSiteImages.toLocaleString()}</div>

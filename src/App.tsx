@@ -4,7 +4,8 @@ import { ProcessingQueue } from './components/ProcessingQueue';
 import { Sidebar } from './components/Sidebar';
 import { StatisticsModal } from './components/StatisticsModal';
 import { compressImage } from './services/imageUtils';
-import { generateMetadataBatch, generateCategoriesBatch } from './services/geminiService';
+import { generateMetadataBatch } from './services/geminiService';
+import { generateCategoriesBatch } from './services/geminiCategoryService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
 import { Clock, Key, Hourglass, Cat, Layers } from 'lucide-react';
 import confetti from 'canvas-confetti';
@@ -647,7 +648,7 @@ export default function App() {
       
       const batchDuration = Date.now() - batchStartTime;
       const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), itemCount: batchItems.length, durationMs: batchDuration };
-      setLogs(prev => [newLog, ...prev].slice(0, 50));
+      setLogs(prev => [newLog, ...prev].slice(0, 5000));
       setStatusMsg("Waiting...");
 
     } catch (error: any) {
@@ -799,6 +800,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                  keywords: results[p.id].keywords,
                  category: '',
                  assignedKeyId: undefined,
+                 metadataKeyId: keyObj.id,
                  retryAfter: undefined,
                  failedKeyIds: [],
                  usedModel: usedModel,
@@ -860,7 +862,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
         itemCount: batchItems.length,
         durationMs: batchDuration
       };
-      setLogs(prev => [...prev, newLog]);
+      setLogs(prev => [newLog, ...prev].slice(0, 5000));
 
     } catch (error: any) {
       console.warn(`Key ${keyObj.label} failed for batch:`, error);
@@ -1266,7 +1268,11 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             }
 
             // CRITICAL: Check if this item has already failed with this specific key
-            if (!candidate.failedKeyIds.includes(chosenKey.id)) {
+            const isDifferentKeyRequired = !isMetadataPhase && keys.length > 1;
+            const meetsKeyCondition = !candidate.failedKeyIds.includes(chosenKey.id) &&
+                                      (!isDifferentKeyRequired || candidate.metadataKeyId !== chosenKey.id);
+
+            if (meetsKeyCondition) {
                 batch.push(candidate);
                 // Remove from local queue so other keys don't pick it in this tick
                 sortedQueue.splice(currentItemIndex, 1);
