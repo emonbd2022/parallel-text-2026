@@ -23,7 +23,7 @@ export const AdminDashboard: React.FC = () => {
   const [endDate, setEndDate] = useState<Date | null>(null);
   const [dateRangeImages, setDateRangeImages] = useState(0);
   const [showStats, setShowStats] = useState(false);
-  const [isDeletingCsvs, setIsDeletingCsvs] = useState(false);
+  
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [selectedUserForActivity, setSelectedUserForActivity] = useState<UserData | null>(null);
   const [showGlobalNotif, setShowGlobalNotif] = useState(false);
@@ -51,46 +51,7 @@ export const AdminDashboard: React.FC = () => {
     console.log(`Maintenance mode is now ${newMode ? 'ON' : 'OFF'}`);
   };
 
-  const handleDeleteOldCsvs = () => {
-    setConfirmAction({
-      title: 'Delete Old CSVs',
-      message: 'Are you sure you want to delete CSV exports older than 30 days?',
-      onConfirm: async () => {
-        setIsDeletingCsvs(true);
-    try {
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const q = query(collection(db, 'csv_exports'), where('createdAt', '<', thirtyDaysAgo));
-      const snapshot = await getDocs(q);
-      const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
-      await Promise.all(deletePromises);
-      setConfirmAction(null);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setIsDeletingCsvs(false);
-      }
-    }});
-  };
 
-  const handleDeleteAllCsvs = () => {
-    setConfirmAction({
-      title: 'Delete All CSVs',
-      message: 'WARNING: Are you sure you want to delete ALL CSV exports? This cannot be undone.',
-      onConfirm: async () => {
-        setIsDeletingCsvs(true);
-    try {
-      const snapshot = await getDocs(collection(db, 'csv_exports'));
-      const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
-      await Promise.all(deletePromises);
-      setConfirmAction(null);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setIsDeletingCsvs(false);
-      }
-    }});
-  };
 
   
   const fetchTotalAggregate = async () => {
@@ -162,24 +123,7 @@ export const AdminDashboard: React.FC = () => {
     fetchTotalAggregate();
     fetchUsers(false);
 
-    // Auto-delete CSVs older than 30 days silently on load
-    const autoCleanup = async () => {
-      try {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        const q = query(collection(db, 'csv_exports'), where('createdAt', '<', thirtyDaysAgo));
-        const snapshot = await getDocs(q);
-        if (!snapshot.empty) {
-            const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
-            await Promise.all(deletePromises);
-            console.log(`Auto-cleaned ${deletePromises.length} old CSVs`);
-        }
-      } catch (e) {
-        console.error("Auto-cleanup failed:", e);
-      }
-    };
-    autoCleanup();
-  }, []);
+    }, []);
 
 
   useEffect(() => {
@@ -324,28 +268,7 @@ export const AdminDashboard: React.FC = () => {
                 <span className="text-sm font-bold text-red-400">Maintenance Mode</span>
             </label>
             
-            <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg flex flex-col gap-2">
-              <div className="text-sm text-slate-400">Notifications</div>
-              <button onClick={() => setNotifModal({isOpen: true, message: ''})} className="px-3 py-1 bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 rounded text-xs font-bold transition-colors">
-                 Send Global Message
-              </button>
-            </div>
-
-            <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg">
-              <div className="text-sm text-slate-400">Total Site Images Processed</div>
-              <div className="text-2xl font-bold text-white">{totalSiteImages.toLocaleString()}</div>
-            </div>
-            <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg flex flex-col gap-2">
-              <div className="text-sm text-slate-400">Storage Management</div>
-              <div className="flex items-center gap-2">
-                 <button disabled={isDeletingCsvs} onClick={handleDeleteOldCsvs} className="px-3 py-1 bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 rounded text-xs font-bold transition-colors">
-                    Delete &gt; 30 Days
-                 </button>
-                 <button disabled={isDeletingCsvs} onClick={handleDeleteAllCsvs} className="px-3 py-1 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs font-bold transition-colors flex items-center gap-1">
-                    <Trash2 className="w-3 h-3"/> All CSVs
-                 </button>
-              </div>
-            </div>
+            
             <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg">
               <div className="text-sm text-slate-400">Date Range Stats</div>
               <div className="flex items-center gap-2 mt-1">

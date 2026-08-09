@@ -20,7 +20,11 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     if (!userData) return;
     let unsub = () => {};
     try {
-        const q = query(collection(db, 'notifications'), where('targetUid', 'in', [userData.uid, userData.role === 'admin' ? 'admin' : 'none']), orderBy('createdAt', 'desc'));
+        const targets = [userData.uid];
+        if (userData.role === 'admin') {
+            targets.push('admin');
+        }
+        const q = query(collection(db, 'notifications'), where('targetUid', 'in', targets), orderBy('createdAt', 'desc'));
         unsub = onSnapshot(q, (snapshot) => {
             const notifs: any[] = [];
             snapshot.forEach(d => notifs.push({ id: d.id, ...d.data() }));

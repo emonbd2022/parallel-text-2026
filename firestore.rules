@@ -34,9 +34,9 @@ service cloud.firestore {
     }
     
     match /notifications/{notifId} {
-      allow read: if isAuthenticated() && (resource.data.targetUid == request.auth.uid || isAdmin() || resource.data.targetUid == 'admin');
+      allow read: if isAuthenticated() && (resource.data.targetUid == request.auth.uid || (resource.data.targetUid == 'admin' && isAdmin()));
       allow create: if isAuthenticated();
-      allow update, delete: if isAuthenticated() && (resource.data.targetUid == request.auth.uid || isAdmin());
+      allow update, delete: if isAuthenticated() && (resource.data.targetUid == request.auth.uid || (resource.data.targetUid == 'admin' && isAdmin()));
     }
 
     match /activity_logs/{logId} {
