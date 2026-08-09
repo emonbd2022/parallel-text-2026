@@ -989,7 +989,9 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
           const totalRequests = sessionRequestCountRef.current;
           
           const updates: any = {
-              totalProcessedImages: increment(numExported)
+              totalProcessedImages: increment(numExported),
+              'appData.logs': logs,
+              'appData.modelStats': modelStats
           };
           if (!userData.unlimited) {
               updates.credits = increment(-numExported);
@@ -1004,12 +1006,21 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               timestamp: serverTimestamp()
           }).catch(e => console.error("Failed to add activity log:", e));
     
-          addDoc(collection(db, 'csv_exports'), {
-            uid: userData.uid,
-            filename: exportFileName,
-            csvData: csvContent,
-            createdAt: serverTimestamp()
-          }).catch(err => console.error("Failed to save CSV to Firestore:", err));
+          // Save to localStorage instead of Firestore to save server costs
+          try {
+            const localExports = JSON.parse(localStorage.getItem('parrarel_exports_v1') || '[]');
+            const newExport = {
+              id: Math.random().toString(36).slice(2),
+              uid: userData.uid,
+              filename: exportFileName,
+              csvData: csvContent,
+              createdAt: Date.now()
+            };
+            localExports.push(newExport);
+            localStorage.setItem('parrarel_exports_v1', JSON.stringify(localExports));
+          } catch (err) {
+            console.error("Failed to save CSV to localStorage:", err);
+          }
           
           setItems(prev => prev.map(i => i.status === 'done' ? { ...i, exported: true } : i));
       }
@@ -1110,8 +1121,8 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     const isProcessingMetadata = items.some(i => (i.status === 'processing' || i.status === 'compressing') && !i.title);
     
     // Phase 1 is incomplete if there are pending metadata items OR items currently processing metadata.
-    const isMetadataPhase = pendingMetadataItems.length > 0 || isProcessingMetadata;
-    const pendingItems = isMetadataPhase ? pendingMetadataItems : pendingCategoryItems;
+    const isMetadataPhase = true; // Category is generated with metadata now
+    const pendingItems = pendingMetadataItems;
 
     if (!isMetadataPhase && pendingCategoryItems.length > 0 && lastPhaseRef.current !== 'category') {
         lastPhaseRef.current = 'category';

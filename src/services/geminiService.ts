@@ -78,9 +78,10 @@ export const generateMetadataBatch = async (
             properties: {
               index: { type: Type.INTEGER },
               title: { type: Type.STRING },
-              keywords: { type: Type.ARRAY, items: { type: Type.STRING } }
+              keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+              category: { type: Type.STRING }
             },
-            required: ["index", "title", "keywords"]
+            required: ["index", "title", "keywords", "category"]
           }
         }
       }

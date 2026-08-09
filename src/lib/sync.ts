@@ -21,9 +21,13 @@ export const syncUserDataToCloud = (uid: string, data: any) => {
   syncTimeout = setTimeout(async () => {
     try {
       const cleanData = removeUndefined(data);
-      await updateDoc(doc(db, 'users', uid), {
-        appData: cleanData
+      const updates: any = {};
+      Object.keys(cleanData).forEach(key => {
+        updates[`appData.${key}`] = cleanData[key];
       });
+      if (Object.keys(updates).length > 0) {
+        await updateDoc(doc(db, 'users', uid), updates);
+      }
     } catch (err) {
       console.error('Failed to sync to cloud:', err);
     }
