@@ -1,44 +1,104 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
+
+    // Check if user is signed in
     function isAuthenticated() {
       return request.auth != null;
     }
 
+    // Check if user is an admin
     function isAdmin() {
-      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
+    // =========================
+    // User Profiles
+    // =========================
     match /users/{userId} {
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
-      allow create: if isAuthenticated() && request.auth.uid == userId;
+
+      // User can read their own profile, admins can read all
+      allow read: if isAuthenticated() &&
+        (request.auth.uid == userId || isAdmin());
+
+      // User can create only their own document
+      allow create: if isAuthenticated() &&
+        request.auth.uid == userId;
+
+      // Admins can update everything.
+      // Normal users cannot modify protected fields.
       allow update: if isAuthenticated() && (
-        isAdmin() || 
-        (request.auth.uid == userId && (
-          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'unlimited', 'blocked', 'plan', 'planStartDate', 'planEndDate'])
-        ))
+        isAdmin() ||
+        (
+          request.auth.uid == userId &&
+          !request.resource.data
+            .diff(resource.data)
+            .affectedKeys()
+            .hasAny([
+              'role',
+              'unlimited',
+              'blocked',
+              'plan',
+              'planStartDate',
+              'planEndDate'
+            ])
+        )
       );
+
       allow delete: if isAdmin();
     }
 
+    // =========================
+    // CSV Exports
+    // =========================
     match /csv_exports/{exportId} {
-      allow read, delete: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+
+      // User can read/delete only their own exports
+      allow read, delete: if isAuthenticated() &&
+        (resource.data.uid == request.auth.uid || isAdmin());
+
+      // User can create exports only for themselves
+      allow create: if isAuthenticated() &&
+        request.resource.data.uid == request.auth.uid;
+
+      // Updating exports is not allowed
       allow update: if false;
     }
-    
+
+    // =========================
+    // Settings
+    // =========================
     match /settings/{document} {
       allow read: if true;
       allow write: if isAdmin();
     }
-    
+
+    // =========================
+    // Notifications
+    // =========================
     match /notifications/{notifId} {
-      allow read: if isAuthenticated() && (resource.data.targetUid == request.auth.uid || resource.data.targetUid == 'all' || (resource.data.targetUid == 'admin' && isAdmin()));
+      // Users can read their own notifications, or 'all' notifications, and admins can read admin notifications
+      allow read: if isAuthenticated() && (
+        resource.data.targetUid == request.auth.uid || 
+        resource.data.targetUid == 'all' || 
+        (resource.data.targetUid == 'admin' && isAdmin())
+      );
+      
+      // Only admins can create global/admin notifications (we changed this previously, but standard users might need to create notifications if we add features, though currently admins send them)
       allow create: if isAdmin();
-      allow update, delete: if isAuthenticated() && (resource.data.targetUid == request.auth.uid || (resource.data.targetUid == 'admin' && isAdmin()));
+      
+      // Users can update/delete their own notifications (e.g. mark as read), admins can update/delete admin notifications
+      allow update, delete: if isAuthenticated() && (
+        resource.data.targetUid == request.auth.uid || 
+        (resource.data.targetUid == 'admin' && isAdmin())
+      );
     }
 
+    // =========================
+    // Activity Logs
+    // =========================
     match /activity_logs/{logId} {
       allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
       allow read: if isAdmin();
