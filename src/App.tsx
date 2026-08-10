@@ -634,7 +634,23 @@ export default function App() {
       let usedModel = config.model;
 
       if (config.model === 'auto') {
-        const autoModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-flash-lite'];
+        const autoModels = [
+          'gemini-3.6-flash',
+          'gemini-3.5-flash',
+          'gemini-3.5-flash-lite',
+          'gemini-3-flash-preview',
+          'gemini-2.5-flash',
+          'gemini-3.1-flash-lite-preview',
+          'gemini-2.5-flash-lite'
+        ];
+        
+        autoModels.sort((a, b) => {
+            const statA = modelStats[a];
+            const statB = modelStats[b];
+            const scoreA = statA ? ((statA.totalTimeMs / Math.max(1, statA.count)) + (statA.fails * 5000)) : 10000;
+            const scoreB = statB ? ((statB.totalTimeMs / Math.max(1, statB.count)) + (statB.fails * 5000)) : 10000;
+            return scoreA - scoreB;
+        });
         let success = false;
         let lastError = null;
 
@@ -1191,8 +1207,8 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     const isProcessingMetadata = items.some(i => (i.status === 'processing' || i.status === 'compressing') && !i.title);
     
     // Phase 1 is incomplete if there are pending metadata items OR items currently processing metadata.
-    const isMetadataPhase = true; // Category is generated with metadata now
-    const pendingItems = pendingMetadataItems;
+    const isMetadataPhase = pendingMetadataItems.length > 0 || isProcessingMetadata;
+    const pendingItems = isMetadataPhase ? pendingMetadataItems : pendingCategoryItems;
 
     if (!isMetadataPhase && pendingCategoryItems.length > 0 && lastPhaseRef.current !== 'category') {
         lastPhaseRef.current = 'category';
