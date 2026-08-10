@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { collection, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, getAggregateFromServer, sum, where, deleteDoc, getDoc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Calendar, Trash2, Activity, MessageSquare, AlertTriangle } from 'lucide-react';
+import { Shield, Search, RefreshCw, Calendar, Trash2, Activity, MessageSquare, AlertTriangle, Bell } from 'lucide-react';
 import { UserActivityModal } from '../components/UserActivityModal';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
@@ -201,8 +201,6 @@ export const AdminDashboard: React.FC = () => {
       if (!notifModal.message.trim()) return;
       setIsSendingGlobal(true);
       try {
-          const allUsersSnap = await getDocs(collection(db, 'users'));
-          let count = 0;
           if (notifModal.targetUid) {
               await addDoc(collection(db, 'notifications'), {
                   targetUid: notifModal.targetUid,
@@ -212,21 +210,17 @@ export const AdminDashboard: React.FC = () => {
                   createdAt: serverTimestamp()
               });
           } else {
-            for (const docSnap of allUsersSnap.docs) {
               await addDoc(collection(db, 'notifications'), {
-                  targetUid: docSnap.id,
+                  targetUid: 'all',
                   type: 'admin_msg',
-                  message: globalNotifMsg,
+                  message: notifModal.message,
                   read: false,
                   createdAt: serverTimestamp()
               });
-              count++;
-          }
           }
           setNotifModal({isOpen: false, message: ''});
       } catch (e) {
           console.error(e);
-          
       } finally {
           setIsSendingGlobal(false);
       }
@@ -298,17 +292,25 @@ export const AdminDashboard: React.FC = () => {
         </div>
 
         <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl relative">
-          <div className="flex items-center gap-3 mb-6 bg-slate-950 p-2 rounded-xl border border-slate-800">
-            <Search className="w-5 h-5 text-slate-500 ml-2" />
-            <input 
-              type="text" 
-              placeholder="Search users by name, email, or nickname..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="bg-transparent border-none outline-none text-slate-200 w-full py-1"
-            />
+          <div className="flex justify-between items-center mb-6">
+            <div className="flex-1 flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800 mr-4">
+              <Search className="w-5 h-5 text-slate-500 ml-2" />
+              <input 
+                type="text" 
+                placeholder="Search users by name, email, or nickname..." 
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="bg-transparent border-none outline-none text-slate-200 w-full py-1"
+              />
+            </div>
+            <button 
+              onClick={() => setNotifModal({isOpen: true, message: ''})}
+              className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold flex items-center gap-2 transition-colors whitespace-nowrap"
+            >
+              <Bell className="w-4 h-4" />
+              Global Notification
+            </button>
           </div>
-
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
