@@ -960,12 +960,20 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       const errMsg = error.message || "";
       let cooldownTime = 0;
       let errorPenalty = 1;
+      const errorMsgText = (typeof error !== 'undefined' ? error.message : "") || "";
 
-      if (errMsg.includes('QUOTA_EXCEEDED') || errMsg.includes('429')) {
-        cooldownTime = 60 * 1000;
-        errorPenalty = 0; // Do not penalize for rate limits
-      } else if (errMsg.includes('INVALID_KEY')) {
-        errorPenalty = 10; // Kill invalid keys immediately
+      if (errorMsgText.includes('INVALID_KEY')) {
+        errorPenalty = 20; // Kill invalid keys immediately
+      } else if (errorMsgText.includes('QUOTA_EXCEEDED') || errorMsgText.includes('429')) {
+        if (errorMsgText.toLowerCase().includes('billing') || errorMsgText.toLowerCase().includes('plan')) {
+            // Daily or hard quota
+            cooldownTime = 24 * 60 * 60 * 1000; // 24 hours
+            errorPenalty = 10;
+        } else {
+            // RPM or TPM limit
+            cooldownTime = 60 * 1000; // 1 minute
+            errorPenalty = 0; // Do not penalize for temporary rate limits
+        }
       } else {
         errorPenalty = 1; // Standard penalty for other errors
       }
