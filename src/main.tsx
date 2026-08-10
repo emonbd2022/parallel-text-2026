@@ -13,7 +13,7 @@ import { Cat } from 'lucide-react';
 import './index.css';
 import { registerSW } from 'virtual:pwa-register';
 
-registerSW({ immediate: true });
+const updateSW = registerSW({ immediate: true, onNeedRefresh() { updateSW(true); } });
 
 const ProtectedRoute = ({ children, adminOnly = false }: { children: React.ReactNode, adminOnly?: boolean }) => {
   const { user, userData, loading } = useAuth();
@@ -46,6 +46,7 @@ const AnimatedRoutes = () => {
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/pricing" element={<PublicRoute><Pricing /></PublicRoute>} />
         <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       </motion.div>
     </AnimatePresence>
