@@ -210,13 +210,17 @@ export const AdminDashboard: React.FC = () => {
                   createdAt: serverTimestamp()
               });
           } else {
-              await addDoc(collection(db, 'notifications'), {
-                  targetUid: 'all',
-                  type: 'admin_msg',
-                  message: notifModal.message,
-                  read: false,
-                  createdAt: serverTimestamp()
-              });
+              const allUsersSnap = await getDocs(collection(db, 'users'));
+              const batchPromises = allUsersSnap.docs.map(docSnap => 
+                  addDoc(collection(db, 'notifications'), {
+                      targetUid: docSnap.id,
+                      type: 'admin_msg',
+                      message: notifModal.message,
+                      read: false,
+                      createdAt: serverTimestamp()
+                  })
+              );
+              await Promise.all(batchPromises);
           }
           setNotifModal({isOpen: false, message: ''});
       } catch (e) {

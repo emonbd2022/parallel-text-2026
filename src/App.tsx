@@ -277,9 +277,9 @@ export default function App() {
                 for (const model in serverStats) {
                     if (merged[model]) {
                         merged[model] = {
-                            count: merged[model].count + serverStats[model].count,
-                            fails: merged[model].fails + serverStats[model].fails,
-                            totalTimeMs: merged[model].totalTimeMs + serverStats[model].totalTimeMs
+                            count: Math.max(merged[model].count, serverStats[model].count),
+                            fails: Math.max(merged[model].fails, serverStats[model].fails),
+                            totalTimeMs: Math.max(merged[model].totalTimeMs, serverStats[model].totalTimeMs)
                         };
                     } else {
                         merged[model] = serverStats[model];
@@ -303,6 +303,21 @@ export default function App() {
                 return unique.slice(0, 1000); // keep last 1000 logs
             });
         }
+        if (userData.appData.history) {
+            setHistory(prev => {
+                const merged = [...prev, ...userData.appData.history];
+                // deduplicate by id
+                const unique = [];
+                const ids = new Set();
+                for (const h of merged) {
+                    if (!ids.has(h.id)) {
+                        ids.add(h.id);
+                        unique.push(h);
+                    }
+                }
+                return unique.sort((a, b) => b.timestamp - a.timestamp);
+            });
+        }
       }
       setCloudLoaded(true);
     }
@@ -319,15 +334,24 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
-  }, [history]);
+    if (cloudLoaded && userData) {
+        syncUserDataToCloud(userData.uid, { history });
+    }
+  }, [history, cloudLoaded, userData?.uid]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs));
-  }, [logs]);
+    if (cloudLoaded && userData) {
+        syncUserDataToCloud(userData.uid, { logs });
+    }
+  }, [logs, cloudLoaded, userData?.uid]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats));
-  }, [modelStats]);
+    if (cloudLoaded && userData) {
+        syncUserDataToCloud(userData.uid, { modelStats });
+    }
+  }, [modelStats, cloudLoaded, userData?.uid]);
 
             
   // Auto-save items every 30 seconds
@@ -1037,20 +1061,16 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               timestamp: serverTimestamp()
           }).catch(e => console.error("Failed to add activity log:", e));
     
-          // Save to localStorage instead of Firestore to save server costs
+          // Save to Firestore so it persists across cache clears
           try {
-            const localExports = JSON.parse(localStorage.getItem('parrarel_exports_v1') || '[]');
-            const newExport = {
-              id: Math.random().toString(36).slice(2),
+            addDoc(collection(db, 'csv_exports'), {
               uid: userData.uid,
               filename: exportFileName,
               csvData: csvContent,
               createdAt: Date.now()
-            };
-            localExports.push(newExport);
-            localStorage.setItem('parrarel_exports_v1', JSON.stringify(localExports));
+            });
           } catch (err) {
-            console.error("Failed to save CSV to localStorage:", err);
+            console.error("Failed to save CSV to Firestore:", err);
           }
           
           setItems(prev => prev.map(i => i.status === 'done' ? { ...i, exported: true } : i));
