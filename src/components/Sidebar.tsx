@@ -17,7 +17,6 @@ interface Props {
   onClearHistory: () => void;
   onViewStats: () => void;
   onResetUsage: (id: string) => void;
-  onResetAllKeys: () => void;
 }
 
 export const Sidebar: React.FC<Props> = ({ 
@@ -33,8 +32,7 @@ export const Sidebar: React.FC<Props> = ({
   history,
   onClearHistory,
   onViewStats,
-  onResetUsage,
-  onResetAllKeys
+  onResetUsage
 }) => {
   
   // Custom handlers for Adobe-style sliders
@@ -84,7 +82,6 @@ export const Sidebar: React.FC<Props> = ({
                 }])}
                 onRemove={(id) => setKeys(prev => prev.filter(k => k.id !== id))}
                 onResetUsage={onResetUsage}
-                onResetAllKeys={onResetAllKeys}
             />
 
             <div className="glass-panel p-6 rounded-2xl space-y-6">

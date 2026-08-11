@@ -174,7 +174,6 @@ export default function App() {
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string>('Ready');
-  const activeKeysRef = useRef<Set<string>>(new Set());
   const [tick, setTick] = useState(0); 
   const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number>(() => {
@@ -583,19 +582,6 @@ export default function App() {
       setStatusMsg("Retrying failed items...");
   };
 
-  
-  const handleResetAllKeys = () => {
-      if (window.confirm('Are you sure you want to manually reset usage, errors, and cooldowns for ALL keys?')) {
-          const currentSession = getUsageSessionId();
-          setKeys(prev => prev.map(k => ({
-              ...k,
-              errorCount: 0,
-              cooldownUntil: undefined,
-              usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 }
-          })));
-      }
-  };
-
   const handleResetUsage = (id: string) => {
       if (window.confirm('Are you sure you want to manually reset usage counts and errors for this key?')) {
           const currentSession = getUsageSessionId();
@@ -604,7 +590,6 @@ export default function App() {
                   return { 
                       ...k, 
                       errorCount: 0, // Reset errors too
-                      cooldownUntil: undefined,
                       usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 } 
                   };
               }
@@ -633,7 +618,6 @@ export default function App() {
 
   
   const startCategoryBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey) => {
-    activeKeysRef.current.add(keyObj.id);
     // 1. Mark all as processing
     setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { 
       ...p, 
@@ -799,7 +783,6 @@ export default function App() {
     }
   };
 const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey) => {
-    activeKeysRef.current.add(keyObj.id);
     // 1. Mark all as processing
     setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { 
       ...p, 
@@ -1351,7 +1334,6 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
 
     const availableKeys = validKeys.filter(k => 
         !activeKeyIds.has(k.id) && 
-        !activeKeysRef.current.has(k.id) &&
         (!k.cooldownUntil || k.cooldownUntil < now)
     );
 
@@ -1720,7 +1702,6 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
          onViewStats={() => setShowStats(true)}
          onClearHistory={handleClearHistory}
          onResetUsage={handleResetUsage}
-         onResetAllKeys={handleResetAllKeys}
       />
 
       <main 
