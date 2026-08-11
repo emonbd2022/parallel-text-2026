@@ -7,9 +7,10 @@ interface Props {
   onAdd: (label: string, key: string) => void;
   onRemove: (id: string) => void;
   onResetUsage: (id: string) => void;
+  onResetAllKeys: () => void;
 }
 
-export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetUsage }) => {
+export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetUsage, onResetAllKeys }) => {
   const [label, setLabel] = useState('');
   const [keyVal, setKeyVal] = useState('');
   const [showInput, setShowInput] = useState(false);
@@ -63,16 +64,25 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
           </button>
         </div>
         {activeTab === 'keys' && (
-          <button 
-            onClick={() => setShowInput(!showInput)}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all ${
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={onResetAllKeys}
+              className="text-xs font-semibold text-slate-100 bg-emerald-600/30 hover:bg-emerald-600/50 border border-emerald-500/50 px-3 py-1.5 rounded-full transition-colors"
+              title="Reset all errors and cooldowns"
+            >
+              Reset All
+            </button>
+            <button 
+              onClick={() => setShowInput(!showInput)}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all ${
               showInput 
                 ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
                 : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
             }`}
           >
             {showInput ? 'Cancel' : '+ Add Key'}
-          </button>
+            </button>
+          </div>
         )}
       </div>
 
