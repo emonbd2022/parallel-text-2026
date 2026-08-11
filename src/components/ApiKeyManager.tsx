@@ -257,7 +257,41 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                           ))}
                       </ul>
                   </div>
-                  <p className="text-xs text-slate-500 italic mt-2">Global Fallback: ENABLED (Healthy keys will process any task if its preferred pool is exhausted)</p>
+                  
+                  <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 mt-4 space-y-2">
+                    <h4 className="font-bold text-sm text-slate-300">Global Fallback Status</h4>
+                    <p className="text-xs text-slate-400">
+                      Fallback activates ONLY when an entire dedicated pool has zero usable keys.
+                    </p>
+                    <div className="space-y-1">
+                      {(() => {
+                        const titlePool = keys.slice(0, Math.ceil(keys.length / 2));
+                        const categoryPool = keys.slice(Math.ceil(keys.length / 2));
+                        
+                        // "Usable" means not permanently failed. Safety limit is harder to check here, but errorCount < 20 is the main one.
+                        const titleUsable = titlePool.filter(k => k.errorCount < 20).length;
+                        const categoryUsable = categoryPool.filter(k => k.errorCount < 20).length;
+
+                        return (
+                          <>
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-slate-500">Title Tasks:</span>
+                              <span className={titleUsable === 0 ? "text-amber-400 font-medium" : "text-slate-500"}>
+                                {titleUsable > 0 ? "STANDBY (Dedicated Keys Available)" : "ACTIVE (0 usable dedicated keys, using Category pool)"}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-slate-500">Category Tasks:</span>
+                              <span className={categoryUsable === 0 ? "text-amber-400 font-medium" : "text-slate-500"}>
+                                {categoryUsable > 0 ? "STANDBY (Dedicated Keys Available)" : "ACTIVE (0 usable dedicated keys, using Title pool)"}
+                              </span>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
               </div>
           </div>
       )}

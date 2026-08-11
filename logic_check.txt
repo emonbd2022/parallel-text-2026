@@ -1,0 +1,151 @@
+            flash_3_1_lite: Number(usage.flash_3_1_lite || 0),
+            flash_3_5: Number(usage.flash_3_5 || 0),
+            flash_3_5_lite: Number(usage.flash_3_5_lite || 0),
+            flash_3_6: Number(usage.flash_3_6 || 0)
+        };
+
+        // Increased limits to 10,000 to effectively disable client-side blocking
+        if (config.model === 'auto') {
+            return (u.flash_3_6 < 10000) || (u.flash_3_5_lite < 10000) || (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 20);
+        } else if (config.model === 'gemini-3.6-flash') {
+            return u.flash_3_6 < 10000;
+        } else if (config.model === 'gemini-3.5-flash-lite') {
+            return u.flash_3_5_lite < 10000;
+        } else if (config.model.includes('gemini-3.5-flash')) {
+            return u.flash_3_5 < 10000;
+        } else if (config.model.includes('gemini-3.1-flash-lite-preview')) {
+            return u.flash_3_1_lite < 10000;
+        } else if (config.model.includes('gemini-2.5-flash-lite')) {
+            return u.lite < 20;
+        } else if (config.model.includes('gemini-2.5-flash')) {
+            return u.flash < 10000;
+        } else if (config.model.includes('gemini-3-flash-preview')) {
+            return u.flash_3 < 10000;
+        }
+        return true;
+    });
+    
+    if (validKeys.length === 0) {
+        const totalKeys = keys.length;
+        if (totalKeys > 0) setStatusMsg("All keys have high error counts or hit safety limits.");
+        else setStatusMsg("No API keys configured.");
+        setIsProcessing(false);
+        return;
+    }
+
+    const availableKeys = validKeys.filter(k => 
+        !activeKeyIds.has(k.id) && 
+        (!k.cooldownUntil || k.cooldownUntil < now)
+    );
+
+    if (availableKeys.length === 0) {
+        const cooldownKeys = validKeys.filter(k => k.cooldownUntil && k.cooldownUntil > now);
+        if (cooldownKeys.length > 0) {
+             const minWait = Math.min(...cooldownKeys.map(k => k.cooldownUntil! - now));
+             setStatusMsg(`Waiting for API keys cooldown (${Math.ceil(minWait/1000)}s)...`);
+        } else if (activeRequests > 0) {
+             setStatusMsg("All keys busy...");
+        } else {
+             setStatusMsg("Waiting for available keys...");
+        }
+        return;
+    }
+
+    // 4. Filter Keys By Phase
+    let categoryKeyIds: string[] = [];
+    if (keys.length > 1) {
+        const titlePoolSize = Math.ceil(keys.length / 2);
+        categoryKeyIds = keys.slice(titlePoolSize).map(k => k.id);
+    }
+    
+    let phaseAvailableKeys = availableKeys;
+    if (categoryKeyIds.length > 0) {
+        let preferredAvailable: import("./types").ApiKey[] = [];
+        let fallbackAvailable: import("./types").ApiKey[] = [];
+        let preferredHealthyCount = 0;
+        
+        if (isMetadataPhase) {
+            preferredAvailable = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
+            fallbackAvailable = availableKeys.filter(k => categoryKeyIds.includes(k.id));
+            preferredHealthyCount = validKeys.filter(k => !categoryKeyIds.includes(k.id) && (!k.cooldownUntil || k.cooldownUntil < now)).length;
+        } else {
+            preferredAvailable = availableKeys.filter(k => categoryKeyIds.includes(k.id));
+            fallbackAvailable = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
+            preferredHealthyCount = validKeys.filter(k => categoryKeyIds.includes(k.id) && (!k.cooldownUntil || k.cooldownUntil < now)).length;
+        }
+
+        if (preferredAvailable.length > 0) {
+            phaseAvailableKeys = preferredAvailable;
+        } else if (preferredHealthyCount > 0) {
+            // Preferred keys are healthy but currently busy processing other items.
+            // We wait for them instead of flooding the fallback pool.
+            phaseAvailableKeys = [];
+        } else {
+            // All preferred keys are DEAD or on COOLDOWN. Trigger global fallback.
+            phaseAvailableKeys = fallbackAvailable;
+        }
+    }
+
+    if (phaseAvailableKeys.length === 0) {
+        setStatusMsg("Waiting for available keys...");
+        return;
+    }
+
+    // 5. Fill Slots
+    const sortedQueue = [...pendingItems].sort((a, b) => a.attempts - b.attempts);
+    const batchSize = config.batchSize || 1;
+
+    // Sort keys: prioritize those with fewer errors (healthier)
+    phaseAvailableKeys.sort((a, b) => {
+        const healthA = Math.max(0, 100 - (a.errorCount * 5));
+        const healthB = Math.max(0, 100 - (b.errorCount * 5));
+        return healthB - healthA;
+    });
+
+    let currentItemIndex = 0;
+    
+    // Iterate through available keys to find work
+    for (const chosenKey of phaseAvailableKeys) {
+        const batch: ProcessingItem[] = [];
+        // Scan queue for items that HAVEN'T failed with this specific key
+        let scannedCount = 0;
+        
+        while (batch.length < batchSize && currentItemIndex < sortedQueue.length) {
+            const candidate = sortedQueue[currentItemIndex];
+            
+            // Check retry timer
+            if (candidate.retryAfter && candidate.retryAfter > now) {
+                currentItemIndex++;
+                continue;
+            }
+
+            // CRITICAL: Check if this item has already failed with this specific key
+            const isDifferentKeyRequired = !isMetadataPhase && keys.length > 1;
+            const meetsKeyCondition = !candidate.failedKeyIds.includes(chosenKey.id) &&
+                                      (!isDifferentKeyRequired || candidate.metadataKeyId !== chosenKey.id);
+
+            if (meetsKeyCondition) {
+                batch.push(candidate);
+                // Remove from local queue so other keys don't pick it in this tick
+                sortedQueue.splice(currentItemIndex, 1);
+            } else {
+                currentItemIndex++;
+            }
+        }
+        
+        // Reset index for next key scan (scan from remaining sortedQueue)
+        currentItemIndex = 0;
+
+        if (batch.length > 0) {
+            if (isMetadataPhase) {
+                startBatchProcessing(batch, chosenKey);
+            } else {
+                startCategoryBatchProcessing(batch, chosenKey);
+            }
+        }
+    }
+
+  }, [items, keys, isProcessing, config.concurrency, config.batchSize, tick]);
+
+  // Auto retry failed items every 20 seconds while batch is running
+  useEffect(() => {

@@ -1361,27 +1361,32 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     if (categoryKeyIds.length > 0) {
         let preferredAvailable: import("./types").ApiKey[] = [];
         let fallbackAvailable: import("./types").ApiKey[] = [];
-        let preferredHealthyCount = 0;
+        let preferredUsableCount = 0;
         
         if (isMetadataPhase) {
             preferredAvailable = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
             fallbackAvailable = availableKeys.filter(k => categoryKeyIds.includes(k.id));
-            preferredHealthyCount = validKeys.filter(k => !categoryKeyIds.includes(k.id) && (!k.cooldownUntil || k.cooldownUntil < now)).length;
+            preferredUsableCount = validKeys.filter(k => !categoryKeyIds.includes(k.id)).length;
         } else {
             preferredAvailable = availableKeys.filter(k => categoryKeyIds.includes(k.id));
             fallbackAvailable = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
-            preferredHealthyCount = validKeys.filter(k => categoryKeyIds.includes(k.id) && (!k.cooldownUntil || k.cooldownUntil < now)).length;
+            preferredUsableCount = validKeys.filter(k => categoryKeyIds.includes(k.id)).length;
         }
 
-        if (preferredAvailable.length > 0) {
-            phaseAvailableKeys = preferredAvailable;
-        } else if (preferredHealthyCount > 0) {
-            // Preferred keys are healthy but currently busy processing other items.
-            // We wait for them instead of flooding the fallback pool.
-            phaseAvailableKeys = [];
+        if (preferredUsableCount > 0) {
+            if (preferredAvailable.length > 0) {
+                phaseAvailableKeys = preferredAvailable;
+            } else {
+                // Preferred pool has usable keys, but they are all currently busy or on cooldown.
+                // We wait for them instead of falling back to the other pool.
+                phaseAvailableKeys = [];
+            }
         } else {
-            // All preferred keys are DEAD or on COOLDOWN. Trigger global fallback.
+            // Entire dedicated pool has zero usable keys. Activate global fallback.
             phaseAvailableKeys = fallbackAvailable;
+            if (fallbackAvailable.length > 0) {
+                console.log(`[API Routing] Fallback activated for ${isMetadataPhase ? 'Title' : 'Category'} task. Dedicated pool has 0 usable keys.`);
+            }
         }
     }
 

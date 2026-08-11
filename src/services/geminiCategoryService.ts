@@ -522,7 +522,6 @@ Do not include explanations, markdown, comments, or any additional text.`;
     return parseAndValidateCategoryResponse(catText, items);
 
 
-    return results;
 
   } catch (error: any) {
     let msg = error.message || "Failed to generate categories";
