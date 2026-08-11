@@ -1359,19 +1359,30 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     
     let phaseAvailableKeys = availableKeys;
     if (categoryKeyIds.length > 0) {
-        let preferredKeys = availableKeys;
-        let fallbackKeys: import("./types").ApiKey[] = [];
+        let preferredAvailable: import("./types").ApiKey[] = [];
+        let fallbackAvailable: import("./types").ApiKey[] = [];
+        let preferredHealthyCount = 0;
         
         if (isMetadataPhase) {
-            preferredKeys = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
-            fallbackKeys = availableKeys.filter(k => categoryKeyIds.includes(k.id));
+            preferredAvailable = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
+            fallbackAvailable = availableKeys.filter(k => categoryKeyIds.includes(k.id));
+            preferredHealthyCount = validKeys.filter(k => !categoryKeyIds.includes(k.id) && (!k.cooldownUntil || k.cooldownUntil < now)).length;
         } else {
-            preferredKeys = availableKeys.filter(k => categoryKeyIds.includes(k.id));
-            fallbackKeys = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
+            preferredAvailable = availableKeys.filter(k => categoryKeyIds.includes(k.id));
+            fallbackAvailable = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
+            preferredHealthyCount = validKeys.filter(k => categoryKeyIds.includes(k.id) && (!k.cooldownUntil || k.cooldownUntil < now)).length;
         }
 
-        // Try preferred keys first, then fallback keys
-        phaseAvailableKeys = preferredKeys.length > 0 ? preferredKeys : fallbackKeys;
+        if (preferredAvailable.length > 0) {
+            phaseAvailableKeys = preferredAvailable;
+        } else if (preferredHealthyCount > 0) {
+            // Preferred keys are healthy but currently busy processing other items.
+            // We wait for them instead of flooding the fallback pool.
+            phaseAvailableKeys = [];
+        } else {
+            // All preferred keys are DEAD or on COOLDOWN. Trigger global fallback.
+            phaseAvailableKeys = fallbackAvailable;
+        }
     }
 
     if (phaseAvailableKeys.length === 0) {
