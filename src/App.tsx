@@ -13,6 +13,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
 import { doc, updateDoc, increment, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { syncUserDataToCloud } from './lib/sync';
 
 // Persistence Keys
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
@@ -262,13 +263,26 @@ export default function App() {
   const startYRef = useRef(0);
   const startScrollTopRef = useRef(0);
   const lastPhaseRef = useRef<'metadata' | 'category' | null>(null);
+  const lastSyncStrRef = useRef<string>("");
 
   // Load from cloud
   useEffect(() => {
     if (userData && !cloudLoaded) {
       if (userData.appData) {
-        if (userData.appData.keys) setKeys(userData.appData.keys);
+        if (userData.appData.keys) {
+            setKeys(userData.appData.keys.map((k: any) => ({
+                ...k,
+                errorCount: k.errorCount || 0,
+                usage: k.usage || { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0 }
+            })));
+        }
         if (userData.appData.config) setConfig(userData.appData.config);
+        
+        // Prevent bounce-back sync by setting the ref to what we just loaded
+        if (userData.appData.keys || userData.appData.config) {
+            const initialSyncableKeys = (userData.appData.keys || []).map((k: any) => ({ id: k.id, label: k.label, key: k.key }));
+            lastSyncStrRef.current = JSON.stringify({ keys: initialSyncableKeys, config: userData.appData.config || config });
+        }
         if (userData.appData.modelStats) {
             setModelStats(prev => {
                 const merged = { ...prev };
@@ -327,6 +341,25 @@ export default function App() {
     localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys));
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
   }, [keys, config]);
+
+  // Safe Cloud Sync - architectural requirement: 0 writes during processing
+  useEffect(() => {
+    if (cloudLoaded && userData && !isProcessing) {
+      // Strip out volatile state (usage, errorCount, cooldown) that changes during processing
+      const syncableKeys = keys.map(k => ({ id: k.id, label: k.label, key: k.key }));
+      const syncPayload = { keys: syncableKeys, config };
+      
+      const currentSyncStr = JSON.stringify(syncPayload);
+      if (lastSyncStrRef.current !== currentSyncStr) {
+          lastSyncStrRef.current = currentSyncStr;
+          // Add a small delay to batch rapid setting changes
+          const timeoutId = setTimeout(() => {
+              syncUserDataToCloud(userData.uid, syncPayload);
+          }, 2000);
+          return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [keys, config, cloudLoaded, userData?.uid, isProcessing]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
