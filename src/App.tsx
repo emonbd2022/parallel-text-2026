@@ -20,7 +20,6 @@ const STORAGE_KEYS = 'parrarel_keys_v5';
 const STORAGE_HISTORY = 'parrarel_history_v3';
 const STORAGE_LOGS = 'parrarel_logs_v1';
 const STORAGE_CONFIG = 'parrarel_config_v3';
-const STORAGE_ITEMS = 'parrarel_items_v3';
 const STORAGE_STATS = 'parrarel_stats_v1';
 
 // Models
@@ -148,21 +147,8 @@ export default function App() {
     return () => clearInterval(idx);
   }, []);
 
-  const [items, setItems] = useState<ProcessingItem[]>(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_ITEMS) || '[]');
-      return stored.map((item: any) => {
-          // If it was compressing or processing, reset its state or mark as error if we don't have the file
-          if (item.status === 'compressing') {
-              return { ...item, status: 'error', errorMsg: 'Interrupted. Please re-upload.' };
-          }
-          if (item.status === 'processing') {
-              return { ...item, status: 'pending' };
-          }
-          return item;
-      });
-    } catch { return []; }
-  });
+  const [items, setItems] = useState<ProcessingItem[]>([]);
+  const [isProjectLoaded, setIsProjectLoaded] = useState(false);
 
   const [modelStats, setModelStats] = useState<Record<string, { totalTimeMs: number, count: number, fails: number }>>(() => {
       try {
@@ -377,33 +363,31 @@ export default function App() {
   }, [modelStats, cloudLoaded, userData?.uid]);
 
             
-  // Auto-save items every 30 seconds
+  // Auto-save items safely via IndexedDB
   const itemsRef = useRef(items);
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
 
   useEffect(() => {
-    const autoSaveInterval = setInterval(() => {
-      if (itemsRef.current.length > 0) {
-          // Omit file and blob to avoid exceeding localStorage quota and stripping issues
-          const storableItems = itemsRef.current.map(item => ({
-              ...item,
-              file: null,
-              blob: null
-          }));
-          try {
-              localStorage.setItem(STORAGE_ITEMS, JSON.stringify(storableItems));
-              setLastAutoSave(new Date());
-          } catch (e) {
-              console.warn("Failed to auto-save items to localStorage:", e);
-          }
-      } else {
-          localStorage.removeItem(STORAGE_ITEMS);
-      }
-    }, 30000);
-    return () => clearInterval(autoSaveInterval);
-  }, []);
+    if (!isProjectLoaded) return;
+    
+    // Clear project if empty
+    if (items.length === 0) {
+        clearProject().catch(() => {});
+        return;
+    }
+
+    const timer = setTimeout(() => {
+        saveProject(items).then(() => {
+            setLastAutoSave(new Date());
+        }).catch(e => {
+            console.warn("Auto-save failed", e);
+        });
+    }, 2000); // 2 second debounce
+    
+    return () => clearTimeout(timer);
+  }, [items, isProjectLoaded]);
   
   // Session Reset Check Timer
   useEffect(() => {
@@ -431,6 +415,8 @@ export default function App() {
         }
       } catch (error) {
         console.error("Failed to load project:", error);
+      } finally {
+        setIsProjectLoaded(true);
       }
     };
     initProject();
@@ -1151,7 +1137,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     const allDone = items.length > 0 && items.every(i => i.status === 'done');
     if (allDone) {
         setItems([]);
-        localStorage.removeItem(STORAGE_ITEMS);
+        
         setStatusMsg("Export complete! CSV file has been downloaded. All items cleared.");
     } else {
         setStatusMsg(`Exported partial CSV with ${completedItems.length} items.`);
@@ -1529,7 +1515,6 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
           sessionRequestCountRef.current = 0;
           localStorage.setItem('sessionReqCount', '0');
           setItems([]);
-          localStorage.removeItem(STORAGE_ITEMS);
           setStatusMsg("Clearing project...");
           try {
               await clearProject();
