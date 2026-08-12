@@ -98,7 +98,7 @@ const getCategoryId = (categoryName?: string) => {
 import { useNavigate } from 'react-router-dom';
 
 export default function App() {
-  const { userData } = useAuth();
+  const { userData, setUserData } = useAuth();
   const navigate = useNavigate();
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -334,23 +334,17 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
-    if (cloudLoaded && userData) {
-        syncUserDataToCloud(userData.uid, { history });
-    }
+
   }, [history, cloudLoaded, userData?.uid]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs));
-    if (cloudLoaded && userData) {
-        syncUserDataToCloud(userData.uid, { logs });
-    }
+
   }, [logs, cloudLoaded, userData?.uid]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats));
-    if (cloudLoaded && userData) {
-        syncUserDataToCloud(userData.uid, { modelStats });
-    }
+
   }, [modelStats, cloudLoaded, userData?.uid]);
 
             
@@ -595,6 +589,18 @@ export default function App() {
               }
               return k;
           }));
+      }
+  };
+
+  const handleResetAllUsage = () => {
+      if (window.confirm('Are you sure you want to manually reset usage counts, errors, and cooldowns for ALL keys?')) {
+          const currentSession = getUsageSessionId();
+          setKeys(prev => prev.map(k => ({
+              ...k,
+              errorCount: 0,
+              cooldownUntil: undefined,
+              usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 }
+          })));
       }
   };
 
@@ -1087,9 +1093,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
           const totalRequests = sessionRequestCountRef.current;
           
           const updates: any = {
-              totalProcessedImages: increment(numExported),
-              'appData.logs': logs,
-              'appData.modelStats': modelStats
+              totalProcessedImages: increment(numExported)
           };
           if (!userData.unlimited) {
               updates.credits = increment(-numExported);
@@ -1097,24 +1101,11 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
           
           updateDoc(doc(db, 'users', userData.uid), updates).catch(e => console.error("Failed to update user stats:", e));
           
-          addDoc(collection(db, 'activity_logs'), {
-              uid: userData.uid,
-              imagesProcessed: numExported,
-              apiRequests: totalRequests,
-              timestamp: serverTimestamp()
-          }).catch(e => console.error("Failed to add activity log:", e));
-    
-          // Save to Firestore so it persists across cache clears
-          try {
-            addDoc(collection(db, 'csv_exports'), {
-              uid: userData.uid,
-              filename: exportFileName,
-              csvData: csvContent,
-              createdAt: Date.now()
-            });
-          } catch (err) {
-            console.error("Failed to save CSV to Firestore:", err);
-          }
+          setUserData(prev => prev ? {
+              ...prev,
+              totalProcessedImages: prev.totalProcessedImages + numExported,
+              credits: prev.unlimited ? prev.credits : (prev.credits - numExported)
+          } : null);
           
           setItems(prev => prev.map(i => i.status === 'done' ? { ...i, exported: true } : i));
       }
@@ -1603,6 +1594,13 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
 
   const allDone = items.length > 0 && items.every(i => i.status === 'done');
   const doneCount = items.filter(i => i.status === 'done').length;
+  const progressScore = items.reduce((acc, item) => {
+      let score = 0;
+      if (item.title || item.status === 'done' || item.category) score += 0.5;
+      if (item.status === 'done' || item.category) score += 0.5;
+      return acc + score;
+  }, 0);
+  const queueProgressPercent = items.length > 0 ? Math.round((progressScore / items.length) * 100) : 0;
   const errorCount = items.filter(i => i.status === 'error' || (i.status === 'pending' && i.attempts > 3)).length;
   const hasPartialData = doneCount > 0 && !allDone;
 
@@ -1702,6 +1700,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
          onViewStats={() => setShowStats(true)}
          onClearHistory={handleClearHistory}
          onResetUsage={handleResetUsage}
+         onResetAll={handleResetAllUsage}
       />
 
       <main 
@@ -1759,15 +1758,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
              </h2>
              <div className="flex flex-col text-sm text-slate-500 mt-1 gap-1">
                <div className="flex items-center gap-2">
-                 <span>Queue Progress: {doneCount} / {items.length} ({items.length > 0 ? Math.round((doneCount / items.length) * 100) : 0}%)</span>
-                 
-                 {isProcessing && (
-                     <span className="inline-flex items-center border-l border-white/10 pl-2 text-amber-400">
-                       Processing: {processingCount} items
-                     </span>
-                 )}
-                 
-
+                 <span>Queue Progress: {queueProgressPercent}%</span>
                </div>
                
                

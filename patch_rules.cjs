@@ -1,10 +1,10 @@
 const fs = require('fs');
-let code = fs.readFileSync('firestore.rules', 'utf8');
+let rules = fs.readFileSync('firestore.rules', 'utf8');
 
-code = code.replace(/allow read: if isAuthenticated\(\) && \(resource\.data\.targetUid == request\.auth\.uid \|\| \(resource\.data\.targetUid == 'admin' && isAdmin\(\)\)\);/, 
-  "allow read: if isAuthenticated() && (resource.data.targetUid == request.auth.uid || resource.data.targetUid == 'all' || (resource.data.targetUid == 'admin' && isAdmin()));");
+const csvSection = /    \/\/ =========================\n    \/\/ CSV Exports\n    \/\/ =========================\n    match \/csv_exports\/\{exportId\} \{[\s\S]*?allow update: if false;\n    \}/m;
+rules = rules.replace(csvSection, '');
 
-code = code.replace(/allow create: if isAuthenticated\(\);/,
-  "allow create: if isAdmin();"); // Only admin can create notifications now
+const activitySection = /    \/\/ =========================\n    \/\/ Activity Logs\n    \/\/ =========================\n    match \/activity_logs\/\{logId\} \{[\s\S]*?allow update, delete: if false;\n    \}/m;
+rules = rules.replace(activitySection, '');
 
-fs.writeFileSync('firestore.rules', code);
+fs.writeFileSync('firestore.rules', rules);

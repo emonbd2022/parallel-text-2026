@@ -127,31 +127,7 @@ export const AdminDashboard: React.FC = () => {
 
 
   useEffect(() => {
-    const fetchDateRangeActivity = async () => {
-        if (startDate && endDate) {
-            try {
-                // Ensure endDate includes the full day
-                const endOfDay = new Date(endDate);
-                endOfDay.setHours(23, 59, 59, 999);
-                
-                const q = query(
-                    collection(db, 'activity_logs'),
-                    where('timestamp', '>=', startDate),
-                    where('timestamp', '<=', endOfDay)
-                );
-                const snapshot = await getAggregateFromServer(q, {
-                    imagesProcessed: sum('imagesProcessed')
-                });
-                setDateRangeImages(snapshot.data().imagesProcessed || 0);
-            } catch (error) {
-                console.error("Error fetching date range activity:", error);
-                setDateRangeImages(0);
-            }
-        } else {
-            setDateRangeImages(totalSiteImages);
-        }
-    };
-    fetchDateRangeActivity();
+    setDateRangeImages(totalSiteImages);
   }, [startDate, endDate, totalSiteImages]);
 
   const handleUpdateUser = async (uid: string, updates: Partial<UserData>) => {
@@ -210,17 +186,13 @@ export const AdminDashboard: React.FC = () => {
                   createdAt: serverTimestamp()
               });
           } else {
-              const allUsersSnap = await getDocs(collection(db, 'users'));
-              const batchPromises = allUsersSnap.docs.map(docSnap => 
-                  addDoc(collection(db, 'notifications'), {
-                      targetUid: docSnap.id,
-                      type: 'admin_msg',
-                      message: notifModal.message,
-                      read: false,
-                      createdAt: serverTimestamp()
-                  })
-              );
-              await Promise.all(batchPromises);
+              await addDoc(collection(db, 'notifications'), {
+                  targetUid: 'all',
+                  type: 'admin_msg',
+                  message: notifModal.message,
+                  read: false,
+                  createdAt: serverTimestamp()
+              });
           }
           setNotifModal({isOpen: false, message: ''});
       } catch (e) {

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, onAuthStateChanged } from 'firebase/auth';
-import { doc, setDoc, onSnapshot, serverTimestamp, addDoc, collection } from 'firebase/firestore';
+import { doc, setDoc, getDoc, serverTimestamp, addDoc, collection } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 
 export interface UserData {
@@ -25,9 +25,10 @@ interface AuthContextType {
   user: User | null;
   userData: UserData | null;
   loading: boolean;
+  setUserData: React.Dispatch<React.SetStateAction<UserData | null>>;
 }
 
-const AuthContext = createContext<AuthContextType>({ user: null, userData: null, loading: true });
+const AuthContext = createContext<AuthContextType>({ user: null, userData: null, loading: true, setUserData: () => {} });
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const cachedData = (() => {
@@ -62,11 +63,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         try {
           const userRef = doc(db, 'users', currentUser.uid);
           
-          // Setup real-time listener for user data
-          const unsubSnapshot = onSnapshot(userRef, async (docSnap) => {
-            if (docSnap.exists()) {
+          const docSnap = await getDoc(userRef);
+          if (docSnap.exists()) {
               setUserData(docSnap.data() as UserData);
-            } else {
+          } else {
               // Initialize user
               const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com';
               const newUserData: Partial<UserData> = {
@@ -101,15 +101,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                       console.error("Failed to notify admin", e);
                   }
               }
-            }
-          }, (err) => {
-              console.error("Error listening to user data:", err);
-          });
-          
-          if ((window as any)._userUnsub) {
-              (window as any)._userUnsub();
           }
-          (window as any)._userUnsub = unsubSnapshot;
 
         } catch (error) {
           console.error("Error fetching user data:", error);
@@ -117,25 +109,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         setUserData(null);
         localStorage.removeItem('cachedUserData');
-        if ((window as any)._userUnsub) {
-            (window as any)._userUnsub();
-            (window as any)._userUnsub = null;
-        }
+
       }
       setLoading(false);
     });
 
     return () => {
         unsubscribe();
-        if ((window as any)._userUnsub) {
-            (window as any)._userUnsub();
-            (window as any)._userUnsub = null;
-        }
+
     };
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, loading }}>
+    <AuthContext.Provider value={{ user, userData, loading, setUserData }}>
       {!loading && children}
     </AuthContext.Provider>
   );

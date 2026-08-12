@@ -7,9 +7,10 @@ interface Props {
   onAdd: (label: string, key: string) => void;
   onRemove: (id: string) => void;
   onResetUsage: (id: string) => void;
+  onResetAll?: () => void;
 }
 
-export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetUsage }) => {
+export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetUsage, onResetAll }) => {
   const [label, setLabel] = useState('');
   const [keyVal, setKeyVal] = useState('');
   const [showInput, setShowInput] = useState(false);
@@ -63,16 +64,26 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
           </button>
         </div>
         {activeTab === 'keys' && (
-          <button 
-            onClick={() => setShowInput(!showInput)}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all ${
-              showInput 
-                ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
-                : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
-            }`}
-          >
-            {showInput ? 'Cancel' : '+ Add Key'}
-          </button>
+          <div className="flex items-center gap-2">
+            {onResetAll && keys.length > 0 && (
+              <button 
+                onClick={onResetAll}
+                className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-red-600/20 text-red-400 hover:bg-red-600 hover:text-white border border-red-500/30 hover:border-red-500 shadow-sm"
+              >
+                Reset All
+              </button>
+            )}
+            <button 
+              onClick={() => setShowInput(!showInput)}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all ${
+                showInput 
+                  ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
+                  : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
+              }`}
+            >
+              {showInput ? 'Cancel' : '+ Add Key'}
+            </button>
+          </div>
         )}
       </div>
 

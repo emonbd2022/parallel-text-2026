@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { logout } from '../lib/firebase';
 import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell } from 'lucide-react';
-import { doc, getDoc, onSnapshot, collection, query, where, updateDoc, orderBy } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, collection, query, where, updateDoc, orderBy, limit } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useEffect } from 'react';
 
@@ -20,11 +20,11 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     if (!userData) return;
     let unsub = () => {};
     try {
-        const targets = [userData.uid];
+        const targets = [userData.uid, 'all'];
         if (userData.role === 'admin') {
             targets.push('admin');
         }
-        const q = query(collection(db, 'notifications'), where('targetUid', 'in', targets), orderBy('createdAt', 'desc'));
+        const q = query(collection(db, 'notifications'), where('targetUid', 'in', targets), orderBy('createdAt', 'desc'), limit(20));
         unsub = onSnapshot(q, (snapshot) => {
             const notifs: any[] = [];
             snapshot.forEach(d => {
@@ -59,18 +59,13 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   };
 
   useEffect(() => {
-    let unsub = () => {};
-    try {
-        unsub = onSnapshot(doc(db, 'settings', 'general'), (doc) => {
-          if (doc.exists()) {
-            setMaintenanceMode(doc.data().maintenanceMode || false);
-          }
-        }, (err) => {
-           console.warn("Could not load settings:", err);
-        });
-    } catch (e) {
-        console.warn("Error setting up settings listener:", e);
-    }
+    const unsub = onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
+        if (docSnap.exists()) {
+            setMaintenanceMode(docSnap.data().maintenanceMode || false);
+        }
+    }, (err) => {
+        console.warn("Error loading settings:", err);
+    });
     return () => unsub();
   }, []);
 

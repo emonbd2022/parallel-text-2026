@@ -1,17 +1,25 @@
 const fs = require('fs');
-let code = fs.readFileSync('src/lib/sync.ts', 'utf8');
+let code = fs.readFileSync('src/App.tsx', 'utf8');
 
-const oldUpdate = `      await updateDoc(doc(db, 'users', uid), {
-        appData: cleanData
-      });`;
+code = code.replace(
+  `    if (cloudLoaded && userData) {
+        syncUserDataToCloud(userData.uid, { history });
+    }`,
+  ''
+);
 
-const newUpdate = `      const updates: any = {};
-      Object.keys(cleanData).forEach(key => {
-        updates[\`appData.\${key}\`] = cleanData[key];
-      });
-      if (Object.keys(updates).length > 0) {
-        await updateDoc(doc(db, 'users', uid), updates);
-      }`;
+code = code.replace(
+  `    if (cloudLoaded && userData) {
+        syncUserDataToCloud(userData.uid, { logs });
+    }`,
+  ''
+);
 
-code = code.replace(oldUpdate, newUpdate);
-fs.writeFileSync('src/lib/sync.ts', code);
+code = code.replace(
+  `    if (cloudLoaded && userData) {
+        syncUserDataToCloud(userData.uid, { modelStats });
+    }`,
+  ''
+);
+
+fs.writeFileSync('src/App.tsx', code);

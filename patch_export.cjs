@@ -1,50 +1,7 @@
 const fs = require('fs');
 let code = fs.readFileSync('src/App.tsx', 'utf8');
 
-const oldStatsUpdate = `
-    // Update stats and save to Firestore
-    if (userData) {
-      const numExported = completedItems.length;
-      const totalRequests = sessionRequestCountRef.current;
-      
-      const updates: any = {
-          totalProcessedImages: increment(numExported)
-      };
-      if (!userData.unlimited) {
-          updates.credits = increment(-numExported);
-      }
-      
-      updateDoc(doc(db, 'users', userData.uid), updates).catch(e => console.error("Failed to update user stats:", e));
-      
-      addDoc(collection(db, 'activity_logs'), {
-          uid: userData.uid,
-          imagesProcessed: numExported,
-          apiRequests: totalRequests,
-          timestamp: serverTimestamp()
-      }).catch(e => console.error("Failed to add activity log:", e));
-
-      addDoc(collection(db, 'csv_exports'), {
-        uid: userData.uid,
-        filename: exportFileName,
-        csvData: csvContent,
-        createdAt: serverTimestamp()
-      }).catch(err => console.error("Failed to save CSV to Firestore:", err));
-    }
-`;
-
-const newStatsUpdate = `
-    // Update stats and save to Firestore
-    if (userData) {
-      const newlyExportedItems = completedItems.filter(i => !(i as any).exported);
-      const numExported = newlyExportedItems.length;
-      
-      if (numExported > 0) {
-          const totalRequests = sessionRequestCountRef.current;
-          
-          const updates: any = {
-              totalProcessedImages: increment(numExported)
-          };
-          if (!userData.unlimited) {
+const exportTarget = `          if (!userData.unlimited) {
               updates.credits = increment(-numExported);
           }
           
@@ -57,18 +14,35 @@ const newStatsUpdate = `
               timestamp: serverTimestamp()
           }).catch(e => console.error("Failed to add activity log:", e));
     
-          addDoc(collection(db, 'csv_exports'), {
-            uid: userData.uid,
-            filename: exportFileName,
-            csvData: csvContent,
-            createdAt: serverTimestamp()
-          }).catch(err => console.error("Failed to save CSV to Firestore:", err));
-          
-          setItems(prev => prev.map(i => i.status === 'done' ? { ...i, exported: true } : i));
-      }
-    }
-`;
+          // Save to Firestore so it persists across cache clears
+          try {
+            addDoc(collection(db, 'csv_exports'), {
+              uid: userData.uid,
+              filename: exportFileName,
+              csvData: csvContent,
+              createdAt: Date.now()
+            });
+          } catch (err) {
+            console.error("Failed to save CSV to Firestore:", err);
+          }`;
 
-code = code.replace(oldStatsUpdate, newStatsUpdate);
+const exportReplacement = `          if (!userData.unlimited) {
+              updates.credits = increment(-numExported);
+          }
+          
+          updateDoc(doc(db, 'users', userData.uid), updates).catch(e => console.error("Failed to update user stats:", e));`;
+
+code = code.replace(exportTarget, exportReplacement);
+
+const updatesTarget = `          const updates: any = {
+              totalProcessedImages: increment(numExported),
+              'appData.logs': logs,
+              'appData.modelStats': modelStats
+          };`;
+
+const updatesReplacement = `          const updates: any = {
+              totalProcessedImages: increment(numExported)
+          };`;
+code = code.replace(updatesTarget, updatesReplacement);
 
 fs.writeFileSync('src/App.tsx', code);
