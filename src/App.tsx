@@ -13,7 +13,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
 import { doc, updateDoc, increment, collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { syncUserDataToCloud } from './lib/sync';
 
 // Persistence Keys
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
@@ -327,10 +326,7 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys));
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
-    if (cloudLoaded && userData) {
-      syncUserDataToCloud(userData.uid, { keys, config });
-    }
-  }, [keys, config, cloudLoaded, userData?.uid]);
+  }, [keys, config]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
