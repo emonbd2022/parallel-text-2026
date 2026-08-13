@@ -1,6 +1,6 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState } from 'react';
-import { getDocs, updateDoc, doc, query, orderBy, limit, startAfter, getDoc, setDoc } from 'firebase/firestore';
+import { getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc } from 'firebase/firestore';
 import { collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
@@ -11,8 +11,19 @@ import 'react-datepicker/dist/react-datepicker.css';
 
 export const AdminDashboard: React.FC = () => {
   const { userData: currentAdmin } = useAuth();
-  const [users, setUsers] = useState<UserData[]>([]);
-  const [loading, setLoading] = useState(true);
+  
+  // Cache users in sessionStorage to avoid repeating 20 reads on every page view
+  const cachedUsers = (() => {
+    try {
+      const s = sessionStorage.getItem('adminCachedUsers');
+      return s ? JSON.parse(s) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  const [users, setUsers] = useState<UserData[]>(cachedUsers || []);
+  const [loading, setLoading] = useState(cachedUsers ? false : true);
   const [searchTerm, setSearchTerm] = useState('');
   const [lastVisible, setLastVisible] = useState<any>(null);
   const [hasMore, setHasMore] = useState(true);
@@ -40,7 +51,12 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const fetchUsers = async (isNextPage = false) => {
+  const fetchUsers = async (isNextPage = false, forceRefresh = false) => {
+    if (!forceRefresh && !isNextPage && users.length > 0) {
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       let q = query(
@@ -70,17 +86,20 @@ export const AdminDashboard: React.FC = () => {
       
       setHasMore(querySnapshot.docs.length >= 20);
 
+      let updatedList: UserData[];
       if (isNextPage) {
-        setUsers(prev => {
-          const newUsers = [...prev];
-          usersData.forEach(u => {
-            if (!newUsers.find(x => x.uid === u.uid)) newUsers.push(u);
-          });
-          return newUsers;
+        updatedList = [...users];
+        usersData.forEach(u => {
+          if (!updatedList.find(x => x.uid === u.uid)) updatedList.push(u);
         });
       } else {
-        setUsers(usersData);
+        updatedList = usersData;
       }
+
+      setUsers(updatedList);
+      try {
+        sessionStorage.setItem('adminCachedUsers', JSON.stringify(updatedList));
+      } catch {}
     } catch (error) {
       console.error("Error fetching users:", error);
     } finally {
@@ -97,7 +116,11 @@ export const AdminDashboard: React.FC = () => {
   const handleUpdateUser = async (uid: string, updates: Partial<UserData>) => {
     try {
       await updateDoc(doc(db, 'users', uid), updates);
-      setUsers(prev => prev.map(u => u.uid === uid ? { ...u, ...updates } : u));
+      setUsers(prev => {
+        const next = prev.map(u => u.uid === uid ? { ...u, ...updates } : u);
+        try { sessionStorage.setItem('adminCachedUsers', JSON.stringify(next)); } catch {}
+        return next;
+      });
     } catch (error) {
       console.error("Error updating user:", error);
     }
@@ -170,6 +193,14 @@ export const AdminDashboard: React.FC = () => {
           </h1>
           
           <div className="flex flex-wrap items-center gap-4">
+            <button
+              onClick={() => fetchUsers(false, true)}
+              className="flex items-center gap-2 bg-slate-900/50 hover:bg-slate-800 border border-slate-800 rounded-xl px-4 py-2 text-sm font-bold text-slate-300 transition-colors"
+            >
+              <RefreshCw className="w-4 h-4 text-purple-400" />
+              Refresh Data
+            </button>
+
             <label className="flex items-center gap-2 cursor-pointer bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 shadow-lg">
                 <input type="checkbox" checked={maintenanceMode} onChange={toggleMaintenance} className="w-4 h-4 accent-red-500" />
                 <span className="text-sm font-bold text-red-400">Maintenance Mode</span>

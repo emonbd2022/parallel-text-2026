@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { User, onAuthStateChanged } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
@@ -63,6 +63,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   });
 
+  const fetchedUidRef = useRef<string | null>(cachedData?.uid || null);
+
   useEffect(() => {
     if (userData) {
       localStorage.setItem('cachedUserData', JSON.stringify(userData));
@@ -85,8 +87,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(currentUser);
       
       if (currentUser) {
+        // Prevent duplicate reads on token refreshes or tab focus events
+        if (fetchedUidRef.current === currentUser.uid && userData) {
+          setLoading(false);
+          return;
+        }
+
+        fetchedUidRef.current = currentUser.uid;
+
         try {
-          // Exactly 1 read on login / auth change
           const userRef = doc(db, 'users', currentUser.uid);
           const docSnap = await getDoc(userRef);
           
@@ -117,6 +126,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.error("Error fetching user profile on login:", error);
         }
       } else {
+        fetchedUidRef.current = null;
         setUserData(null);
         setNotifications([]);
         localStorage.removeItem('cachedUserData');

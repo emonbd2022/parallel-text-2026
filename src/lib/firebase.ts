@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { initializeFirestore } from 'firebase/firestore';
+import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -11,29 +11,14 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-let app;
-let auth;
-let db;
+let app: any;
+let auth: any;
+let db: any;
 
 try {
   if (firebaseConfig.apiKey) {
     app = initializeApp(firebaseConfig);
-    // Only pass databaseId if it exists in env
-    const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
-    
-    const firestoreSettings = {
-      experimentalForceLongPolling: true,
-    };
-    
-    if (dbId) {
-      db = initializeFirestore(app, firestoreSettings, dbId);
-    } else {
-      db = initializeFirestore(app, firestoreSettings);
-    }
-    
-
-    
-    
+    db = getFirestore(app);
     auth = getAuth(app);
   }
 } catch (error) {
