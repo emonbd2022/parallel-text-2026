@@ -75,39 +75,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (currentUser) {
         try {
           const userRef = doc(db, 'users', currentUser.uid);
-          
-          // Parallelize initial reads to reduce waterfall latency and ensure single-pass loading
-          const [docSnap, maintenanceSnap] = await Promise.all([
-              getDoc(userRef),
-              getDoc(doc(db, 'settings', 'general'))
-          ]);
-
-          if (maintenanceSnap.exists()) {
-              setMaintenanceMode(maintenanceSnap.data().maintenanceMode || false);
-          }
+          const docSnap = await getDoc(userRef);
           
           if (docSnap.exists()) {
-              const data = docSnap.data() as UserData;
-              setUserData(data);
-
-              // Background fetch notifications
-              const targets = [currentUser.uid, 'all'];
-              if (data.role === 'admin') targets.push('admin');
-              
-              const q = query(collection(db, 'notifications'), where('targetUid', 'in', targets), orderBy('createdAt', 'desc'), limit(20));
-              getDocs(q).then(notifSnap => {
-                  const readIds = JSON.parse(localStorage.getItem('readNotifs') || '[]');
-                  const notifs = notifSnap.docs.map(d => {
-                      const dData = d.data();
-                      return { id: d.id, ...dData, read: dData.read || readIds.includes(d.id) };
-                  });
-                  setNotifications(notifs);
-              }).catch(e => console.warn("Background notification load failed", e));
-
+              setUserData(docSnap.data() as UserData);
           } else {
               // Initialize user
               const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com';
-              const newUserData: UserData = {
+              const newUserData: Partial<UserData> = {
                 uid: currentUser.uid,
                 email: currentUser.email || '',
                 name: currentUser.displayName || '',
@@ -120,16 +95,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 blocked: false,
                 role: isFirstUser ? 'admin' : 'user',
                 plan: 'free',
-                appData: {
-                    apiUsage: {},
-                    keys: [],
-                    config: {}
-                }
               };
               
               await setDoc(userRef, newUserData);
-              setUserData(newUserData);
+              setUserData(newUserData as UserData);
               
+              // Send admin notification
               if (!isFirstUser) {
                   try {
                       await addDoc(collection(db, 'notifications'), {
@@ -139,11 +110,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                           read: false,
                           createdAt: serverTimestamp()
                       });
-                  } catch (e) {}
+                  } catch (e) {
+                      console.error("Failed to notify admin", e);
+                  }
               }
           }
+
+          // Fetch Maintenance Mode
+          try {
+              const maintenanceSnap = await getDoc(doc(db, 'settings', 'general'));
+              if (maintenanceSnap.exists()) {
+                  setMaintenanceMode(maintenanceSnap.data().maintenanceMode || false);
+              }
+          } catch (e) {
+              console.warn("Failed to fetch maintenance mode", e);
+          }
+
+          // Fetch Notifications
+          try {
+              const targets = [currentUser.uid, 'all'];
+              const uData = docSnap.exists() ? docSnap.data() : null;
+              if (uData?.role === 'admin' || currentUser.email === 'titaniumfact97@gmail.com') {
+                  targets.push('admin');
+              }
+              const q = query(collection(db, 'notifications'), where('targetUid', 'in', targets), orderBy('createdAt', 'desc'), limit(20));
+              const notifSnap = await getDocs(q);
+              const notifs: any[] = [];
+              const readIds = JSON.parse(localStorage.getItem('readNotifs') || '[]');
+              notifSnap.forEach(d => {
+                  const data = d.data();
+                  notifs.push({ id: d.id, ...data, read: data.read || readIds.includes(d.id) });
+              });
+              setNotifications(notifs);
+          } catch (e) {
+              console.warn("Failed to fetch notifications", e);
+          }
+
         } catch (error) {
-          console.error("Error loading user data:", error);
+          console.error("Error fetching user data:", error);
         }
       } else {
         setUserData(null);

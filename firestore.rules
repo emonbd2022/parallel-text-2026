@@ -18,35 +18,47 @@ service cloud.firestore {
     // User Profiles
     // =========================
     match /users/{userId} {
-      // User can read their own profile. Admins can read all.
-      // We check userId first to avoid get() if it's the user themselves.
-      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
 
-      allow create: if isAuthenticated() && request.auth.uid == userId;
+      // User can read their own profile, admins can read all
+      allow read: if isAuthenticated() &&
+        (request.auth.uid == userId || isAdmin());
 
+      // User can create only their own document
+      allow create: if isAuthenticated() &&
+        request.auth.uid == userId;
+
+      // Admins can update everything.
+      // Normal users cannot modify protected fields.
       allow update: if isAuthenticated() && (
+        isAdmin() ||
         (
           request.auth.uid == userId &&
-          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'unlimited', 'blocked', 'plan', 'planStartDate', 'planEndDate'])
-        ) ||
-        isAdmin()
+          !request.resource.data
+            .diff(resource.data)
+            .affectedKeys()
+            .hasAny([
+              'role',
+              'unlimited',
+              'blocked',
+              'plan',
+              'planStartDate',
+              'planEndDate'
+            ])
+        )
       );
 
       allow delete: if isAdmin();
-
-      // Stats summary subcollection
-      match /stats/summary {
-        allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
-        allow write: if isAuthenticated() && request.auth.uid == userId;
-      }
     }
 
+
+
     // =========================
-    // CSV Exports (Logged for admin)
+    // Processing Sessions
     // =========================
-    match /csv_exports/{exportId} {
-      allow read: if isAdmin();
-      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+    match /users/{userId}/processingSessions/{sessionId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update, delete: if isAdmin();
     }
 
     // =========================

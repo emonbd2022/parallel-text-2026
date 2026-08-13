@@ -21,7 +21,9 @@ try {
     // Only pass databaseId if it exists in env
     const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
     
-    const firestoreSettings = {};
+    const firestoreSettings = {
+      experimentalForceLongPolling: true,
+    };
     
     if (dbId) {
       db = initializeFirestore(app, firestoreSettings, dbId);

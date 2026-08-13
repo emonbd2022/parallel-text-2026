@@ -22,27 +22,7 @@ export const Dashboard: React.FC = () => {
   const [showStats, setShowStats] = useState(false);
   const [logs, setLogs] = useState([]);
   const [modelStats, setModelStats] = useState({});
-  const [cloudSummary, setCloudSummary] = useState<any>(null);
 
-  useEffect(() => {
-    const fetchCloudSummary = async () => {
-      if (userData?.uid) {
-        try {
-          const { db } = await import('../lib/firebase');
-          const { doc, getDoc } = await import('firebase/firestore');
-          const summaryRef = doc(db, 'users', userData.uid, 'stats', 'summary');
-          const snap = await getDoc(summaryRef);
-          if (snap.exists()) {
-            setCloudSummary(snap.data());
-          }
-        } catch (e) {
-          console.error("Failed to fetch cloud stats:", e);
-        }
-      }
-    };
-
-    fetchCloudSummary();
-  }, [userData?.uid]);
 
   useEffect(() => {
     try {
@@ -174,7 +154,6 @@ export const Dashboard: React.FC = () => {
           logs={logs} 
           modelStats={modelStats} 
           models={MODELS} 
-          cloudSummary={cloudSummary}
           onClose={() => setShowStats(false)} 
         />
       )}

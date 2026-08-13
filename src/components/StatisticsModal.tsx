@@ -7,11 +7,10 @@ interface Props {
   logs: ProcessingLog[];
   modelStats: Record<string, { totalTimeMs: number, count: number, fails: number }>;
   models: { id: string, name: string }[];
-  cloudSummary?: any;
   onClose: () => void;
 }
 
-export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, cloudSummary, onClose }) => {
+export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onClose }) => {
     const [isListExpanded, setIsListExpanded] = useState(false);
     const [dateRange, setDateRange] = useState({ start: '', end: '' });
     const [tick, setTick] = useState(0);
@@ -25,22 +24,14 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, clo
     // Ensure logs are sorted
     const sortedLogs = useMemo(() => [...logs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()), [logs]);
 
-    // 1. Daily, Weekly, Monthly total counts (Merged with Cloud)
+    // 1. Daily, Weekly, Monthly total counts
     const stats = useMemo(() => {
-        const dateObj = new Date();
-        const pad = (n: number) => n < 10 ? '0'+n : n;
-        const dateStr = dateObj.getFullYear() + '-' + pad(dateObj.getMonth() + 1) + '-' + pad(dateObj.getDate());
-
-        let daily = cloudSummary?.daily?.[dateStr] || 0;
-        let weekly = cloudSummary?.week?.count || 0;
-        let monthly = cloudSummary?.month?.count || 0;
-        
+        let daily = 0, weekly = 0, monthly = 0;
         const now = new Date();
         const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
         const startOfWeek = now.getTime() - (7 * 24 * 60 * 60 * 1000);
         const startOfMonth = now.getTime() - (30 * 24 * 60 * 60 * 1000);
 
-        // Add local logs that might not be in cloud yet
         sortedLogs.forEach(log => {
             const time = new Date(log.timestamp).getTime();
             if (time >= startOfDay) daily += log.itemCount;
@@ -48,50 +39,31 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, clo
             if (time >= startOfMonth) monthly += log.itemCount;
         });
         return { daily, weekly, monthly };
-    }, [sortedLogs, cloudSummary, tick]);
+    }, [sortedLogs, tick]);
 
     // 2. Custom Range Total
     const customRangeTotal = useMemo(() => {
         if (!dateRange.start || !dateRange.end) return 0;
         const start = new Date(dateRange.start).getTime();
         const end = new Date(dateRange.end).getTime() + 24 * 60 * 60 * 1000; // include end day
-        
         let total = 0;
-        
-        // Add cloud data if available for this range
-        if (cloudSummary?.daily) {
-            Object.keys(cloudSummary.daily).forEach(dateStr => {
-                const time = new Date(dateStr).getTime();
-                if (time >= start && time <= end) {
-                    total += cloudSummary.daily[dateStr];
-                }
-            });
-        }
-
-        // Add local logs
         sortedLogs.forEach(log => {
             const time = new Date(log.timestamp).getTime();
             if (time >= start && time <= end) total += log.itemCount;
         });
         return total;
-    }, [sortedLogs, cloudSummary, dateRange, tick]);
+    }, [sortedLogs, dateRange, tick]);
 
-    // 3. Daily Activity Graph (last 14 days) - Merged with Cloud
+    // 3. Daily Activity Graph (last 14 days)
     const dailyData = useMemo(() => {
         const dataMap: Record<string, number> = {};
         const now = new Date();
         for (let i = 13; i >= 0; i--) {
             const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
             const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-            
-            const pad = (n: number) => n < 10 ? '0'+n : n;
-            const fullDateStr = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
-            
-            // Start with cloud data
-            dataMap[dateStr] = cloudSummary?.daily?.[fullDateStr] || 0;
+            dataMap[dateStr] = 0;
         }
         
-        // Add local logs
         sortedLogs.forEach(log => {
             const dateStr = new Date(log.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
             if (dataMap[dateStr] !== undefined) {
@@ -100,7 +72,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, clo
         });
 
         return Object.keys(dataMap).map(date => ({ date, count: dataMap[date] }));
-    }, [sortedLogs, cloudSummary]);
+    }, [sortedLogs]);
 
     // 4. Time of Day Activity (Screen time like)
     const hourlyData = useMemo(() => {

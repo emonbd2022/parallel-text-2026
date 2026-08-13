@@ -9,7 +9,7 @@ import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
 export const AdminDashboard: React.FC = () => {
-  const { userData: currentAdmin, maintenanceMode: globalMaintenanceMode } = useAuth();
+  const { userData: currentAdmin } = useAuth();
   const [users, setUsers] = useState<UserData[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -34,13 +34,21 @@ export const AdminDashboard: React.FC = () => {
 
   
   useEffect(() => {
-    setMaintenanceMode(globalMaintenanceMode);
-  }, [globalMaintenanceMode]);
+    const fetchMaintenance = async () => {
+      const docRef = doc(db, 'settings', 'general');
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        setMaintenanceMode(snap.data().maintenanceMode || false);
+      }
+    };
+    fetchMaintenance();
+  }, []);
   
   const toggleMaintenance = async () => {
     const newMode = !maintenanceMode;
     setMaintenanceMode(newMode);
     await setDoc(doc(db, 'settings', 'general'), { maintenanceMode: newMode }, { merge: true });
+    console.log(`Maintenance mode is now ${newMode ? 'ON' : 'OFF'}`);
   };
 
 
@@ -112,11 +120,10 @@ export const AdminDashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    if (currentAdmin?.role === 'admin') {
-      fetchTotalAggregate();
-      fetchUsers(false);
-    }
-  }, [currentAdmin?.uid]);
+    fetchTotalAggregate();
+    fetchUsers(false);
+
+    }, []);
 
 
   useEffect(() => {
