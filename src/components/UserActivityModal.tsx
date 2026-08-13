@@ -1,108 +1,89 @@
 import React, { useEffect, useState } from 'react';
 import { X, Activity, Calendar } from 'lucide-react';
 import { UserData } from '../contexts/AuthContext';
-import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
 export const UserActivityModal: React.FC<{ user: UserData; onClose: () => void }> = ({ user, onClose }) => {
-  const [todayCount, setTodayCount] = useState(0);
-  const [weekCount, setWeekCount] = useState(0);
-  const [monthCount, setMonthCount] = useState(0);
+  const [summary, setSummary] = useState<any>(null);
   
   const [startDate, setStartDate] = useState<Date | null>(new Date(new Date().setHours(0,0,0,0)));
   const [endDate, setEndDate] = useState<Date | null>(new Date(new Date().setHours(23,59,59,999)));
-  const [customRangeCount, setCustomRangeCount] = useState(0);
   
-  const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchDefaultStats = async () => {
+    const fetchSummary = async () => {
       try {
-        const now = new Date();
-        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-        // Fetch this month's data to calculate month, week, and today locally to save reads
-        const monthQuery = query(
-            collection(db, 'users', user.uid, 'processingSessions'),
-            where('completedAt', '>=', startOfMonth)
-        );
-        
-        const snap = await getDocs(monthQuery);
-        let tCount = 0;
-        let wCount = 0;
-        let mCount = 0;
-
-        snap.forEach(doc => {
-            const data = doc.data();
-            const count = data.imageCount || 0;
-            const completedAt = data.completedAt?.toDate();
-            
-            if (completedAt) {
-                mCount += count;
-                if (completedAt >= startOfWeek) {
-                    wCount += count;
-                }
-                if (completedAt >= startOfToday) {
-                    tCount += count;
-                }
-            }
-        });
-
-        setTodayCount(tCount);
-        setWeekCount(wCount);
-        setMonthCount(mCount);
+        const summaryRef = doc(db, 'users', user.uid, 'stats', 'summary');
+        const snap = await getDoc(summaryRef);
+        if (snap.exists()) {
+            setSummary(snap.data());
+        } else {
+            setSummary({ totalProcessed: 0, daily: {}, week: { count: 0 }, month: { count: 0 } });
+        }
       } catch (e) {
-        console.error("Error fetching default activity stats", e);
-      }
-    };
-    
-    fetchDefaultStats();
-  }, [user.uid]);
-
-  useEffect(() => {
-    const fetchCustomRangeAndHistory = async () => {
-      if (!startDate || !endDate) return;
-      setLoading(true);
-      try {
-        // Add 1 day to endDate to make it inclusive if it's set to midnight
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-
-        const customQuery = query(
-            collection(db, 'users', user.uid, 'processingSessions'),
-            where('completedAt', '>=', startDate),
-            where('completedAt', '<=', end),
-            orderBy('completedAt', 'desc')
-        );
-
-        const snap = await getDocs(customQuery);
-        let cCount = 0;
-        const hist: any[] = [];
-        snap.forEach(doc => {
-            const data = doc.data();
-            cCount += (data.imageCount || 0);
-            hist.push({
-                id: doc.id,
-                imageCount: data.imageCount || 0,
-                completedAt: data.completedAt?.toDate()
-            });
-        });
-        
-        setCustomRangeCount(cCount);
-        setHistory(hist);
-      } catch (e) {
-        console.error("Error fetching custom range activity", e);
+        console.error("Error fetching summary", e);
       }
       setLoading(false);
     };
+    
+    fetchSummary();
+  }, [user.uid]);
 
-    fetchCustomRangeAndHistory();
-  }, [user.uid, startDate, endDate]);
+  const pad = (n: number) => n < 10 ? '0'+n : n;
+  
+  const getTodayStr = () => {
+      const d = new Date();
+      return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
+  };
+
+  const calculateCustomRange = () => {
+      if (!summary || !summary.daily || !startDate || !endDate) return 0;
+      let total = 0;
+      
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      
+      Object.entries(summary.daily).forEach(([dateStr, count]) => {
+          const [y, m, d] = dateStr.split('-');
+          const date = new Date(Number(y), Number(m)-1, Number(d), 12, 0, 0); // Noon to avoid timezone edge cases
+          if (date >= startDate && date <= end) {
+              total += Number(count);
+          }
+      });
+      return total;
+  };
+
+  const getHistoryForRange = () => {
+      if (!summary || !summary.daily) return [];
+      
+      const history: any[] = [];
+      const end = endDate ? new Date(endDate) : new Date();
+      if (endDate) end.setHours(23, 59, 59, 999);
+      const start = startDate || new Date(0);
+
+      Object.entries(summary.daily).forEach(([dateStr, count]) => {
+          const [y, m, d] = dateStr.split('-');
+          const date = new Date(Number(y), Number(m)-1, Number(d), 12, 0, 0);
+          if (date >= start && date <= end) {
+              history.push({
+                  dateStr,
+                  date,
+                  imageCount: count
+              });
+          }
+      });
+      
+      return history.sort((a, b) => b.date.getTime() - a.date.getTime());
+  };
+
+  const history = getHistoryForRange();
+  const customCount = calculateCustomRange();
+  const todayStr = getTodayStr();
+  const todayCount = summary?.daily ? (summary.daily[todayStr] || 0) : 0;
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
@@ -122,7 +103,7 @@ export const UserActivityModal: React.FC<{ user: UserData; onClose: () => void }
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
                <div className="text-sm text-slate-400 mb-1">Total Processed</div>
-               <div className="text-2xl font-bold text-emerald-400">{user.totalProcessedImages || 0}</div>
+               <div className="text-2xl font-bold text-emerald-400">{summary?.totalProcessed || user.totalProcessedImages || 0}</div>
             </div>
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
                <div className="text-sm text-slate-400 mb-1">Today</div>
@@ -130,15 +111,15 @@ export const UserActivityModal: React.FC<{ user: UserData; onClose: () => void }
             </div>
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
                <div className="text-sm text-slate-400 mb-1">This Week</div>
-               <div className="text-2xl font-bold text-purple-400">{weekCount}</div>
+               <div className="text-2xl font-bold text-purple-400">{summary?.week?.count || 0}</div>
             </div>
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
                <div className="text-sm text-slate-400 mb-1">This Month</div>
-               <div className="text-2xl font-bold text-amber-400">{monthCount}</div>
+               <div className="text-2xl font-bold text-amber-400">{summary?.month?.count || 0}</div>
             </div>
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
                <div className="text-sm text-slate-400 mb-1">Custom Range</div>
-               <div className="text-2xl font-bold text-rose-400">{customRangeCount}</div>
+               <div className="text-2xl font-bold text-rose-400">{customCount}</div>
             </div>
           </div>
 
@@ -146,7 +127,7 @@ export const UserActivityModal: React.FC<{ user: UserData; onClose: () => void }
               <div className="p-4 border-b border-slate-700/50 flex flex-col sm:flex-row justify-between items-center gap-4 bg-slate-800/50">
                   <h3 className="font-bold text-white flex items-center gap-2">
                       <Calendar className="w-4 h-4 text-slate-400" />
-                      Activity History
+                      Daily Activity History
                   </h3>
                   <div className="flex items-center gap-2 text-sm z-50">
                       <DatePicker
@@ -180,31 +161,28 @@ export const UserActivityModal: React.FC<{ user: UserData; onClose: () => void }
                   <table className="w-full text-left text-sm text-slate-300">
                       <thead className="text-xs text-slate-400 uppercase bg-slate-900/50 border-b border-slate-700/50">
                           <tr>
-                              <th className="px-6 py-4 font-semibold">Date & Time</th>
+                              <th className="px-6 py-4 font-semibold">Date</th>
                               <th className="px-6 py-4 font-semibold">Images Processed</th>
-                              <th className="px-6 py-4 font-semibold text-slate-500">Session ID</th>
                           </tr>
                       </thead>
                       <tbody>
                           {loading ? (
                               <tr>
-                                  <td colSpan={3} className="px-6 py-8 text-center text-slate-500">Loading history...</td>
+                                  <td colSpan={2} className="px-6 py-8 text-center text-slate-500">Loading history...</td>
                               </tr>
                           ) : history.length === 0 ? (
                               <tr>
-                                  <td colSpan={3} className="px-6 py-8 text-center text-slate-500">No activity found in this date range.</td>
+                                  <td colSpan={2} className="px-6 py-8 text-center text-slate-500">No activity found in this date range.</td>
                               </tr>
                           ) : (
                               history.map((record) => (
-                                  <tr key={record.id} className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
-                                      <td className="px-6 py-4 whitespace-nowrap">
-                                          {record.completedAt ? record.completedAt.toLocaleString(undefined, {
-                                              month: 'short', day: 'numeric', year: 'numeric',
-                                              hour: '2-digit', minute: '2-digit'
-                                          }) : 'Unknown'}
+                                  <tr key={record.dateStr} className="border-b border-slate-800/50 hover:bg-slate-800/20 transition-colors">
+                                      <td className="px-6 py-4 whitespace-nowrap font-medium">
+                                          {record.date.toLocaleDateString(undefined, {
+                                              month: 'long', day: 'numeric', year: 'numeric'
+                                          })}
                                       </td>
-                                      <td className="px-6 py-4 font-medium text-white">{record.imageCount}</td>
-                                      <td className="px-6 py-4 font-mono text-[10px] text-slate-600 truncate max-w-[150px]">{record.id}</td>
+                                      <td className="px-6 py-4 font-bold text-white">{record.imageCount}</td>
                                   </tr>
                               ))
                           )}

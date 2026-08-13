@@ -1113,16 +1113,47 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
           
           // 1. Update user totals and API usage
           const userRef = doc(db, 'users', userData.uid);
-          batch.update(userRef, updates);
+          batch.set(userRef, updates, { merge: true });
           
-          // 2. Create the processing session record
-          const sessionId = "job-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9);
-          const sessionRef = doc(db, 'users', userData.uid, 'processingSessions', sessionId);
-          batch.set(sessionRef, {
-              sessionId,
-              imageCount: numExported,
-              completedAt: serverTimestamp()
-          });
+          // 2. Update Local Summary & Persist to Firestore
+          const dateObj = new Date();
+          
+          const pad = (n) => n < 10 ? '0'+n : n;
+          // Format as YYYY-MM-DD local
+          const dateStr = dateObj.getFullYear() + '-' + pad(dateObj.getMonth() + 1) + '-' + pad(dateObj.getDate());
+          const monthStr = dateStr.substring(0, 7);
+          
+          const startOfWeek = new Date(dateObj);
+          startOfWeek.setDate(dateObj.getDate() - dateObj.getDay());
+          const weekStr = startOfWeek.getFullYear() + '-' + pad(startOfWeek.getMonth() + 1) + '-' + pad(startOfWeek.getDate());
+
+          let summary = JSON.parse(localStorage.getItem('userActivitySummary') || '{"totalProcessed":0,"daily":{},"week":{"startDate":"","count":0},"month":{"month":"","count":0}}');
+          
+          summary.totalProcessed += numExported;
+          summary.daily[dateStr] = (summary.daily[dateStr] || 0) + numExported;
+          
+          if (summary.week.startDate !== weekStr) {
+              summary.week = { startDate: weekStr, count: numExported };
+          } else {
+              summary.week.count += numExported;
+          }
+          
+          if (summary.month.month !== monthStr) {
+              summary.month = { month: monthStr, count: numExported };
+          } else {
+              summary.month.count += numExported;
+          }
+          
+          localStorage.setItem('userActivitySummary', JSON.stringify(summary));
+
+          const summaryRef = doc(db, 'users', userData.uid, 'stats', 'summary');
+          batch.set(summaryRef, {
+              totalProcessed: increment(numExported),
+              [`daily.${dateStr}`]: increment(numExported),
+              week: summary.week,
+              month: summary.month,
+              lastUpdated: serverTimestamp()
+          }, { merge: true });
 
           batch.commit().catch(e => console.error("Failed to update user stats and activity:", e));
           
