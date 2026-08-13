@@ -256,11 +256,14 @@ export default function App() {
     if (userData && !cloudLoaded) {
       if (userData.appData) {
         if (userData.appData.keys) {
-            setKeys(userData.appData.keys.map((k: any) => ({
-                ...k,
-                errorCount: k.errorCount || 0,
-                usage: k.usage || { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0 }
-            })));
+            setKeys(userData.appData.keys.map((k: any) => {
+                const loadedUsage = userData.appData.apiUsage?.[k.id];
+                return {
+                    ...k,
+                    errorCount: k.errorCount || 0,
+                    usage: loadedUsage || { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0 }
+                };
+            }));
         }
         if (userData.appData.config) setConfig(userData.appData.config);
         
@@ -384,7 +387,7 @@ export default function App() {
         }).catch(e => {
             console.warn("Auto-save failed", e);
         });
-    }, 2000); // 2 second debounce
+    }, 15000); // 15 second debounce to reduce CPU/IO during processing
     
     return () => clearTimeout(timer);
   }, [items, isProjectLoaded]);
@@ -1107,8 +1110,14 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       if (numExported > 0) {
           const totalRequests = sessionRequestCountRef.current;
           
+          const apiUsageToSync: Record<string, any> = {};
+          keys.forEach(k => {
+              if (k.usage) apiUsageToSync[k.id] = k.usage;
+          });
+
           const updates: any = {
-              totalProcessedImages: increment(numExported)
+              totalProcessedImages: increment(numExported),
+              'appData.apiUsage': apiUsageToSync
           };
           if (!userData.unlimited) {
               updates.credits = increment(-numExported);
@@ -1845,7 +1854,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                       ? 'bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 shadow-[0_0_20px_rgba(245,158,11,0.3)] transform hover:-translate-y-0.5'
                       : 'bg-slate-700 opacity-50 cursor-not-allowed'}`}
               >
-                {allDone ? 'Export CSV' : hasPartialData ? `Export Partial (${doneCount})` : 'Waiting...'}
+                {allDone ? 'Export CSV' : hasPartialData ? 'Export Partial' : 'Waiting...'}
               </button>
            </div>
         </div>
@@ -1922,10 +1931,10 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                 {items.length > 0 && (
                   <div className="flex justify-between items-center bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
                       <div className="flex gap-2">
-                          <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All ({items.length})</button>
-                          <button onClick={() => setFilter('ongoing')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'ongoing' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>On going ({items.filter(i => i.status === 'processing' || i.status === 'compressing').length})</button>
-                          <button onClick={() => setFilter('uncompleted')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'uncompleted' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Uncompleted ({items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()).length})</button>
-                          <button onClick={() => setFilter('failed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'failed' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Failed ({items.filter(i => i.status === 'error').length})</button>
+                          <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All</button>
+                          <button onClick={() => setFilter('ongoing')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'ongoing' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>On going</button>
+                          <button onClick={() => setFilter('uncompleted')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'uncompleted' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Uncompleted</button>
+                          <button onClick={() => setFilter('failed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'failed' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Failed</button>
                       </div>
                   </div>
                 )}

@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { initializeFirestore, clearIndexedDbPersistence } from 'firebase/firestore';
+import { initializeFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -31,8 +31,6 @@ try {
       db = initializeFirestore(app, firestoreSettings);
     }
     
-    // Clear any stuck offline queues that are causing quota exhaustion loops
-    clearIndexedDbPersistence(db).catch(() => {});
 
     
     
