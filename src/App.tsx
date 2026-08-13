@@ -1917,12 +1917,15 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                 </div>
 
                 {items.length > 0 && (
-                  <div className="flex justify-between items-center bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
                       <div className="flex gap-2">
                           <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All</button>
                           <button onClick={() => setFilter('ongoing')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'ongoing' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>On going</button>
                           <button onClick={() => setFilter('uncompleted')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'uncompleted' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Uncompleted</button>
                           <button onClick={() => setFilter('failed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'failed' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Failed</button>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-slate-300 px-2 font-semibold">
+                          <span>Total Images in Queue: <strong className="text-purple-400 font-bold text-sm">{items.length}</strong></span>
                       </div>
                   </div>
                 )}

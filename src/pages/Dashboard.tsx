@@ -1,10 +1,8 @@
 import { motion } from 'motion/react';
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { User, Calendar, Image as ImageIcon, Zap, Crown, BarChart2, Download, FileText } from 'lucide-react';
+import { User, Calendar, Image as ImageIcon, Zap, Crown, BarChart2 } from 'lucide-react';
 import { StatisticsModal } from '../components/StatisticsModal';
-
-
 
 const MODELS = [
   { id: 'auto', name: 'Auto (Best Effort)' },
@@ -23,15 +21,12 @@ export const Dashboard: React.FC = () => {
   const [logs, setLogs] = useState([]);
   const [modelStats, setModelStats] = useState({});
 
-
   useEffect(() => {
     try {
-      setLogs(userData?.appData?.logs || JSON.parse(localStorage.getItem('parrarel_logs_v1') || '[]'));
-      setModelStats(userData?.appData?.modelStats || JSON.parse(localStorage.getItem('parrarel_stats_v1') || '{}'));
+      setLogs(JSON.parse(localStorage.getItem('parrarel_logs_v1') || '[]'));
+      setModelStats(JSON.parse(localStorage.getItem('parrarel_stats_v1') || '{}'));
     } catch {}
-  }, [userData?.appData]);
-
-
+  }, [userData?.totalProcessedImages, showStats]);
 
   if (!userData) return null;
 
@@ -40,18 +35,6 @@ export const Dashboard: React.FC = () => {
     month: 'long',
     day: 'numeric'
   });
-
-  const handleDownloadCsv = (filename: string, csvData: string) => {
-    const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', filename);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
 
   return (
     <motion.div 
@@ -136,17 +119,15 @@ export const Dashboard: React.FC = () => {
           </div>
 
           <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 shadow-lg flex flex-col items-center justify-center text-center">
-            <div className="w-12 h-12 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center mb-4">
+            <div className="w-12 h-12 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center mb-4">
               <Calendar className="w-6 h-6" />
             </div>
-            <div className="text-xl font-bold text-white mb-1">
+            <div className="text-lg font-bold text-white mb-1">
               {joinDate}
             </div>
             <div className="text-slate-400 text-sm">Member Since</div>
           </div>
         </div>
-        
-
       </div>
       
       {showStats && (
