@@ -12,7 +12,7 @@ import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
-import { doc, updateDoc, increment, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, increment, collection, addDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
 
 
 // Persistence Keys
@@ -1109,7 +1109,22 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               updates.credits = increment(-numExported);
           }
           
-          updateDoc(doc(db, 'users', userData.uid), updates).catch(e => console.error("Failed to update user stats:", e));
+          const batch = writeBatch(db);
+          
+          // 1. Update user totals and API usage
+          const userRef = doc(db, 'users', userData.uid);
+          batch.update(userRef, updates);
+          
+          // 2. Create the processing session record
+          const sessionId = "job-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9);
+          const sessionRef = doc(db, 'users', userData.uid, 'processingSessions', sessionId);
+          batch.set(sessionRef, {
+              sessionId,
+              imageCount: numExported,
+              completedAt: serverTimestamp()
+          });
+
+          batch.commit().catch(e => console.error("Failed to update user stats and activity:", e));
           
           setUserData(prev => prev ? {
               ...prev,
