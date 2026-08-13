@@ -63,6 +63,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   });
 
+  // Track the UID for which we have already performed the single initial fetch in this browser session
   const fetchedUidRef = useRef<string | null>(cachedData?.uid || null);
 
   useEffect(() => {
@@ -87,8 +88,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(currentUser);
       
       if (currentUser) {
-        // Prevent duplicate reads on token refreshes or tab focus events
-        if (fetchedUidRef.current === currentUser.uid && userData) {
+        // STRICT CHECK: If we have already fetched or initialized this UID in this session,
+        // DO NOT perform any Firestore getDoc call. This prevents re-reads on token refresh,
+        // tab focus, window re-focus, or component remount.
+        if (fetchedUidRef.current === currentUser.uid) {
           setLoading(false);
           return;
         }
@@ -102,7 +105,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (docSnap.exists()) {
             setUserData(docSnap.data() as UserData);
           } else {
-            // Initialize new user document
+            // Initialize new user document (1 write for brand new user creation)
             const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
             const newUserData: UserData = {
               uid: currentUser.uid,
