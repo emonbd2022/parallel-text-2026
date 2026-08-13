@@ -15,12 +15,13 @@ service cloud.firestore {
 
     // =========================================================
     // USERS COLLECTION
-    // Only stores credits and totalProcessedImages in Firestore
+    // Only stores user identity, credits and totalProcessedImages in Firestore
     // =========================================================
     match /users/{userId} {
       allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
 
-      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow create: if isAuthenticated() && request.auth.uid == userId
+        && !request.resource.data.keys().hasAny(['apiKeys', 'appData', 'config', 'preferences', 'apiUsage', 'cooldowns', 'errors', 'queue', 'progress', 'processingData', 'csvData', 'temporaryStats']);
 
       allow update: if isAuthenticated() && (
         isAdmin() ||

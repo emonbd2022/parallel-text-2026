@@ -1,5 +1,5 @@
 import { motion } from 'motion/react';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc } from 'firebase/firestore';
 import { collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -27,6 +27,7 @@ export const AdminDashboard: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [lastVisible, setLastVisible] = useState<any>(null);
   const [hasMore, setHasMore] = useState(true);
+  const hasFetchedUsersRef = useRef<boolean>(!!cachedUsers && cachedUsers.length > 0);
 
   // Date range filter (calculated 100% locally)
   const [startDate, setStartDate] = useState<Date | null>(null);
@@ -52,7 +53,16 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const fetchUsers = async (isNextPage = false, forceRefresh = false) => {
-    if (!forceRefresh && !isNextPage && users.length > 0) {
+    const hasSessionData = (() => {
+      try {
+        const s = sessionStorage.getItem('adminCachedUsers');
+        return s && JSON.parse(s)?.length > 0;
+      } catch {
+        return false;
+      }
+    })();
+
+    if (!forceRefresh && !isNextPage && (hasFetchedUsersRef.current || hasSessionData || users.length > 0)) {
       setLoading(false);
       return;
     }
@@ -75,6 +85,7 @@ export const AdminDashboard: React.FC = () => {
       }
 
       const querySnapshot = await getDocs(q);
+      hasFetchedUsersRef.current = true;
       const usersData: UserData[] = [];
       querySnapshot.forEach((d) => {
         usersData.push(d.data() as UserData);

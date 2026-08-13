@@ -136,8 +136,7 @@ export default function App() {
     } catch { return []; }
   });
 
-  // Items are loaded from localStorage if available
-  const [cloudLoaded, setCloudLoaded] = useState(false);
+  // Items are loaded from localStorage / IndexedDB
   const [lastAutoSave, setLastAutoSave] = useState<Date | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportStats, setExportStats] = useState({ count: 0, path: '', elapsedTime: '0s', requestCount: 0, timeSaved: '0s' });
@@ -249,104 +248,23 @@ export default function App() {
   const startYRef = useRef(0);
   const startScrollTopRef = useRef(0);
   const lastPhaseRef = useRef<'metadata' | 'category' | null>(null);
-  const lastSyncStrRef = useRef<string>("");
-
-  // Load from cloud
-  useEffect(() => {
-    if (userData && !cloudLoaded) {
-      if (userData.appData) {
-        if (userData.appData.keys) {
-            setKeys(userData.appData.keys.map((k: any) => {
-                const loadedUsage = userData.appData.apiUsage?.[k.id];
-                return {
-                    ...k,
-                    errorCount: k.errorCount || 0,
-                    usage: loadedUsage || { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0 }
-                };
-            }));
-        }
-        if (userData.appData.config) setConfig(userData.appData.config);
-        
-        // Prevent bounce-back sync by setting the ref to what we just loaded
-        if (userData.appData.keys || userData.appData.config) {
-            const initialSyncableKeys = (userData.appData.keys || []).map((k: any) => ({ id: k.id, label: k.label, key: k.key }));
-            lastSyncStrRef.current = JSON.stringify({ keys: initialSyncableKeys, config: userData.appData.config || config });
-        }
-        if (userData.appData.modelStats) {
-            setModelStats(prev => {
-                const merged = { ...prev };
-                const serverStats = userData.appData.modelStats;
-                for (const model in serverStats) {
-                    if (merged[model]) {
-                        merged[model] = {
-                            count: Math.max(merged[model].count, serverStats[model].count),
-                            fails: Math.max(merged[model].fails, serverStats[model].fails),
-                            totalTimeMs: Math.max(merged[model].totalTimeMs, serverStats[model].totalTimeMs)
-                        };
-                    } else {
-                        merged[model] = serverStats[model];
-                    }
-                }
-                return merged;
-            });
-        }
-        if (userData.appData.logs) {
-            setLogs(prev => {
-                const merged = [...prev, ...userData.appData.logs].sort((a, b) => b.timestamp - a.timestamp);
-                // deduplicate by id
-                const unique = [];
-                const ids = new Set();
-                for (const log of merged) {
-                    if (!ids.has(log.id)) {
-                        ids.add(log.id);
-                        unique.push(log);
-                    }
-                }
-                return unique.slice(0, 1000); // keep last 1000 logs
-            });
-        }
-        if (userData.appData.history) {
-            setHistory(prev => {
-                const merged = [...prev, ...userData.appData.history];
-                // deduplicate by id
-                const unique = [];
-                const ids = new Set();
-                for (const h of merged) {
-                    if (!ids.has(h.id)) {
-                        ids.add(h.id);
-                        unique.push(h);
-                    }
-                }
-                return unique.sort((a, b) => b.timestamp - a.timestamp);
-            });
-        }
-      }
-      setCloudLoaded(true);
-    }
-  }, [userData, cloudLoaded]);
-
-  // Persist State
+  // Persist State locally
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys));
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
   }, [keys, config]);
 
-  // Safe Cloud Sync - architectural requirement: 0 writes during processing
-
   useEffect(() => {
     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
-
-  }, [history, cloudLoaded, userData?.uid]);
+  }, [history]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs));
-
-  }, [logs, cloudLoaded, userData?.uid]);
+  }, [logs]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats));
-
-  }, [modelStats, cloudLoaded, userData?.uid]);
+  }, [modelStats]);
 
             
   // Auto-save items safely via IndexedDB

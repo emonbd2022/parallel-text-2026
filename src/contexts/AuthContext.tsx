@@ -68,7 +68,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     if (userData) {
-      localStorage.setItem('cachedUserData', JSON.stringify(userData));
+      try { localStorage.setItem('cachedUserData', JSON.stringify(userData)); } catch {}
     }
   }, [userData]);
 
@@ -88,10 +88,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(currentUser);
       
       if (currentUser) {
-        // STRICT CHECK: If we have already fetched or initialized this UID in this session,
-        // DO NOT perform any Firestore getDoc call. This prevents re-reads on token refresh,
-        // tab focus, window re-focus, or component remount.
-        if (fetchedUidRef.current === currentUser.uid) {
+        // Check local storage cache as well
+        let hasLocalCache = false;
+        try {
+          const cachedStr = localStorage.getItem('cachedUserData');
+          if (cachedStr) {
+            const parsed = JSON.parse(cachedStr);
+            if (parsed && parsed.uid === currentUser.uid) {
+              hasLocalCache = true;
+              if (!userData) setUserData(parsed);
+            }
+          }
+        } catch {}
+
+        // STRICT CHECK: If profile was already fetched or exists in cache/ref, 0 Firestore reads!
+        if (fetchedUidRef.current === currentUser.uid || hasLocalCache) {
+          fetchedUidRef.current = currentUser.uid;
           setLoading(false);
           return;
         }
@@ -103,7 +115,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const docSnap = await getDoc(userRef);
           
           if (docSnap.exists()) {
-            setUserData(docSnap.data() as UserData);
+            const d = docSnap.data();
+            const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+            const data: UserData = {
+              uid: currentUser.uid,
+              email: d.email || currentUser.email || '',
+              name: d.name || currentUser.displayName || '',
+              photoURL: d.photoURL || currentUser.photoURL || '',
+              nickname: d.nickname || currentUser.displayName?.split(' ')[0] || 'User',
+              credits: typeof d.credits === 'number' ? d.credits : 100,
+              unlimited: !!d.unlimited,
+              totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
+              joinDate: d.joinDate || new Date().toISOString(),
+              blocked: !!d.blocked,
+              role: d.role === 'admin' ? 'admin' : (isFirstUser ? 'admin' : 'user'),
+              plan: d.plan || 'free',
+              planStartDate: d.planStartDate,
+              planEndDate: d.planEndDate,
+            };
+            setUserData(data);
+            try { localStorage.setItem('cachedUserData', JSON.stringify(data)); } catch {}
           } else {
             // Initialize new user document (1 write for brand new user creation)
             const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
@@ -124,6 +155,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             
             await setDoc(userRef, newUserData);
             setUserData(newUserData);
+            try { localStorage.setItem('cachedUserData', JSON.stringify(newUserData)); } catch {}
           }
         } catch (error) {
           console.error("Error fetching user profile on login:", error);
