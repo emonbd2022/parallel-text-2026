@@ -18,7 +18,8 @@ let db: any;
 try {
   if (firebaseConfig.apiKey) {
     app = initializeApp(firebaseConfig);
-    db = getFirestore(app);
+    const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
+    db = dbId ? getFirestore(app, dbId) : getFirestore(app);
     auth = getAuth(app);
   }
 } catch (error) {

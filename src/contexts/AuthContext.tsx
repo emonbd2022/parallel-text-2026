@@ -127,6 +127,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         } catch (error) {
           console.error("Error fetching user profile on login:", error);
+          const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+          const fallbackUserData: UserData = {
+            uid: currentUser.uid,
+            email: currentUser.email || '',
+            name: currentUser.displayName || '',
+            photoURL: currentUser.photoURL || '',
+            nickname: currentUser.displayName?.split(' ')[0] || 'User',
+            credits: 100,
+            unlimited: false,
+            totalProcessedImages: 0,
+            joinDate: new Date().toISOString(),
+            blocked: false,
+            role: isFirstUser ? 'admin' : 'user',
+            plan: 'free',
+          };
+          setUserData(prev => prev || fallbackUserData);
         }
       } else {
         fetchedUidRef.current = null;

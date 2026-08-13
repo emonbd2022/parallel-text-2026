@@ -7,7 +7,7 @@ import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
 import { generateCategoriesBatch } from './services/geminiCategoryService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
-import { Clock, Key, Hourglass, Cat, Layers } from 'lucide-react';
+import { Clock, Key, Hourglass, Cat, Layers, Upload } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
@@ -1878,54 +1878,62 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             handleAddFiles(e.dataTransfer.files);
           }}
         >
-             <div 
-                  className={`group relative border-2 border-dashed transition-all duration-500 rounded-[2rem] p-12 text-center cursor-pointer overflow-hidden min-h-[300px] flex flex-col items-center justify-center ${isDragging ? 'border-purple-500 bg-purple-500/10 shadow-[0_0_50px_rgba(168,85,247,0.3)] scale-[1.02] z-10' : 'border-slate-700/50 hover:border-purple-500/50 bg-slate-900/20 hover:bg-slate-900/50 scale-100'}`}
-                  style={{
-                      boxShadow: isDragging ? '0 0 40px -10px rgba(168, 85, 247, 0.4), inset 0 0 20px -5px rgba(168, 85, 247, 0.2)' : 'none'
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    document.getElementById('fileInput')?.click();
-                  }}
-                >
-                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-fuchsia-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-                  <input id="fileInput" type="file" multiple accept="image/*,.eps,.svg" className="hidden" onChange={(e) => handleAddFiles(e.target.files)} />
-                  
-                  <div className="relative z-10 flex flex-col items-center gap-6">
-                    <div className="relative mt-4">
-                      <div className="absolute inset-0 bg-blue-500/20 blur-3xl rounded-full scale-150 animate-pulse delay-75"></div>
-                      <div className="relative p-6 bg-slate-800/80 backdrop-blur-sm rounded-3xl text-blue-400 shadow-2xl shadow-blue-900/20 group-hover:-translate-y-2 transition-all duration-500 border border-white/5 flex items-center justify-center">
-                        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="drop-shadow-[0_0_15px_rgba(59,130,246,0.5)]">
-                           <path d="M12 13v8"/>
-                           <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
-                           <path d="m8 17 4-4 4 4"/>
-                        </svg>
-                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[20%] flex gap-3 pointer-events-none group-hover:animate-bounce">
-                           <div className="w-1.5 h-1.5 bg-white rounded-full shadow-[0_0_5px_white]"></div>
-                           <div className="w-1.5 h-1.5 bg-white rounded-full shadow-[0_0_5px_white]"></div>
-                        </div>
-                      </div>
-                    </div>
-                    <div>
-                      <h3 className="text-2xl font-bold text-slate-100 mb-2">Drop your creativity here</h3>
-                      <p className="text-slate-400 max-w-md mx-auto leading-relaxed">
-                        Drag and drop your images to automatically generate Adobe Stock-ready titles, keywords, and categories. 
-                        <br/><span className="text-xs text-slate-500 mt-2 block font-medium">Supports JPG, PNG, WEBP, SVG, EPS</span>
-                      </p>
-                    </div>
-                  </div>
-                </div>
+             <input id="fileInput" type="file" multiple accept="image/*,.eps,.svg" className="hidden" onChange={(e) => handleAddFiles(e.target.files)} />
+
+             {items.length === 0 ? (
+                 <div 
+                   className={`group relative border-2 border-dashed transition-all duration-300 rounded-2xl p-6 text-center cursor-pointer overflow-hidden min-h-[160px] flex flex-col items-center justify-center ${isDragging ? 'border-purple-500 bg-purple-500/10 shadow-[0_0_30px_rgba(168,85,247,0.3)] scale-[1.01] z-10' : 'border-slate-800 hover:border-purple-500/50 bg-slate-900/30 hover:bg-slate-900/60 scale-100'}`}
+                   onClick={(e) => {
+                     e.stopPropagation();
+                     document.getElementById('fileInput')?.click();
+                   }}
+                 >
+                   <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 to-fuchsia-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                   
+                   <div className="relative z-10 flex items-center gap-4 text-left">
+                     <div className="p-3.5 bg-slate-800/80 rounded-2xl text-purple-400 border border-white/5 shadow-lg group-hover:scale-105 transition-transform shrink-0">
+                       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 13v8"/>
+                          <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
+                          <path d="m8 17 4-4 4 4"/>
+                       </svg>
+                     </div>
+                     <div>
+                       <h3 className="text-base font-bold text-slate-100 mb-0.5">Drop your creativity here</h3>
+                       <p className="text-xs text-slate-400">
+                         Drag & drop or click to upload images for title, keyword, & category generation.
+                         <span className="text-slate-500 block text-[11px] mt-0.5 font-medium">Supports JPG, PNG, WEBP, SVG, EPS</span>
+                       </p>
+                     </div>
+                   </div>
+                 </div>
+             ) : (
+                 isDragging && (
+                   <div className="border-2 border-dashed border-purple-500 bg-purple-500/10 rounded-xl p-4 text-center text-purple-300 font-semibold text-xs animate-pulse">
+                     Drop images here to add to queue...
+                   </div>
+                 )
+             )}
 
                 {items.length > 0 && (
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 flex-wrap">
                           <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All</button>
                           <button onClick={() => setFilter('ongoing')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'ongoing' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>On going</button>
                           <button onClick={() => setFilter('uncompleted')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'uncompleted' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Uncompleted</button>
                           <button onClick={() => setFilter('failed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'failed' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Failed</button>
                       </div>
-                      <div className="flex items-center gap-2 text-xs text-slate-300 px-2 font-semibold">
-                          <span>Total Images in Queue: <strong className="text-purple-400 font-bold text-sm">{items.length}</strong></span>
+                      <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => document.getElementById('fileInput')?.click()}
+                            className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 active:scale-95"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>Add Images</span>
+                          </button>
+                          <div className="flex items-center gap-2 text-xs text-slate-300 px-2 font-semibold border-l border-slate-800 pl-3">
+                              <span>Total Images in Queue: <strong className="text-purple-400 font-bold text-sm">{items.length}</strong></span>
+                          </div>
                       </div>
                   </div>
                 )}

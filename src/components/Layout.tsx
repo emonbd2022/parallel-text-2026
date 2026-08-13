@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { logout } from '../lib/firebase';
-import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell } from 'lucide-react';
+import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell, Upload } from 'lucide-react';
 import { useEffect } from 'react';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -13,6 +13,17 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [showNotifications, setShowNotifications] = useState(false);
   
 
+
+  const handleUploadClick = () => {
+    if (location.pathname !== '/') {
+      navigate('/');
+      setTimeout(() => {
+        document.getElementById('fileInput')?.click();
+      }, 150);
+    } else {
+      document.getElementById('fileInput')?.click();
+    }
+  };
 
   const unreadCount = notifications.filter(n => !n.read).length;
   const handleMarkAsRead = async (id: string) => {
@@ -104,6 +115,13 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               {item.name}
             </button>
           ))}
+          <button
+            onClick={handleUploadClick}
+            className="ml-1 px-3.5 py-2 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-purple-900/30 flex items-center gap-1.5 border border-purple-400/30 active:scale-95 shrink-0"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span>Upload</span>
+          </button>
           <div className="w-px h-6 bg-slate-800 mx-2" />
           {userData ? (
             <>
@@ -189,6 +207,13 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 <button onClick={() => { navigate('/login'); setMobileMenu(false); }} className="w-full py-2 bg-purple-600 text-white rounded-lg font-bold">Sign In</button>
              </div>
           )}
+          <button
+            onClick={() => { handleUploadClick(); setMobileMenu(false); }}
+            className="w-full py-3 bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white rounded-lg font-bold flex items-center justify-center gap-2 mb-2 shadow-lg active:scale-95 transition-all"
+          >
+            <Upload className="w-5 h-5" />
+            <span>Upload Images</span>
+          </button>
           {navItems.map(item => (
             <button
               key={item.path}
