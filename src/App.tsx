@@ -136,6 +136,26 @@ export default function App() {
     } catch { return []; }
   });
 
+  // Load cloud summary
+  useEffect(() => {
+    const fetchCloudSummary = async () => {
+      if (userData?.uid) {
+        try {
+          const { doc, getDoc } = await import('firebase/firestore');
+          const summaryRef = doc(db, 'users', userData.uid, 'stats', 'summary');
+          const snap = await getDoc(summaryRef);
+          if (snap.exists()) {
+            setCloudSummary(snap.data());
+          }
+        } catch (e) {
+          console.error("Failed to fetch cloud stats:", e);
+        }
+      }
+    };
+
+    fetchCloudSummary();
+  }, [userData?.uid]);
+
   // Items are loaded from localStorage if available
   const [cloudLoaded, setCloudLoaded] = useState(false);
   const [lastAutoSave, setLastAutoSave] = useState<Date | null>(null);
@@ -182,6 +202,7 @@ export default function App() {
     };
   }, [isProcessing]);
   const [showStats, setShowStats] = useState(false);
+  const [cloudSummary, setCloudSummary] = useState<any>(null);
   const [isDragging, setIsDragging] = useState(false);
   
   const [config, setConfig] = useState<ProcessingConfig>(() => {
@@ -1103,7 +1124,9 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               totalProcessedImages: increment(numExported),
               'appData.apiUsage': apiUsageToSync,
               'appData.keys': syncableKeys,
-              'appData.config': config
+              'appData.config': config,
+              'appData.logs': logs.slice(0, 100), // Keep last 100 logs in cloud for basic sync
+              'appData.modelStats': modelStats
           };
           if (!userData.unlimited) {
               updates.credits = increment(-numExported);
@@ -1985,7 +2008,17 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
         <div className="text-center py-4 text-xs text-slate-500 border-t border-white/5 bg-slate-950/50 backdrop-blur-md shrink-0">
            All rights reserved. Developed and maintained by Shahin Alam Emon.
         </div>
-        {showExportModal && (
+        {showStats && (
+        <StatisticsModal 
+          logs={logs} 
+          modelStats={modelStats} 
+          models={MODELS} 
+          cloudSummary={cloudSummary}
+          onClose={() => setShowStats(false)} 
+        />
+      )}
+
+      {showExportModal && (
         <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl p-8 max-w-md w-full shadow-2xl animate-in zoom-in-95 relative mx-4">
             <div className="text-emerald-400 mb-4 flex justify-center">
