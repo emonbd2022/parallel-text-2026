@@ -11,9 +11,13 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Admin status is currently stored in users/{uid}.role.
-    // This can later be migrated to Firebase Auth custom claims
-    // to eliminate the Firestore lookup during rule evaluation.
+    // Current admin system:
+    // Admin role is stored in users/{uid}.role.
+    //
+    // NOTE:
+    // This performs a Firestore document lookup during rule
+    // evaluation. Firebase Auth Custom Claims can be used later
+    // if you want to eliminate this dependency.
     function isAdmin() {
       return isAuthenticated()
         && exists(
@@ -26,12 +30,15 @@ service cloud.firestore {
 
 
     // =========================================================
-    // USER DOCUMENTS
+    // USERS
     // =========================================================
 
     match /users/{userId} {
 
-      // Owner can read own document.
+      // -------------------------------------------------------
+      // READ
+      // -------------------------------------------------------
+      // User can read their own document.
       // Admin can read any user document.
       allow read: if isAuthenticated()
         && (
@@ -39,14 +46,32 @@ service cloud.firestore {
           || isAdmin()
         );
 
-      // Users can create only their own account document.
+
+      // -------------------------------------------------------
+      // CREATE
+      // -------------------------------------------------------
+      // Users can create only their own account.
       allow create: if isAuthenticated()
         && request.auth.uid == userId;
 
+
+      // -------------------------------------------------------
+      // UPDATE
+      // -------------------------------------------------------
       // Admins can update any user document.
       //
-      // Normal users may update ONLY explicitly allowed
-      // non-sensitive configuration fields.
+      // Normal users can ONLY update explicitly allowed
+      // user-owned configuration fields.
+      //
+      // Sensitive/accounting fields such as:
+      // - credits
+      // - totalProcessedImages
+      // - role
+      // - plan
+      // - blocked
+      // - unlimited
+      // - plan dates
+      // cannot be modified directly by normal users.
       allow update: if isAuthenticated()
         && (
           isAdmin()
@@ -66,6 +91,10 @@ service cloud.firestore {
           )
         );
 
+
+      // -------------------------------------------------------
+      // DELETE
+      // -------------------------------------------------------
       // Only admins can delete users.
       allow delete: if isAdmin();
 
@@ -76,7 +105,10 @@ service cloud.firestore {
 
       match /stats/summary {
 
-        // User can read own summary.
+        // -----------------------------------------------------
+        // READ
+        // -----------------------------------------------------
+        // User can read their own summary.
         // Admin can read any user's summary.
         allow read: if isAuthenticated()
           && (
@@ -84,47 +116,35 @@ service cloud.firestore {
             || isAdmin()
           );
 
-        // User may create/update only their own summary.
+
+        // -----------------------------------------------------
+        // CREATE
+        // -----------------------------------------------------
+        // User can create only their own summary.
         //
-        // Validate the basic structure and prevent negative
-        // aggregate values.
+        // Basic validation prevents negative/invalid totals.
         allow create: if isAuthenticated()
           && request.auth.uid == userId
           && request.resource.data.totalProcessed is int
           && request.resource.data.totalProcessed >= 0;
 
+
+        // -----------------------------------------------------
+        // UPDATE
+        // -----------------------------------------------------
+        // User can update only their own summary.
         allow update: if isAuthenticated()
           && request.auth.uid == userId
           && request.resource.data.totalProcessed is int
           && request.resource.data.totalProcessed >= 0;
 
-        // Activity summary should never be deleted by users.
-        // Admin deletion is also disabled to preserve history.
+
+        // -----------------------------------------------------
+        // DELETE
+        // -----------------------------------------------------
+        // Activity summary is permanent.
         allow delete: if false;
       }
-    }
-
-
-    // =========================================================
-    // CSV EXPORTS
-    // =========================================================
-
-    match /csv_exports/{exportId} {
-
-      // User can read/delete only their own exports.
-      // Admin can read/delete all exports.
-      allow read, delete: if isAuthenticated()
-        && (
-          resource.data.uid == request.auth.uid
-          || isAdmin()
-        );
-
-      // Users can create exports only for themselves.
-      allow create: if isAuthenticated()
-        && request.resource.data.uid == request.auth.uid;
-
-      // Existing exports cannot be modified.
-      allow update: if false;
     }
 
 
@@ -134,8 +154,7 @@ service cloud.firestore {
 
     match /settings/{document} {
 
-      // Settings are publicly readable only if your application
-      // intentionally requires this.
+      // Settings are readable by clients.
       allow read: if true;
 
       // Only admins can modify settings.
@@ -149,11 +168,14 @@ service cloud.firestore {
 
     match /notifications/{notifId} {
 
+      // -------------------------------------------------------
+      // READ
+      // -------------------------------------------------------
       // Users can read:
-      // - their own notifications
-      // - global notifications
+      //   - notifications targeted to themselves
+      //   - global notifications
       //
-      // Admins can read admin-targeted notifications.
+      // Admins can read admin notifications.
       allow read: if isAuthenticated()
         && (
           resource.data.targetUid == request.auth.uid
@@ -164,16 +186,24 @@ service cloud.firestore {
           )
         );
 
+
+      // -------------------------------------------------------
+      // CREATE
+      // -------------------------------------------------------
       // Admins can create any notification.
       //
-      // Authenticated users may create a notification only
-      // when specifically targeting the admin account.
+      // Normal users may create a notification only when
+      // specifically targeting the admin.
       allow create: if isAdmin()
         || (
           isAuthenticated()
           && request.resource.data.targetUid == 'admin'
         );
 
+
+      // -------------------------------------------------------
+      // UPDATE / DELETE
+      // -------------------------------------------------------
       // Users can modify/delete their own notifications.
       // Admins can modify/delete admin notifications.
       allow update, delete: if isAuthenticated()
