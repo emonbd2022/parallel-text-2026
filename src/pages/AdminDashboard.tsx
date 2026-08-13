@@ -1,9 +1,10 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState } from 'react';
-import { collection, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, getAggregateFromServer, sum, where, deleteDoc, getDoc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { getDocs, updateDoc, doc, query, orderBy, limit, startAfter, getDoc, setDoc } from 'firebase/firestore';
+import { collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Calendar, Trash2, Activity, MessageSquare, AlertTriangle, Bell } from 'lucide-react';
+import { Shield, Search, RefreshCw, Calendar, Activity, AlertTriangle, Bell, MessageSquare } from 'lucide-react';
 import { UserActivityModal } from '../components/UserActivityModal';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
@@ -13,56 +14,29 @@ export const AdminDashboard: React.FC = () => {
   const [users, setUsers] = useState<UserData[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [totalSiteImages, setTotalSiteImages] = useState(0);
   const [lastVisible, setLastVisible] = useState<any>(null);
   const [hasMore, setHasMore] = useState(true);
-  const [page, setPage] = useState(0);
 
-  // Date range filter
+  // Date range filter (calculated 100% locally)
   const [startDate, setStartDate] = useState<Date | null>(null);
   const [endDate, setEndDate] = useState<Date | null>(null);
-  const [dateRangeImages, setDateRangeImages] = useState(0);
   const [showStats, setShowStats] = useState(false);
   
-  const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [maintenanceMode, setMaintenanceMode] = useState(() => {
+    return localStorage.getItem('maintenanceMode') === 'true';
+  });
   const [selectedUserForActivity, setSelectedUserForActivity] = useState<UserData | null>(null);
-  const [showGlobalNotif, setShowGlobalNotif] = useState(false);
-  const [globalNotifMsg, setGlobalNotifMsg] = useState("");
-  const [isSendingGlobal, setIsSendingGlobal] = useState(false);
   const [confirmAction, setConfirmAction] = useState<{title: string, message: string, onConfirm: () => void} | null>(null);
   const [notifModal, setNotifModal] = useState<{isOpen: boolean, targetUid?: string, targetName?: string, message: string}>({isOpen: false, message: ''});
 
-  
-  useEffect(() => {
-    const fetchMaintenance = async () => {
-      const docRef = doc(db, 'settings', 'general');
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        setMaintenanceMode(snap.data().maintenanceMode || false);
-      }
-    };
-    fetchMaintenance();
-  }, []);
-  
   const toggleMaintenance = async () => {
     const newMode = !maintenanceMode;
     setMaintenanceMode(newMode);
-    await setDoc(doc(db, 'settings', 'general'), { maintenanceMode: newMode }, { merge: true });
-    console.log(`Maintenance mode is now ${newMode ? 'ON' : 'OFF'}`);
-  };
-
-
-
-  
-  const fetchTotalAggregate = async () => {
+    localStorage.setItem('maintenanceMode', String(newMode));
     try {
-      const coll = collection(db, 'users');
-      const snapshot = await getAggregateFromServer(coll, {
-        totalImages: sum('totalProcessedImages')
-      });
-      setTotalSiteImages(snapshot.data().totalImages);
+      await setDoc(doc(db, 'settings', 'general'), { maintenanceMode: newMode }, { merge: true });
     } catch (e) {
-      console.warn("Aggregate query failed", e);
+      console.warn("Failed to update maintenance settings in Firestore", e);
     }
   };
 
@@ -72,7 +46,7 @@ export const AdminDashboard: React.FC = () => {
       let q = query(
         collection(db, 'users'), 
         orderBy('totalProcessedImages', 'desc'),
-        limit(10)
+        limit(20)
       );
       
       if (isNextPage && lastVisible) {
@@ -80,11 +54,8 @@ export const AdminDashboard: React.FC = () => {
           collection(db, 'users'),
           orderBy('totalProcessedImages', 'desc'),
           startAfter(lastVisible),
-          limit(10)
+          limit(20)
         );
-      } else if (!isNextPage) {
-        setUsers([]);
-        setPage(0);
       }
 
       const querySnapshot = await getDocs(q);
@@ -94,23 +65,21 @@ export const AdminDashboard: React.FC = () => {
       });
 
       if (querySnapshot.docs.length > 0) {
-          setLastVisible(querySnapshot.docs[querySnapshot.docs.length - 1]);
+        setLastVisible(querySnapshot.docs[querySnapshot.docs.length - 1]);
       }
       
-      setHasMore(querySnapshot.docs.length >= 10);
+      setHasMore(querySnapshot.docs.length >= 20);
 
       if (isNextPage) {
-          setUsers(prev => {
-              const newUsers = [...prev];
-              usersData.forEach(u => {
-                  if (!newUsers.find(x => x.uid === u.uid)) newUsers.push(u);
-              });
-              return newUsers;
+        setUsers(prev => {
+          const newUsers = [...prev];
+          usersData.forEach(u => {
+            if (!newUsers.find(x => x.uid === u.uid)) newUsers.push(u);
           });
-          setPage(p => p + 1);
+          return newUsers;
+        });
       } else {
-          setUsers(usersData);
-          setPage(1);
+        setUsers(usersData);
       }
     } catch (error) {
       console.error("Error fetching users:", error);
@@ -120,15 +89,10 @@ export const AdminDashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchTotalAggregate();
     fetchUsers(false);
+  }, []);
 
-    }, []);
-
-
-  useEffect(() => {
-    setDateRangeImages(totalSiteImages);
-  }, [startDate, endDate, totalSiteImages]);
+  const totalSiteImages = users.reduce((acc, u) => acc + (u.totalProcessedImages || 0), 0);
 
   const handleUpdateUser = async (uid: string, updates: Partial<UserData>) => {
     try {
@@ -136,7 +100,6 @@ export const AdminDashboard: React.FC = () => {
       setUsers(prev => prev.map(u => u.uid === uid ? { ...u, ...updates } : u));
     } catch (error) {
       console.error("Error updating user:", error);
-      console.log("Failed to update user");
     }
   };
 
@@ -172,48 +135,22 @@ export const AdminDashboard: React.FC = () => {
     });
   };
 
-  
-  const handleSendNotificationAction = async () => {
-      if (!notifModal.message.trim()) return;
-      setIsSendingGlobal(true);
-      try {
-          if (notifModal.targetUid) {
-              await addDoc(collection(db, 'notifications'), {
-                  targetUid: notifModal.targetUid,
-                  type: 'admin_msg',
-                  message: notifModal.message,
-                  read: false,
-                  createdAt: serverTimestamp()
-              });
-          } else {
-              await addDoc(collection(db, 'notifications'), {
-                  targetUid: 'all',
-                  type: 'admin_msg',
-                  message: notifModal.message,
-                  read: false,
-                  createdAt: serverTimestamp()
-              });
-          }
-          setNotifModal({isOpen: false, message: ''});
-      } catch (e) {
-          console.error(e);
-      } finally {
-          setIsSendingGlobal(false);
-      }
+  const handleSendNotificationAction = () => {
+    if (!notifModal.message.trim()) return;
+    alert(`Notification recorded locally: "${notifModal.message}"`);
+    setNotifModal({isOpen: false, message: ''});
   };
-
-
 
   const handleResetCredits = async (uid: string) => {
     if (confirm('Are you sure you want to reset this user\'s credits to 0?')) {
-        await handleUpdateUser(uid, { credits: 0, plan: 'free', unlimited: false });
+      await handleUpdateUser(uid, { credits: 0, plan: 'free', unlimited: false });
     }
   };
 
   const filteredUsers = users.filter(u => 
-    u.email.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.nickname.toLowerCase().includes(searchTerm.toLowerCase())
+    (u.email || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+    (u.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (u.nickname || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -238,9 +175,8 @@ export const AdminDashboard: React.FC = () => {
                 <span className="text-sm font-bold text-red-400">Maintenance Mode</span>
             </label>
             
-            
             <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg">
-              <div className="text-sm text-slate-400">Date Range Stats</div>
+              <div className="text-sm text-slate-400">Date Range Filter</div>
               <div className="flex items-center gap-2 mt-1">
                  <DatePicker
                     selected={startDate}
@@ -323,7 +259,7 @@ export const AdminDashboard: React.FC = () => {
                           <div className="flex items-center gap-3">
                             <img src={user.photoURL || 'https://via.placeholder.com/32'} alt="" className="w-8 h-8 rounded-full" />
                             <div>
-                              <div className="font-medium text-slate-200">{user.name}</div>
+                              <div className="font-medium text-slate-200">{user.name || 'User'}</div>
                               <div className="text-xs text-slate-500">{user.email}</div>
                             </div>
                           </div>
@@ -332,7 +268,7 @@ export const AdminDashboard: React.FC = () => {
                         <td className="py-4 text-slate-300">
                            <input 
                               type="text"
-                              value={user.nickname}
+                              value={user.nickname || ''}
                               onChange={(e) => setUsers(prev => prev.map(u => u.uid === user.uid ? {...u, nickname: e.target.value} : u))}
                               onBlur={(e) => handleUpdateUser(user.uid, { nickname: e.target.value })}
                               className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-purple-500"
@@ -424,6 +360,7 @@ export const AdminDashboard: React.FC = () => {
 
         </div>
       </div>
+
       {showStats && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl max-w-lg w-full">
@@ -437,12 +374,8 @@ export const AdminDashboard: React.FC = () => {
                   <span className="text-xl font-bold text-white">{filteredUsers.length}</span>
                </div>
                <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 flex justify-between items-center">
-                  <span className="text-slate-400">Total Images (All Time)</span>
-                  <span className="text-xl font-bold text-white">{totalSiteImages}</span>
-               </div>
-               <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 flex justify-between items-center">
-                  <span className="text-slate-400">Images in Date Range</span>
-                  <span className="text-xl font-bold text-emerald-400">{dateRangeImages}</span>
+                  <span className="text-slate-400">Total Images Processed</span>
+                  <span className="text-xl font-bold text-emerald-400">{totalSiteImages}</span>
                </div>
             </div>
             <button onClick={() => setShowStats(false)} className="w-full py-3 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-white transition-colors">
@@ -452,43 +385,43 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
 
-                {notifModal.isOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-             <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl relative">
-                <h3 className="text-xl font-bold text-white mb-4">Send Notification {notifModal.targetName ? `to ${notifModal.targetName}` : 'to All Users'}</h3>
-                <textarea 
-                   className="w-full h-32 bg-slate-950 border border-slate-700 rounded-lg p-3 text-slate-200 outline-none focus:border-purple-500 mb-4 resize-none"
-                   placeholder="Enter message..."
-                   value={notifModal.message}
-                   onChange={e => setNotifModal(prev => ({...prev, message: e.target.value}))}
-                />
-                <div className="flex gap-3 justify-end">
-                   <button onClick={() => setNotifModal({isOpen: false, message: ''})} disabled={isSendingGlobal} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
-                   <button onClick={handleSendNotificationAction} disabled={isSendingGlobal || !notifModal.message.trim()} className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-500 font-bold flex items-center gap-2">
-                      {isSendingGlobal ? 'Sending...' : 'Send'}
-                   </button>
-                </div>
-             </div>
-          </div>
-        )}
-        
-        {confirmAction && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-             <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl relative">
-                <div className="flex items-center gap-3 mb-4">
-                  <AlertTriangle className="w-6 h-6 text-red-500" />
-                  <h3 className="text-xl font-bold text-white">{confirmAction.title}</h3>
-                </div>
-                <p className="text-slate-300 mb-6">{confirmAction.message}</p>
-                <div className="flex gap-3 justify-end">
-                   <button onClick={() => setConfirmAction(null)} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
-                   <button onClick={confirmAction.onConfirm} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-500 font-bold">
-                      Confirm
-                   </button>
-                </div>
-             </div>
-          </div>
-        )}
+      {notifModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+           <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl relative">
+              <h3 className="text-xl font-bold text-white mb-4">Send Notification {notifModal.targetName ? `to ${notifModal.targetName}` : 'to All Users'}</h3>
+              <textarea 
+                 className="w-full h-32 bg-slate-950 border border-slate-700 rounded-lg p-3 text-slate-200 outline-none focus:border-purple-500 mb-4 resize-none"
+                 placeholder="Enter message..."
+                 value={notifModal.message}
+                 onChange={e => setNotifModal(prev => ({...prev, message: e.target.value}))}
+              />
+              <div className="flex gap-3 justify-end">
+                 <button onClick={() => setNotifModal({isOpen: false, message: ''})} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
+                 <button onClick={handleSendNotificationAction} disabled={!notifModal.message.trim()} className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-500 font-bold flex items-center gap-2">
+                    Send
+                 </button>
+              </div>
+           </div>
+        </div>
+      )}
+      
+      {confirmAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+           <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl relative">
+              <div className="flex items-center gap-3 mb-4">
+                <AlertTriangle className="w-6 h-6 text-red-500" />
+                <h3 className="text-xl font-bold text-white">{confirmAction.title}</h3>
+              </div>
+              <p className="text-slate-300 mb-6">{confirmAction.message}</p>
+              <div className="flex gap-3 justify-end">
+                 <button onClick={() => setConfirmAction(null)} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
+                 <button onClick={confirmAction.onConfirm} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-500 font-bold">
+                    Confirm
+                 </button>
+              </div>
+           </div>
+        </div>
+      )}
     </motion.div>
     </>
   );

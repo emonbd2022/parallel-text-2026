@@ -12,7 +12,7 @@ import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
-import { doc, updateDoc, increment, collection, addDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { doc, updateDoc, increment } from 'firebase/firestore';
 
 
 // Persistence Keys
@@ -1085,77 +1085,32 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 
-    // Update stats and save to Firestore
+    // Local-First: Persist only minimal credits & totalProcessedImages on CSV export
     if (userData) {
       const newlyExportedItems = completedItems.filter(i => !(i as any).exported);
       const numExported = newlyExportedItems.length;
       
       if (numExported > 0) {
-          const totalRequests = sessionRequestCountRef.current;
-          
-          const apiUsageToSync: Record<string, any> = {};
-          keys.forEach(k => {
-              if (k.usage) apiUsageToSync[k.id] = k.usage;
-          });
-
-          const syncableKeys = keys.map(k => ({ id: k.id, label: k.label, key: k.key }));
           const updates: any = {
-              totalProcessedImages: increment(numExported),
-              'appData.apiUsage': apiUsageToSync,
-              'appData.keys': syncableKeys,
-              'appData.config': config
+              totalProcessedImages: increment(numExported)
           };
           if (!userData.unlimited) {
               updates.credits = increment(-numExported);
           }
           
-          const batch = writeBatch(db);
-          
-          // 1. Update user totals and API usage
+          // Single atomic updateDoc on users document only
           const userRef = doc(db, 'users', userData.uid);
-          batch.update(userRef, updates);
+          updateDoc(userRef, updates).catch(e => console.error("Failed to update user credits/totals:", e));
           
-          // 2. Update Local Summary & Persist to Firestore
+          // Local Activity Summary saved exclusively in localStorage
           const dateObj = new Date();
-          
-          const pad = (n) => n < 10 ? '0'+n : n;
-          // Format as YYYY-MM-DD local
+          const pad = (n: number) => n < 10 ? '0' + n : n;
           const dateStr = dateObj.getFullYear() + '-' + pad(dateObj.getMonth() + 1) + '-' + pad(dateObj.getDate());
-          const monthStr = dateStr.substring(0, 7);
           
-          const startOfWeek = new Date(dateObj);
-          startOfWeek.setDate(dateObj.getDate() - dateObj.getDay());
-          const weekStr = startOfWeek.getFullYear() + '-' + pad(startOfWeek.getMonth() + 1) + '-' + pad(startOfWeek.getDate());
-
-          let summary = JSON.parse(localStorage.getItem('userActivitySummary') || '{"totalProcessed":0,"daily":{},"week":{"startDate":"","count":0},"month":{"month":"","count":0}}');
-          
+          let summary = JSON.parse(localStorage.getItem('userActivitySummary') || '{"totalProcessed":0,"daily":{}}');
           summary.totalProcessed += numExported;
           summary.daily[dateStr] = (summary.daily[dateStr] || 0) + numExported;
-          
-          if (summary.week.startDate !== weekStr) {
-              summary.week = { startDate: weekStr, count: numExported };
-          } else {
-              summary.week.count += numExported;
-          }
-          
-          if (summary.month.month !== monthStr) {
-              summary.month = { month: monthStr, count: numExported };
-          } else {
-              summary.month.count += numExported;
-          }
-          
           localStorage.setItem('userActivitySummary', JSON.stringify(summary));
-
-          const summaryRef = doc(db, 'users', userData.uid, 'stats', 'summary');
-          batch.set(summaryRef, {
-              totalProcessed: increment(numExported),
-              [`daily.${dateStr}`]: increment(numExported),
-              week: summary.week,
-              month: summary.month,
-              lastUpdated: serverTimestamp()
-          }, { merge: true });
-
-          batch.commit().catch(e => console.error("Failed to update user stats and activity:", e));
           
           setUserData(prev => prev ? {
               ...prev,
@@ -1163,6 +1118,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               credits: prev.unlimited ? prev.credits : (prev.credits - numExported)
           } : null);
           
+          // Mark items as exported locally to prevent duplicate writes
           setItems(prev => prev.map(i => i.status === 'done' ? { ...i, exported: true } : i));
       }
     }

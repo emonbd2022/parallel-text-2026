@@ -3,217 +3,47 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // =========================================================
-    // AUTHENTICATION
-    // =========================================================
-
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // Current admin system:
-    // Admin role is stored in users/{uid}.role.
-    //
-    // NOTE:
-    // This performs a Firestore document lookup during rule
-    // evaluation. Firebase Auth Custom Claims can be used later
-    // if you want to eliminate this dependency.
     function isAdmin() {
       return isAuthenticated()
-        && exists(
-          /databases/$(database)/documents/users/$(request.auth.uid)
-        )
-        && get(
-          /databases/$(database)/documents/users/$(request.auth.uid)
-        ).data.role == 'admin';
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
-
     // =========================================================
-    // USERS
+    // USERS COLLECTION
+    // Only stores credits and totalProcessedImages in Firestore
     // =========================================================
-
     match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
 
-      // -------------------------------------------------------
-      // READ
-      // -------------------------------------------------------
-      // User can read their own document.
-      // Admin can read any user document.
-      allow read: if isAuthenticated()
-        && (
-          request.auth.uid == userId
-          || isAdmin()
-        );
+      allow create: if isAuthenticated() && request.auth.uid == userId;
 
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (
+          request.auth.uid == userId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages'])
+        )
+      );
 
-      // -------------------------------------------------------
-      // CREATE
-      // -------------------------------------------------------
-      // Users can create only their own account.
-      allow create: if isAuthenticated()
-        && request.auth.uid == userId;
-
-
-      // -------------------------------------------------------
-      // UPDATE
-      // -------------------------------------------------------
-      // Admins can update any user document.
-      //
-      // Normal users can ONLY update explicitly allowed
-      // user-owned configuration fields.
-      //
-      // Sensitive/accounting fields such as:
-      // - credits
-      // - totalProcessedImages
-      // - role
-      // - plan
-      // - blocked
-      // - unlimited
-      // - plan dates
-      // cannot be modified directly by normal users.
-      allow update: if isAuthenticated()
-        && (
-          isAdmin()
-          ||
-          (
-            request.auth.uid == userId
-            &&
-            request.resource.data
-              .diff(resource.data)
-              .affectedKeys()
-              .hasOnly([
-                'appData',
-                'apiKeys',
-                'settings',
-                'preferences'
-              ])
-          )
-        );
-
-
-      // -------------------------------------------------------
-      // DELETE
-      // -------------------------------------------------------
-      // Only admins can delete users.
       allow delete: if isAdmin();
-
-
-      // =======================================================
-      // USER ACTIVITY SUMMARY
-      // =======================================================
-
-      match /stats/summary {
-
-        // -----------------------------------------------------
-        // READ
-        // -----------------------------------------------------
-        // User can read their own summary.
-        // Admin can read any user's summary.
-        allow read: if isAuthenticated()
-          && (
-            request.auth.uid == userId
-            || isAdmin()
-          );
-
-
-        // -----------------------------------------------------
-        // CREATE
-        // -----------------------------------------------------
-        // User can create only their own summary.
-        //
-        // Basic validation prevents negative/invalid totals.
-        allow create: if isAuthenticated()
-          && request.auth.uid == userId
-          && request.resource.data.totalProcessed is int
-          && request.resource.data.totalProcessed >= 0;
-
-
-        // -----------------------------------------------------
-        // UPDATE
-        // -----------------------------------------------------
-        // User can update only their own summary.
-        allow update: if isAuthenticated()
-          && request.auth.uid == userId
-          && request.resource.data.totalProcessed is int
-          && request.resource.data.totalProcessed >= 0;
-
-
-        // -----------------------------------------------------
-        // DELETE
-        // -----------------------------------------------------
-        // Activity summary is permanent.
-        allow delete: if false;
-      }
     }
 
-
     // =========================================================
-    // SETTINGS
+    // SETTINGS COLLECTION
     // =========================================================
-
     match /settings/{document} {
-
-      // Settings are readable by clients.
       allow read: if true;
-
-      // Only admins can modify settings.
       allow write: if isAdmin();
     }
 
-
-    // =========================================================
-    // NOTIFICATIONS
-    // =========================================================
-
-    match /notifications/{notifId} {
-
-      // -------------------------------------------------------
-      // READ
-      // -------------------------------------------------------
-      // Users can read:
-      //   - notifications targeted to themselves
-      //   - global notifications
-      //
-      // Admins can read admin notifications.
-      allow read: if isAuthenticated()
-        && (
-          resource.data.targetUid == request.auth.uid
-          || resource.data.targetUid == 'all'
-          || (
-            resource.data.targetUid == 'admin'
-            && isAdmin()
-          )
-        );
-
-
-      // -------------------------------------------------------
-      // CREATE
-      // -------------------------------------------------------
-      // Admins can create any notification.
-      //
-      // Normal users may create a notification only when
-      // specifically targeting the admin.
-      allow create: if isAdmin()
-        || (
-          isAuthenticated()
-          && request.resource.data.targetUid == 'admin'
-        );
-
-
-      // -------------------------------------------------------
-      // UPDATE / DELETE
-      // -------------------------------------------------------
-      // Users can modify/delete their own notifications.
-      // Admins can modify/delete admin notifications.
-      allow update, delete: if isAuthenticated()
-        && (
-          resource.data.targetUid == request.auth.uid
-          || (
-            resource.data.targetUid == 'admin'
-            && isAdmin()
-          )
-        );
+    // Default deny for all other collections
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

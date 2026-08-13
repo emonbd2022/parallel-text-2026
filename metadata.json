@@ -1,5 +1,6 @@
 {
   "name": "Parallel-text-2026",
-  "description": "",
-  "requestFramePermissions": []
+  "description": "Local-First Stock Image Metadata Processor with Gemini AI and Minimal Firestore Accounting",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

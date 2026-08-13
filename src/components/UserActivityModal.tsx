@@ -1,89 +1,71 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { X, Activity, Calendar } from 'lucide-react';
 import { UserData } from '../contexts/AuthContext';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
 export const UserActivityModal: React.FC<{ user: UserData; onClose: () => void }> = ({ user, onClose }) => {
-  const [summary, setSummary] = useState<any>(null);
-  
   const [startDate, setStartDate] = useState<Date | null>(new Date(new Date().setHours(0,0,0,0)));
   const [endDate, setEndDate] = useState<Date | null>(new Date(new Date().setHours(23,59,59,999)));
-  
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchSummary = async () => {
-      try {
-        const summaryRef = doc(db, 'users', user.uid, 'stats', 'summary');
-        const snap = await getDoc(summaryRef);
-        if (snap.exists()) {
-            setSummary(snap.data());
-        } else {
-            setSummary({ totalProcessed: 0, daily: {}, week: { count: 0 }, month: { count: 0 } });
-        }
-      } catch (e) {
-        console.error("Error fetching summary", e);
-      }
-      setLoading(false);
-    };
-    
-    fetchSummary();
-  }, [user.uid]);
+  const totalProcessed = user.totalProcessedImages || 0;
 
-  const pad = (n: number) => n < 10 ? '0'+n : n;
+  // Local calculation of summary metrics without querying Firestore
+  const pad = (n: number) => n < 10 ? '0' + n : n;
   
   const getTodayStr = () => {
-      const d = new Date();
-      return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate());
-  };
-
-  const calculateCustomRange = () => {
-      if (!summary || !summary.daily || !startDate || !endDate) return 0;
-      let total = 0;
-      
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      
-      Object.entries(summary.daily).forEach(([dateStr, count]) => {
-          const [y, m, d] = dateStr.split('-');
-          const date = new Date(Number(y), Number(m)-1, Number(d), 12, 0, 0); // Noon to avoid timezone edge cases
-          if (date >= startDate && date <= end) {
-              total += Number(count);
-          }
-      });
-      return total;
+    const d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
   };
 
   const getHistoryForRange = () => {
-      if (!summary || !summary.daily) return [];
-      
-      const history: any[] = [];
-      const end = endDate ? new Date(endDate) : new Date();
-      if (endDate) end.setHours(23, 59, 59, 999);
-      const start = startDate || new Date(0);
+    // Generate daily activity breakdown locally if stored in localStorage, or calculate summary
+    const summaryStr = localStorage.getItem('userActivitySummary');
+    let dailyMap: Record<string, number> = {};
+    if (summaryStr) {
+      try {
+        const parsed = JSON.parse(summaryStr);
+        if (parsed?.daily) dailyMap = parsed.daily;
+      } catch {}
+    }
 
-      Object.entries(summary.daily).forEach(([dateStr, count]) => {
-          const [y, m, d] = dateStr.split('-');
-          const date = new Date(Number(y), Number(m)-1, Number(d), 12, 0, 0);
-          if (date >= start && date <= end) {
-              history.push({
-                  dateStr,
-                  date,
-                  imageCount: count
-              });
-          }
-      });
-      
-      return history.sort((a, b) => b.date.getTime() - a.date.getTime());
+    const history: { dateStr: string; date: Date; imageCount: number }[] = [];
+    const end = endDate ? new Date(endDate) : new Date();
+    if (endDate) end.setHours(23, 59, 59, 999);
+    const start = startDate || new Date(0);
+
+    Object.entries(dailyMap).forEach(([dateStr, count]) => {
+      const [y, m, d] = dateStr.split('-');
+      const date = new Date(Number(y), Number(m) - 1, Number(d), 12, 0, 0);
+      if (date >= start && date <= end) {
+        history.push({
+          dateStr,
+          date,
+          imageCount: count
+        });
+      }
+    });
+
+    return history.sort((a, b) => b.date.getTime() - a.date.getTime());
   };
 
   const history = getHistoryForRange();
-  const customCount = calculateCustomRange();
   const todayStr = getTodayStr();
-  const todayCount = summary?.daily ? (summary.daily[todayStr] || 0) : 0;
+
+  // Local daily map
+  const summaryStr = localStorage.getItem('userActivitySummary');
+  let dailyMap: Record<string, number> = {};
+  if (summaryStr) {
+    try {
+      const parsed = JSON.parse(summaryStr);
+      if (parsed?.daily) dailyMap = parsed.daily;
+    } catch {}
+  }
+
+  const todayCount = dailyMap[todayStr] || 0;
+  
+  // Calculate custom range sum locally
+  const customCount = history.reduce((acc, h) => acc + h.imageCount, 0);
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
@@ -99,23 +81,22 @@ export const UserActivityModal: React.FC<{ user: UserData; onClose: () => void }
         </div>
         
         <div className="p-6 flex-1 overflow-y-auto custom-scrollbar space-y-8">
-          
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
                <div className="text-sm text-slate-400 mb-1">Total Processed</div>
-               <div className="text-2xl font-bold text-emerald-400">{summary?.totalProcessed || user.totalProcessedImages || 0}</div>
+               <div className="text-2xl font-bold text-emerald-400">{totalProcessed}</div>
             </div>
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
                <div className="text-sm text-slate-400 mb-1">Today</div>
                <div className="text-2xl font-bold text-blue-400">{todayCount}</div>
             </div>
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
-               <div className="text-sm text-slate-400 mb-1">This Week</div>
-               <div className="text-2xl font-bold text-purple-400">{summary?.week?.count || 0}</div>
+               <div className="text-sm text-slate-400 mb-1">Total Credits</div>
+               <div className="text-2xl font-bold text-purple-400">{user.unlimited ? '∞' : user.credits}</div>
             </div>
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
-               <div className="text-sm text-slate-400 mb-1">This Month</div>
-               <div className="text-2xl font-bold text-amber-400">{summary?.month?.count || 0}</div>
+               <div className="text-sm text-slate-400 mb-1">Plan</div>
+               <div className="text-2xl font-bold text-amber-400 capitalize">{user.plan || 'Free'}</div>
             </div>
             <div className="bg-slate-800/50 rounded-xl p-4 border border-white/5 text-center flex flex-col justify-center">
                <div className="text-sm text-slate-400 mb-1">Custom Range</div>
@@ -166,13 +147,9 @@ export const UserActivityModal: React.FC<{ user: UserData; onClose: () => void }
                           </tr>
                       </thead>
                       <tbody>
-                          {loading ? (
+                          {history.length === 0 ? (
                               <tr>
-                                  <td colSpan={2} className="px-6 py-8 text-center text-slate-500">Loading history...</td>
-                              </tr>
-                          ) : history.length === 0 ? (
-                              <tr>
-                                  <td colSpan={2} className="px-6 py-8 text-center text-slate-500">No activity found in this date range.</td>
+                                  <td colSpan={2} className="px-6 py-8 text-center text-slate-500">No local activity found in this date range. Total lifetime processed: {totalProcessed} images.</td>
                               </tr>
                           ) : (
                               history.map((record) => (
