@@ -13,7 +13,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
 import { doc, updateDoc, increment, collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { syncUserDataToCloud } from './lib/sync';
+
 
 // Persistence Keys
 const STORAGE_KEYS = 'parrarel_keys_v5'; 
@@ -332,23 +332,6 @@ export default function App() {
   }, [keys, config]);
 
   // Safe Cloud Sync - architectural requirement: 0 writes during processing
-  useEffect(() => {
-    if (cloudLoaded && userData && !isProcessing) {
-      // Strip out volatile state (usage, errorCount, cooldown) that changes during processing
-      const syncableKeys = keys.map(k => ({ id: k.id, label: k.label, key: k.key }));
-      const syncPayload = { keys: syncableKeys, config };
-      
-      const currentSyncStr = JSON.stringify(syncPayload);
-      if (lastSyncStrRef.current !== currentSyncStr) {
-          lastSyncStrRef.current = currentSyncStr;
-          // Add a small delay to batch rapid setting changes
-          const timeoutId = setTimeout(() => {
-              syncUserDataToCloud(userData.uid, syncPayload);
-          }, 2000);
-          return () => clearTimeout(timeoutId);
-      }
-    }
-  }, [keys, config, cloudLoaded, userData?.uid, isProcessing]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
@@ -1115,9 +1098,12 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               if (k.usage) apiUsageToSync[k.id] = k.usage;
           });
 
+          const syncableKeys = keys.map(k => ({ id: k.id, label: k.label, key: k.key }));
           const updates: any = {
               totalProcessedImages: increment(numExported),
-              'appData.apiUsage': apiUsageToSync
+              'appData.apiUsage': apiUsageToSync,
+              'appData.keys': syncableKeys,
+              'appData.config': config
           };
           if (!userData.unlimited) {
               updates.credits = increment(-numExported);

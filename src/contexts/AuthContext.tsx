@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, onAuthStateChanged } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp, addDoc, collection, onSnapshot, query, where, orderBy, limit } from 'firebase/firestore';
+import { doc, setDoc, getDoc, getDocs, serverTimestamp, addDoc, collection, query, where, orderBy, limit } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 
 export interface UserData {
@@ -31,7 +31,15 @@ interface AuthContextType {
   setNotifications: React.Dispatch<React.SetStateAction<any[]>>;
 }
 
-const AuthContext = createContext<AuthContextType>({ user: null, userData: null, loading: true, setUserData: () => {}, maintenanceMode: false, notifications: [], setNotifications: () => {} });
+const AuthContext = createContext<AuthContextType>({ 
+  user: null, 
+  userData: null, 
+  loading: true, 
+  setUserData: () => {},
+  maintenanceMode: false,
+  notifications: [],
+  setNotifications: () => {}
+});
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const cachedData = (() => {
@@ -56,45 +64,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [userData]);
 
   useEffect(() => {
-    if (!db) return;
-    const unsubMaintenance = onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
-        if (docSnap.exists()) {
-            setMaintenanceMode(docSnap.data().maintenanceMode || false);
-        }
-    }, (err) => {
-        console.warn("Error loading maintenance settings:", err);
-    });
-
-    return () => unsubMaintenance();
-  }, []);
-
-  useEffect(() => {
-    if (!db || !userData) return;
-    
-    let unsubNotifs = () => {};
-    try {
-        const targets = [userData.uid, 'all'];
-        if (userData.role === 'admin') {
-            targets.push('admin');
-        }
-        const q = query(collection(db, 'notifications'), where('targetUid', 'in', targets), orderBy('createdAt', 'desc'), limit(20));
-        unsubNotifs = onSnapshot(q, (snapshot) => {
-            const notifs: any[] = [];
-            snapshot.forEach(d => {
-                notifs.push({ id: d.id, ...d.data() });
-            });
-            setNotifications(notifs);
-        }, (err) => {
-           console.warn("Could not load notifications:", err);
-        });
-    } catch (e) {
-        console.warn("Error setting up notifications listener:", e);
-    }
-    
-    return () => unsubNotifs();
-  }, [userData?.uid, userData?.role]);
-
-  useEffect(() => {
     if (!auth) {
       setLoading(false);
       return;
@@ -102,12 +71,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
-
+      
       if (currentUser) {
         try {
           const userRef = doc(db, 'users', currentUser.uid);
-          
           const docSnap = await getDoc(userRef);
+          
           if (docSnap.exists()) {
               setUserData(docSnap.data() as UserData);
           } else {
@@ -147,20 +116,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
           }
 
+          // Fetch Maintenance Mode
+          try {
+              const maintenanceSnap = await getDoc(doc(db, 'settings', 'general'));
+              if (maintenanceSnap.exists()) {
+                  setMaintenanceMode(maintenanceSnap.data().maintenanceMode || false);
+              }
+          } catch (e) {
+              console.warn("Failed to fetch maintenance mode", e);
+          }
+
+          // Fetch Notifications
+          try {
+              const targets = [currentUser.uid, 'all'];
+              const uData = docSnap.exists() ? docSnap.data() : null;
+              if (uData?.role === 'admin' || currentUser.email === 'titaniumfact97@gmail.com') {
+                  targets.push('admin');
+              }
+              const q = query(collection(db, 'notifications'), where('targetUid', 'in', targets), orderBy('createdAt', 'desc'), limit(20));
+              const notifSnap = await getDocs(q);
+              const notifs: any[] = [];
+              const readIds = JSON.parse(localStorage.getItem('readNotifs') || '[]');
+              notifSnap.forEach(d => {
+                  const data = d.data();
+                  notifs.push({ id: d.id, ...data, read: data.read || readIds.includes(d.id) });
+              });
+              setNotifications(notifs);
+          } catch (e) {
+              console.warn("Failed to fetch notifications", e);
+          }
+
         } catch (error) {
           console.error("Error fetching user data:", error);
         }
       } else {
         setUserData(null);
+        setMaintenanceMode(false);
+        setNotifications([]);
         localStorage.removeItem('cachedUserData');
-
       }
       setLoading(false);
     });
 
     return () => {
         unsubscribe();
-
     };
   }, []);
 

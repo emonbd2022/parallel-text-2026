@@ -3,12 +3,12 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { logout } from '../lib/firebase';
 import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell } from 'lucide-react';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useEffect } from 'react';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { userData, loading, maintenanceMode, notifications } = useAuth();
+  const { userData, loading, maintenanceMode, notifications, setNotifications } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenu, setMobileMenu] = useState(false);
@@ -18,14 +18,25 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
   const unreadCount = notifications.filter(n => !n.read).length;
   const handleMarkAsRead = async (id: string) => {
-      await updateDoc(doc(db, 'notifications', id), { read: true });
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+      const readIds = JSON.parse(localStorage.getItem('readNotifs') || '[]');
+      if (!readIds.includes(id)) {
+          readIds.push(id);
+          localStorage.setItem('readNotifs', JSON.stringify(readIds));
+      }
   };
   const handleOpenNotifications = () => {
       const willShow = !showNotifications;
       setShowNotifications(willShow);
       if (willShow) {
-          notifications.filter(n => !n.read).forEach(n => {
-              updateDoc(doc(db, 'notifications', n.id), { read: true }).catch(console.error);
+          const readIds = JSON.parse(localStorage.getItem('readNotifs') || '[]');
+          setNotifications(prev => {
+              const updated = prev.map(n => ({ ...n, read: true }));
+              updated.forEach(n => {
+                  if (!readIds.includes(n.id)) readIds.push(n.id);
+              });
+              localStorage.setItem('readNotifs', JSON.stringify(readIds));
+              return updated;
           });
       }
   };
