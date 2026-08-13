@@ -3,51 +3,23 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { logout } from '../lib/firebase';
 import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell } from 'lucide-react';
-import { doc, getDoc, onSnapshot, collection, query, where, updateDoc, orderBy, limit } from 'firebase/firestore';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useEffect } from 'react';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { userData, loading } = useAuth();
+  const { userData, loading, maintenanceMode, notifications } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenu, setMobileMenu] = useState(false);
-  const [maintenanceMode, setMaintenanceMode] = useState(false);
-  const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   
-  useEffect(() => {
-    if (!userData) return;
-    let unsub = () => {};
-    try {
-        const targets = [userData.uid, 'all'];
-        if (userData.role === 'admin') {
-            targets.push('admin');
-        }
-        const q = query(collection(db, 'notifications'), where('targetUid', 'in', targets), orderBy('createdAt', 'desc'), limit(20));
-        unsub = onSnapshot(q, (snapshot) => {
-            const notifs: any[] = [];
-            snapshot.forEach(d => {
-                notifs.push({ id: d.id, ...d.data() });
-            });
-            setNotifications(notifs);
-        }, (err) => {
-           console.warn("Could not load notifications:", err);
-        });
-    } catch (e) {
-        console.warn("Error setting up notifications listener:", e);
-    }
-    return () => unsub();
-  }, [userData?.uid, userData?.role]);
-  
-  const unreadCount = notifications.filter(n => !n.read).length;
 
+
+  const unreadCount = notifications.filter(n => !n.read).length;
   const handleMarkAsRead = async (id: string) => {
       await updateDoc(doc(db, 'notifications', id), { read: true });
   };
-
-  
-
   const handleOpenNotifications = () => {
       const willShow = !showNotifications;
       setShowNotifications(willShow);
@@ -57,18 +29,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           });
       }
   };
-
-  useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
-        if (docSnap.exists()) {
-            setMaintenanceMode(docSnap.data().maintenanceMode || false);
-        }
-    }, (err) => {
-        console.warn("Error loading settings:", err);
-    });
-    return () => unsub();
-  }, []);
-
 
   const handleLogout = async () => {
     await logout();

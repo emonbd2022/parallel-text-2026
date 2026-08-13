@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, onAuthStateChanged } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp, addDoc, collection } from 'firebase/firestore';
+import { doc, setDoc, getDoc, serverTimestamp, addDoc, collection, onSnapshot, query, where, orderBy, limit } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 
 export interface UserData {
@@ -26,9 +26,12 @@ interface AuthContextType {
   userData: UserData | null;
   loading: boolean;
   setUserData: React.Dispatch<React.SetStateAction<UserData | null>>;
+  maintenanceMode: boolean;
+  notifications: any[];
+  setNotifications: React.Dispatch<React.SetStateAction<any[]>>;
 }
 
-const AuthContext = createContext<AuthContextType>({ user: null, userData: null, loading: true, setUserData: () => {} });
+const AuthContext = createContext<AuthContextType>({ user: null, userData: null, loading: true, setUserData: () => {}, maintenanceMode: false, notifications: [], setNotifications: () => {} });
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const cachedData = (() => {
@@ -43,12 +46,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(cachedData ? { uid: cachedData.uid } as User : null);
   const [userData, setUserData] = useState<UserData | null>(cachedData);
   const [loading, setLoading] = useState(cachedData ? false : true);
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
 
   useEffect(() => {
     if (userData) {
       localStorage.setItem('cachedUserData', JSON.stringify(userData));
     }
   }, [userData]);
+
+  useEffect(() => {
+    if (!db) return;
+    const unsubMaintenance = onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
+        if (docSnap.exists()) {
+            setMaintenanceMode(docSnap.data().maintenanceMode || false);
+        }
+    }, (err) => {
+        console.warn("Error loading maintenance settings:", err);
+    });
+
+    return () => unsubMaintenance();
+  }, []);
+
+  useEffect(() => {
+    if (!db || !userData) return;
+    
+    let unsubNotifs = () => {};
+    try {
+        const targets = [userData.uid, 'all'];
+        if (userData.role === 'admin') {
+            targets.push('admin');
+        }
+        const q = query(collection(db, 'notifications'), where('targetUid', 'in', targets), orderBy('createdAt', 'desc'), limit(20));
+        unsubNotifs = onSnapshot(q, (snapshot) => {
+            const notifs: any[] = [];
+            snapshot.forEach(d => {
+                notifs.push({ id: d.id, ...d.data() });
+            });
+            setNotifications(notifs);
+        }, (err) => {
+           console.warn("Could not load notifications:", err);
+        });
+    } catch (e) {
+        console.warn("Error setting up notifications listener:", e);
+    }
+    
+    return () => unsubNotifs();
+  }, [userData?.uid, userData?.role]);
 
   useEffect(() => {
     if (!auth) {
@@ -121,7 +165,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, loading, setUserData }}>
+    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, notifications, setNotifications }}>
       {!loading && children}
     </AuthContext.Provider>
   );
