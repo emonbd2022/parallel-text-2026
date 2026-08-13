@@ -26,6 +26,7 @@ interface AuthContextType {
   loading: boolean;
   setUserData: React.Dispatch<React.SetStateAction<UserData | null>>;
   maintenanceMode: boolean;
+  setMaintenanceMode: React.Dispatch<React.SetStateAction<boolean>>;
   notifications: any[];
   setNotifications: React.Dispatch<React.SetStateAction<any[]>>;
 }
@@ -36,6 +37,7 @@ const AuthContext = createContext<AuthContextType>({
   loading: true, 
   setUserData: () => {},
   maintenanceMode: false,
+  setMaintenanceMode: () => {},
   notifications: [],
   setNotifications: () => {}
 });
@@ -53,7 +55,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(cachedData ? { uid: cachedData.uid } as User : null);
   const [userData, setUserData] = useState<UserData | null>(cachedData);
   const [loading, setLoading] = useState(cachedData ? false : true);
-  const [maintenanceMode] = useState(false);
+  const [maintenanceMode, setMaintenanceMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('maintenanceMode') === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [notifications, setNotifications] = useState<any[]>(() => {
     try {
       const stored = localStorage.getItem('localNotifications');
@@ -65,6 +73,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Track the UID for which we have already performed the single initial fetch in this browser session
   const fetchedUidRef = useRef<string | null>(cachedData?.uid || null);
+  const fetchedSettingsRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (fetchedSettingsRef.current) return;
+    fetchedSettingsRef.current = true;
+
+    getDoc(doc(db, 'settings', 'general'))
+      .then((docSnap) => {
+        if (docSnap.exists()) {
+          const isMaint = docSnap.data()?.maintenanceMode === true;
+          setMaintenanceMode(isMaint);
+          try { localStorage.setItem('maintenanceMode', String(isMaint)); } catch {}
+        }
+      })
+      .catch((err) => {
+        console.warn("Could not check maintenance mode settings:", err);
+      });
+  }, []);
 
   useEffect(() => {
     if (userData) {
@@ -191,7 +217,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, notifications, setNotifications }}>
+    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, notifications, setNotifications }}>
       {!loading && children}
     </AuthContext.Provider>
   );

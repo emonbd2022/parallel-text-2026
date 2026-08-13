@@ -10,7 +10,7 @@ import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
 export const AdminDashboard: React.FC = () => {
-  const { userData: currentAdmin } = useAuth();
+  const { userData: currentAdmin, maintenanceMode, setMaintenanceMode } = useAuth();
   
   // Cache users in sessionStorage to avoid repeating 20 reads on every page view
   const cachedUsers = (() => {
@@ -34,9 +34,6 @@ export const AdminDashboard: React.FC = () => {
   const [endDate, setEndDate] = useState<Date | null>(null);
   const [showStats, setShowStats] = useState(false);
   
-  const [maintenanceMode, setMaintenanceMode] = useState(() => {
-    return localStorage.getItem('maintenanceMode') === 'true';
-  });
   const [selectedUserForActivity, setSelectedUserForActivity] = useState<UserData | null>(null);
   const [confirmAction, setConfirmAction] = useState<{title: string, message: string, onConfirm: () => void} | null>(null);
   const [notifModal, setNotifModal] = useState<{isOpen: boolean, targetUid?: string, targetName?: string, message: string}>({isOpen: false, message: ''});
@@ -44,7 +41,9 @@ export const AdminDashboard: React.FC = () => {
   const toggleMaintenance = async () => {
     const newMode = !maintenanceMode;
     setMaintenanceMode(newMode);
-    localStorage.setItem('maintenanceMode', String(newMode));
+    try {
+      localStorage.setItem('maintenanceMode', String(newMode));
+    } catch {}
     try {
       await setDoc(doc(db, 'settings', 'general'), { maintenanceMode: newMode }, { merge: true });
     } catch (e) {
