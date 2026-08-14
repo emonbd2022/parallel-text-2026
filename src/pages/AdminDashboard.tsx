@@ -23,6 +23,7 @@ export const AdminDashboard: React.FC = () => {
   })();
 
   const [currentPage, setCurrentPage] = useState(1);
+  const [searchTerm, setSearchTerm] = useState("");
   const [usersByPage, setUsersByPage] = useState<Record<number, UserData[]>>({});
   const [lastVisibleByPage, setLastVisibleByPage] = useState<Record<number, any>>({});
   const [hasMore, setHasMore] = useState(true);
