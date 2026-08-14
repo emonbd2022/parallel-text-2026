@@ -189,7 +189,23 @@ export default function App() {
       const saved = localStorage.getItem(STORAGE_CONFIG);
       if (saved) {
           const parsed = JSON.parse(saved);
-          return { ...parsed, batchSize: parsed.batchSize || 5, model: parsed.model || 'gemini-3.5-flash-lite' };
+          if (!parsed.migratedTo31LiteDefaultV4) {
+            parsed.model = 'gemini-3.1-flash-lite-preview';
+            parsed.titleMaxLen = 180;
+            parsed.autoExport = true;
+            parsed.autoScroll = true;
+            parsed.prioritizeFastest = true;
+            parsed.migratedTo31LiteDefaultV4 = true;
+          }
+          return { 
+            ...parsed, 
+            batchSize: parsed.batchSize || 1, 
+            model: parsed.model || 'gemini-3.1-flash-lite-preview',
+            titleMaxLen: parsed.titleMaxLen ?? 180,
+            autoExport: parsed.autoExport ?? true,
+            autoScroll: parsed.autoScroll ?? true,
+            prioritizeFastest: parsed.prioritizeFastest ?? true,
+          };
       }
     } catch (e) { /* ignore */ }
     
@@ -197,17 +213,19 @@ export default function App() {
       concurrency: 1, 
       batchSize: 1, 
       maxRetries: 3,
-      titleMaxLen: 120,
+      titleMaxLen: 180,
       keywordsCount: 40,
-      model: 'gemini-3.5-flash-lite', 
+      model: 'gemini-3.1-flash-lite-preview', 
       titlePrefix: '',
       titleSuffix: '',
       negativeTitleWords: '',
       negativeKeywords: '',
       targetExtension: '',
       forceTransparency: false,
-      autoExport: false,
-      migratedTo31Lite: true
+      autoExport: true,
+      autoScroll: true,
+      prioritizeFastest: true,
+      migratedTo31LiteDefaultV4: true
     };
   });
 

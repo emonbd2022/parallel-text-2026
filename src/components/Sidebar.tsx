@@ -258,10 +258,10 @@ export const Sidebar: React.FC<Props> = ({
                     <span className="text-[10px] text-slate-500 block mt-0.5">Scroll to processing image automatically</span>
                 </div>
                 <button 
-                    onClick={() => setConfig(prev => ({...prev, autoScroll: config.autoScroll === false ? true : false}))}
-                    className={`w-11 h-6 rounded-full transition-all relative ${config.autoScroll !== false ? 'bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.4)]' : 'bg-slate-700'}`}
+                    onClick={() => setConfig(prev => ({...prev, autoScroll: !prev.autoScroll}))}
+                    className={`w-11 h-6 rounded-full transition-all relative ${config.autoScroll ? 'bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.4)]' : 'bg-slate-700'}`}
                 >
-                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.autoScroll !== false ? 'translate-x-6' : 'translate-x-1'}`} />
+                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.autoScroll ? 'translate-x-6' : 'translate-x-1'}`} />
                 </button>
                 </div>
 

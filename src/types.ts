@@ -74,6 +74,7 @@ export interface ProcessingConfig {
   autoExport?: boolean;
   autoScroll?: boolean;
   migratedTo31Lite?: boolean;
+  migratedTo31LiteDefaultV4?: boolean;
   prioritizeFastest?: boolean;
 }
 
