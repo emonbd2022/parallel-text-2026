@@ -3,46 +3,127 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // =========================================================
+    // HELPER FUNCTIONS
+    // =========================================================
+
+    // Verify if the caller is an authenticated Firebase user
     function isAuthenticated() {
       return request.auth != null;
     }
 
+    // Verify if the caller has administrator privileges
     function isAdmin() {
-      return isAuthenticated()
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      return isAuthenticated() && (
+        (request.auth.token.email != null && request.auth.token.email in ['titaniumfact97@gmail.com', 'reactoremon2022@gmail.com']) ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+        )
+      );
+    }
+
+    // Strict allowlist of essential account fields.
+    // Enforced for BOTH normal users and administrators.
+    function hasOnlyEssentialAccountFields() {
+      return request.resource.data.keys().hasOnly([
+        'uid', 'email', 'name', 'photoURL', 'nickname',
+        'credits', 'unlimited', 'totalProcessedImages',
+        'joinDate', 'createdAt', 'blocked', 'role',
+        'plan', 'planStartDate', 'planEndDate'
+      ]);
+    }
+
+    // Absolute prohibition of Local-First application state in Firestore.
+    // Enforced for BOTH normal users and administrators.
+    function hasNoForbiddenLocalData() {
+      return !request.resource.data.keys().hasAny([
+        'apiKeys', 'appData', 'config', 'preferences', 'apiUsage',
+        'cooldowns', 'errors', 'queue', 'progress', 'processingData',
+        'csvData', 'temporaryStats', 'history', 'logs', 'activityLogs',
+        'processingSessions', 'stats'
+      ]);
     }
 
     // =========================================================
     // USERS COLLECTION
-    // Only stores user identity, credits and totalProcessedImages in Firestore
+    // Stores ONLY essential user/account metadata.
+    // Local-First data is completely blocked for ALL users (including admins).
     // =========================================================
     match /users/{userId} {
+      // Read: Users can read their own account; Admins can read all accounts.
       allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
 
-      allow create: if isAuthenticated() && request.auth.uid == userId
-        && !request.resource.data.keys().hasAny(['apiKeys', 'appData', 'config', 'preferences', 'apiUsage', 'cooldowns', 'errors', 'queue', 'progress', 'processingData', 'csvData', 'temporaryStats']);
-
-      allow update: if isAuthenticated() && (
-        isAdmin() ||
+      // Create: Enforces schema allowlist for ALL users.
+      // Normal users are additionally restricted to prevent privilege escalation.
+      allow create: if isAuthenticated() && 
+        hasOnlyEssentialAccountFields() && 
+        hasNoForbiddenLocalData() && 
         (
-          request.auth.uid == userId &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages'])
-        )
-      );
+          isAdmin() ||
+          (
+            request.auth.uid == userId &&
+            request.resource.data.uid == userId &&
+            request.resource.data.role == 'user' &&
+            request.resource.data.blocked == false &&
+            request.resource.data.unlimited == false &&
+            request.resource.data.plan == 'free' &&
+            request.resource.data.credits is number &&
+            request.resource.data.credits >= 0 &&
+            request.resource.data.credits <= 100 &&
+            request.resource.data.totalProcessedImages is number &&
+            request.resource.data.totalProcessedImages == 0
+          )
+        );
 
+      // Update: Enforces schema allowlist for ALL users.
+      // Normal users can ONLY update 'credits' (decrease/equal) and 'totalProcessedImages' (increase/equal).
+      allow update: if isAuthenticated() && 
+        hasOnlyEssentialAccountFields() && 
+        hasNoForbiddenLocalData() && 
+        (
+          isAdmin() ||
+          (
+            request.auth.uid == userId &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages']) &&
+            (
+              !('credits' in request.resource.data.diff(resource.data).affectedKeys()) ||
+              (
+                request.resource.data.credits is number &&
+                request.resource.data.credits >= 0 &&
+                request.resource.data.credits <= resource.data.credits
+              )
+            ) &&
+            (
+              !('totalProcessedImages' in request.resource.data.diff(resource.data).affectedKeys()) ||
+              (
+                request.resource.data.totalProcessedImages is number &&
+                request.resource.data.totalProcessedImages >= resource.data.totalProcessedImages &&
+                request.resource.data.totalProcessedImages >= 0
+              )
+            )
+          )
+        );
+
+      // Delete: Strictly restricted to administrators
       allow delete: if isAdmin();
     }
 
     // =========================================================
     // SETTINGS COLLECTION
+    // System settings (e.g. maintenanceMode)
     // =========================================================
     match /settings/{document} {
-      allow read: if true;
+      // Read: Authenticated users only
+      allow read: if isAuthenticated();
+      // Write: Administrators only
       allow write: if isAdmin();
     }
 
-    // Default deny for all other collections
+    // =========================================================
+    // DEFAULT DENY
+    // All other collections and paths are completely inaccessible
+    // =========================================================
     match /{document=**} {
       allow read, write: if false;
     }

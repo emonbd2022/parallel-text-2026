@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
-import { User, onAuthStateChanged } from 'firebase/auth';
+import { User, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 
@@ -29,6 +29,7 @@ interface AuthContextType {
   setMaintenanceMode: React.Dispatch<React.SetStateAction<boolean>>;
   notifications: any[];
   setNotifications: React.Dispatch<React.SetStateAction<any[]>>;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({ 
@@ -39,7 +40,8 @@ const AuthContext = createContext<AuthContextType>({
   maintenanceMode: false,
   setMaintenanceMode: () => {},
   notifications: [],
-  setNotifications: () => {}
+  setNotifications: () => {},
+  logout: async () => {}
 });
 
 // Cache helpers to store per-user data as well as the active cachedUserData
@@ -123,6 +125,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
   }, [notifications]);
 
+  const logout = async () => {
+    try {
+      if (auth) {
+        await signOut(auth);
+      }
+    } catch (e) {
+      console.warn("Sign out error:", e);
+    }
+    // Explicitly preserve userCache_{uid}, cachedUserData, configuration, and apiKeys in localStorage!
+    setUser(null);
+    setUserData(null);
+    setNotifications([]);
+  };
+
   useEffect(() => {
     if (!auth) {
       setLoading(false);
@@ -169,7 +185,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
               // Update state & cache if data is changed or freshly fetched
               setUserData(prev => {
-                // Check if different to avoid unnecessary rerenders
                 const isDifferent = !prev || 
                   prev.credits !== serverData.credits ||
                   prev.totalProcessedImages !== serverData.totalProcessedImages ||
@@ -226,7 +241,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, notifications, setNotifications }}>
+    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, notifications, setNotifications, logout }}>
       {!loading && children}
     </AuthContext.Provider>
   );

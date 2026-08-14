@@ -51,12 +51,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   };
 
   const handleLogout = async () => {
-    // Preserve user accounts and configurations cache in localStorage
-    // Only clear session-specific keys if necessary
-    try {
-      const { clearProject } = await import('../services/projectStorage');
-      await clearProject();
-    } catch (e) {}
+    // Preserve user accounts, images, metadata, and configurations in cache
     await logout();
     navigate('/login');
   };

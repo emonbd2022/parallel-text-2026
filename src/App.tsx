@@ -268,7 +268,7 @@ export default function App() {
   }, [modelStats]);
 
             
-  // Auto-save items safely via IndexedDB
+  // Auto-save items safely via IndexedDB and localStorage
   const itemsRef = useRef(items);
   useEffect(() => {
     itemsRef.current = items;
@@ -277,7 +277,7 @@ export default function App() {
   useEffect(() => {
     if (!isProjectLoaded) return;
     
-    // Clear project if empty
+    // Clear project if explicitly emptied
     if (items.length === 0) {
         clearProject().catch(() => {});
         return;
@@ -289,10 +289,25 @@ export default function App() {
         }).catch(e => {
             console.warn("Auto-save failed", e);
         });
-    }, 15000); // 15 second debounce to reduce CPU/IO during processing
+    }, 1000); // 1-second responsive debounce to ensure immediate metadata persistence
     
     return () => clearTimeout(timer);
   }, [items, isProjectLoaded]);
+
+  // Ensure items are immediately flushed to cache on page close or reload
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (itemsRef.current.length > 0) {
+        saveProject(itemsRef.current);
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+    };
+  }, []);
   
   // Session Reset Check Timer
   useEffect(() => {
