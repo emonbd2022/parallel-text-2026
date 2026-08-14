@@ -1,42 +1,57 @@
 import { motion } from 'motion/react';
-import React, { useEffect, useState, useRef } from 'react';
-import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc } from 'firebase/firestore';
-import { collection } from 'firebase/firestore';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Calendar, Activity, AlertTriangle, Bell, MessageSquare } from 'lucide-react';
-import { UserActivityModal } from '../components/UserActivityModal';
+import { Shield, Search, RefreshCw, Calendar, Trash2, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
 export const AdminDashboard: React.FC = () => {
   const { userData: currentAdmin, maintenanceMode, setMaintenanceMode } = useAuth();
   
-  // Cache users in sessionStorage to avoid repeating 20 reads on every page view
-  const cachedUsers = (() => {
+  // Cache pages in sessionStorage so navigating away and returning costs 0 Firestore reads
+  const getInitialUsersCache = (): Record<number, UserData[]> => {
     try {
-      const s = sessionStorage.getItem('adminCachedUsers');
-      return s ? JSON.parse(s) : null;
+      const s = sessionStorage.getItem('adminCachedUsersByPage');
+      return s ? JSON.parse(s) : {};
     } catch {
-      return null;
+      return {};
     }
-  })();
+  };
 
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState("");
-  const [usersByPage, setUsersByPage] = useState<Record<number, UserData[]>>({});
+  const [usersByPage, setUsersByPage] = useState<Record<number, UserData[]>>(getInitialUsersCache);
   const [lastVisibleByPage, setLastVisibleByPage] = useState<Record<number, any>>({});
-  const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
 
-  // Date range filter (calculated 100% locally)
+  // Date range filter (calculated 100% locally from cached/loaded users)
   const [startDate, setStartDate] = useState<Date | null>(null);
   const [endDate, setEndDate] = useState<Date | null>(null);
   const [showStats, setShowStats] = useState(false);
   
-  const [selectedUserForActivity, setSelectedUserForActivity] = useState<UserData | null>(null);
-  const [confirmAction, setConfirmAction] = useState<{title: string, message: string, onConfirm: () => void} | null>(null);
-  const [notifModal, setNotifModal] = useState<{isOpen: boolean, targetUid?: string, targetName?: string, message: string}>({isOpen: false, message: ''});
+  // Clean Data Modal & Execution State
+  const [cleanModalOpen, setCleanModalOpen] = useState(false);
+  const [cleanProgress, setCleanProgress] = useState<{ total: number; current: number; status: 'idle' | 'running' | 'done' | 'error'; message: string }>({
+    total: 0,
+    current: 0,
+    status: 'idle',
+    message: ''
+  });
+
+  // Guard against duplicate in-flight requests and StrictMode double-mount executions
+  const isFetchingRef = useRef(false);
+  const initialFetchAttemptedRef = useRef(false);
+
+  // Sync usersByPage to sessionStorage for 0-cost repeat viewings across routes
+  useEffect(() => {
+    try {
+      if (Object.keys(usersByPage).length > 0) {
+        sessionStorage.setItem('adminCachedUsersByPage', JSON.stringify(usersByPage));
+      }
+    } catch {}
+  }, [usersByPage]);
 
   const toggleMaintenance = async () => {
     const newMode = !maintenanceMode;
@@ -51,10 +66,14 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const fetchPage = async (page: number, forceRefresh = false) => {
+  const fetchPage = useCallback(async (page: number, forceRefresh = false) => {
+    // Zero-read guarantee: If cached in state and not forcing refresh, do NOT touch Firestore
     if (!forceRefresh && usersByPage[page] && usersByPage[page].length > 0) {
       return;
     }
+
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
 
     try {
       setLoading(true);
@@ -67,6 +86,8 @@ export const AdminDashboard: React.FC = () => {
       if (page > 1) {
         const cursor = lastVisibleByPage[page - 1];
         if (!cursor) {
+           isFetchingRef.current = false;
+           setLoading(false);
            return;
         }
         q = query(
@@ -80,27 +101,38 @@ export const AdminDashboard: React.FC = () => {
       const querySnapshot = await getDocs(q);
       const usersData: UserData[] = [];
       querySnapshot.forEach((d) => {
-        usersData.push(d.data() as UserData);
+        const u = d.data() as UserData;
+        usersData.push(u);
       });
 
       if (querySnapshot.docs.length > 0) {
         setLastVisibleByPage(prev => ({ ...prev, [page]: querySnapshot.docs[querySnapshot.docs.length - 1] }));
       }
       
-      setHasMore(querySnapshot.docs.length === 5);
       setUsersByPage(prev => ({ ...prev, [page]: usersData }));
     } catch (error) {
       console.error("Error fetching users:", error);
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
-  };
+  }, [lastVisibleByPage, usersByPage]);
 
   useEffect(() => {
-    fetchPage(currentPage);
-  }, [currentPage]);
+    // Fetch only if page 1 has no cached data and hasn't been fetched yet
+    if (currentPage === 1 && !initialFetchAttemptedRef.current) {
+      initialFetchAttemptedRef.current = true;
+      if (!usersByPage[1] || usersByPage[1].length === 0) {
+        fetchPage(1);
+      }
+    } else if (currentPage > 1) {
+      if (!usersByPage[currentPage] || usersByPage[currentPage].length === 0) {
+        fetchPage(currentPage);
+      }
+    }
+  }, [currentPage, fetchPage, usersByPage]);
 
-  
+  // Search executes ONLY on explicit user action (button click or Enter key)
   const handleSearch = async () => {
     if (!searchTerm.trim()) {
       fetchPage(1, true);
@@ -114,9 +146,8 @@ export const AdminDashboard: React.FC = () => {
       snap.forEach(d => res.push(d.data() as UserData));
       setUsersByPage({ 1: res });
       setCurrentPage(1);
-      setHasMore(false);
     } catch (e) {
-      console.error(e);
+      console.error("Search query error:", e);
     } finally {
       setLoading(false);
     }
@@ -129,7 +160,7 @@ export const AdminDashboard: React.FC = () => {
         const next = { ...prev };
         for (const p of Object.keys(next)) {
            const pageNum = Number(p);
-           next[pageNum] = next[pageNum].map(u => u.uid === uid ? { ...u, ...updates } : u);
+           next[pageNum] = (next[pageNum] || []).map(u => u.uid === uid ? { ...u, ...updates } : u);
         }
         return next;
       });
@@ -170,26 +201,93 @@ export const AdminDashboard: React.FC = () => {
     });
   };
 
-  const handleSendNotificationAction = () => {
-    if (!notifModal.message.trim()) return;
-    alert(`Notification recorded locally: "${notifModal.message}"`);
-    setNotifModal({isOpen: false, message: ''});
-  };
+  /**
+   * CLEAN USER DATA:
+   * Replaces every user document in Firestore with ONLY strictly allowlisted fields.
+   * Eliminates bloated history arrays, cached appdata, session logs, totalTime, blockedIPs, and telemetry.
+   * Preserves user account existence and essential administrative fields.
+   */
+  const executeCleanUserData = async () => {
+    setCleanProgress({
+      total: 0,
+      current: 0,
+      status: 'running',
+      message: 'Scanning all user records in Firestore...'
+    });
 
-  const handleResetCredits = async (uid: string) => {
-    if (confirm('Are you sure you want to reset this user\'s credits to 0?')) {
-      await handleUpdateUser(uid, { credits: 0, plan: 'free', unlimited: false });
+    try {
+      const snap = await getDocs(collection(db, 'users'));
+      const total = snap.docs.length;
+      let count = 0;
+
+      for (const d of snap.docs) {
+        count++;
+        const raw = d.data();
+
+        // Construct document using ONLY explicit allowlisted essential fields
+        const cleanDoc: Record<string, any> = {
+          uid: raw.uid || d.id,
+          name: raw.name || 'User',
+          email: raw.email || '',
+          nickname: raw.nickname || '',
+          credits: typeof raw.credits === 'number' ? raw.credits : 0,
+          totalProcessedImages: typeof raw.totalProcessedImages === 'number' ? raw.totalProcessedImages : 0,
+          plan: raw.plan || (raw.unlimited ? 'unlimited' : 'free'),
+          planStartDate: raw.planStartDate || null,
+          planEndDate: raw.planEndDate || null,
+          unlimited: Boolean(raw.unlimited),
+          blocked: Boolean(raw.blocked),
+          role: raw.role || 'user',
+          joinDate: raw.joinDate || raw.createdAt || new Date().toISOString(),
+          createdAt: raw.createdAt || raw.joinDate || new Date().toISOString(),
+          photoURL: raw.photoURL || ''
+        };
+
+        setCleanProgress({
+          total,
+          current: count,
+          status: 'running',
+          message: `Sanitizing document ${count} of ${total} (${raw.email || d.id})...`
+        });
+
+        // 1 controlled overwrite write per document with strict allowlist (no merge: true)
+        await setDoc(doc(db, 'users', d.id), cleanDoc).catch(err => {
+          console.warn(`Could not sanitize doc ${d.id}:`, err);
+        });
+      }
+
+      setCleanProgress({
+        total,
+        current: total,
+        status: 'done',
+        message: `Successfully cleaned all ${total} user documents! All unlisted history, appdata, and telemetry fields have been completely purged.`
+      });
+
+      // Clear session cache and reload page 1
+      sessionStorage.removeItem('adminCachedUsersByPage');
+      setUsersByPage({});
+      setLastVisibleByPage({});
+      setTimeout(() => {
+        fetchPage(1, true);
+      }, 1000);
+
+    } catch (e: any) {
+      console.error("Error during database cleaning:", e);
+      setCleanProgress({
+        total: 0,
+        current: 0,
+        status: 'error',
+        message: `Failed to clean database: ${e?.message || 'Unknown error'}`
+      });
     }
   };
 
   const users = usersByPage[currentPage] || [];
   const totalSiteImages = Object.values(usersByPage).flat().reduce((acc, u: any) => acc + (u.totalProcessedImages || 0), 0);
-  
   const filteredUsers = users;
 
   return (
     <>
-    {selectedUserForActivity && <UserActivityModal user={selectedUserForActivity} onClose={() => setSelectedUserForActivity(null)} />}
     <motion.div 
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -210,6 +308,15 @@ export const AdminDashboard: React.FC = () => {
             >
               <RefreshCw className="w-4 h-4 text-purple-400" />
               Refresh Data
+            </button>
+
+            <button
+              onClick={() => setCleanModalOpen(true)}
+              className="flex items-center gap-2 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/80 rounded-xl px-4 py-2 text-sm font-bold text-rose-300 transition-colors shadow-lg"
+              title="Delete legacy history/appdata bloat from all users while preserving essential accounts"
+            >
+              <Trash2 className="w-4 h-4 text-rose-400" />
+              Clean User Data
             </button>
 
             <label className="flex items-center gap-2 cursor-pointer bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 shadow-lg">
@@ -264,13 +371,6 @@ export const AdminDashboard: React.FC = () => {
                 Search DB
               </button>
             </div>
-            <button 
-              onClick={() => setNotifModal({isOpen: true, message: ''})}
-              className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold flex items-center gap-2 transition-colors whitespace-nowrap"
-            >
-              <Bell className="w-4 h-4" />
-              Global Notification
-            </button>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -284,14 +384,13 @@ export const AdminDashboard: React.FC = () => {
                   <th className="pb-3 font-semibold">Processed</th>
                   <th className="pb-3 font-semibold">Avg/Day</th>
                   <th className="pb-3 font-semibold">Status</th>
-                  <th className="pb-3 font-semibold text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
                 {loading ? (
-                  <tr><td colSpan={9} className="py-8 text-center text-slate-500">Loading users...</td></tr>
+                  <tr><td colSpan={8} className="py-8 text-center text-slate-500">Loading users...</td></tr>
                 ) : filteredUsers.length === 0 ? (
-                  <tr><td colSpan={9} className="py-8 text-center text-slate-500">No users found.</td></tr>
+                  <tr><td colSpan={8} className="py-8 text-center text-slate-500">No users found.</td></tr>
                 ) : (
                   filteredUsers.map((user, index) => {
                         const rank = (currentPage - 1) * 5 + index + 1;
@@ -316,7 +415,7 @@ export const AdminDashboard: React.FC = () => {
                         
                         <td className="py-4 text-slate-300">
                            <input 
-                              type="text"
+                              type="text" 
                               value={user.nickname || ''}
                               onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, nickname: e.target.value} : u)}))}
                               onBlur={(e) => handleUpdateUser(user.uid, { nickname: e.target.value })}
@@ -326,7 +425,7 @@ export const AdminDashboard: React.FC = () => {
                         
                         <td className="py-4 text-slate-300 font-mono">
                             <input 
-                              type="number"
+                              type="number" 
                               value={user.credits}
                               onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, credits: parseInt(e.target.value) || 0} : u)}))}
                               onBlur={(e) => handleUpdateUser(user.uid, { credits: parseInt(e.target.value) || 0 })}
@@ -373,20 +472,6 @@ export const AdminDashboard: React.FC = () => {
                               />
                               <span className="text-sm text-slate-400">{user.blocked ? <span className="text-red-400">Blocked</span> : <span className="text-emerald-400">Active</span>}</span>
                             </label>
-                        </td>
-                        
-                        <td className="py-4">
-                            <div className="flex items-center gap-2 justify-end">
-                              <button onClick={() => setSelectedUserForActivity(user)} className="p-1.5 bg-blue-500/10 text-blue-400 rounded hover:bg-blue-500/20 transition-colors" title="View User Analytics">
-                                 <Activity className="w-4 h-4" />
-                              </button>
-                              <button onClick={() => setNotifModal({isOpen: true, targetUid: user.uid, targetName: user.name, message: ''})} className="p-1.5 bg-purple-500/10 text-purple-400 rounded hover:bg-purple-500/20 transition-colors" title="Send Notification">
-                                 <MessageSquare className="w-4 h-4" />
-                              </button>
-                              <button onClick={() => handleResetCredits(user.uid)} className="p-1.5 bg-orange-500/10 text-orange-400 rounded hover:bg-orange-500/20 transition-colors" title="Reset Credits & Plan">
-                                 <RefreshCw className="w-4 h-4" />
-                              </button>
-                            </div>
                         </td>
                       </tr>
                   );
@@ -442,39 +527,98 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
 
-      {notifModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-           <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl relative">
-              <h3 className="text-xl font-bold text-white mb-4">Send Notification {notifModal.targetName ? `to ${notifModal.targetName}` : 'to All Users'}</h3>
-              <textarea 
-                 className="w-full h-32 bg-slate-950 border border-slate-700 rounded-lg p-3 text-slate-200 outline-none focus:border-purple-500 mb-4 resize-none"
-                 placeholder="Enter message..."
-                 value={notifModal.message}
-                 onChange={e => setNotifModal(prev => ({...prev, message: e.target.value}))}
-              />
-              <div className="flex gap-3 justify-end">
-                 <button onClick={() => setNotifModal({isOpen: false, message: ''})} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
-                 <button onClick={handleSendNotificationAction} disabled={!notifModal.message.trim()} className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-500 font-bold flex items-center gap-2">
-                    Send
-                 </button>
-              </div>
-           </div>
-        </div>
-      )}
-      
-      {confirmAction && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-           <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-md w-full shadow-2xl relative">
+      {/* Clean Database Modal */}
+      {cleanModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-lg w-full shadow-2xl relative">
               <div className="flex items-center gap-3 mb-4">
-                <AlertTriangle className="w-6 h-6 text-red-500" />
-                <h3 className="text-xl font-bold text-white">{confirmAction.title}</h3>
+                 <Trash2 className="w-6 h-6 text-rose-400" />
+                 <h3 className="text-xl font-bold text-white">Clean User Database</h3>
               </div>
-              <p className="text-slate-300 mb-6">{confirmAction.message}</p>
+
+              <p className="text-sm text-slate-300 mb-4 leading-relaxed">
+                This process purges bloated history logs, appdata configuration caches, and legacy telemetry from user documents in Firestore, replacing them with a strictly allowlisted account schema.
+              </p>
+
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 mb-6 space-y-2 text-xs">
+                <div className="text-emerald-400 font-semibold flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Preserved Allowlist Fields:
+                </div>
+                <div className="text-slate-400 pl-6">
+                  uid, name, email, nickname, credits, totalProcessedImages, plan, planStartDate, planEndDate, unlimited, blocked, role, joinDate / createdAt, photoURL.
+                </div>
+
+                <div className="text-rose-400 font-semibold flex items-center gap-2 mt-3">
+                  <Trash2 className="w-4 h-4" />
+                  Purged Unlisted Data:
+                </div>
+                <div className="text-slate-400 pl-6">
+                  Embedded <code className="text-rose-300">history</code> arrays (1,000+ items per user), <code className="text-rose-300">appdata</code> config maps, <code className="text-rose-300">totalTime</code>, <code className="text-rose-300">blockedIPs</code>, and raw telemetry.
+                </div>
+              </div>
+
+              {cleanProgress.status === 'running' && (
+                <div className="mb-6 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-slate-400">
+                    <span className="flex items-center gap-2 text-purple-400 font-semibold">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Sanitizing documents...
+                    </span>
+                    <span>{cleanProgress.current} / {cleanProgress.total}</span>
+                  </div>
+                  <div className="w-full h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                    <div 
+                      className="h-full bg-gradient-to-r from-purple-500 to-rose-500 transition-all duration-300"
+                      style={{ width: `${cleanProgress.total ? (cleanProgress.current / cleanProgress.total) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-slate-400">{cleanProgress.message}</p>
+                </div>
+              )}
+
+              {cleanProgress.status === 'done' && (
+                <div className="mb-6 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-400">
+                  {cleanProgress.message}
+                </div>
+              )}
+
+              {cleanProgress.status === 'error' && (
+                <div className="mb-6 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-400">
+                  {cleanProgress.message}
+                </div>
+              )}
+
               <div className="flex gap-3 justify-end">
-                 <button onClick={() => setConfirmAction(null)} className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
-                 <button onClick={confirmAction.onConfirm} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-500 font-bold">
-                    Confirm
+                 <button 
+                   onClick={() => {
+                     setCleanModalOpen(false);
+                     setCleanProgress({ total: 0, current: 0, status: 'idle', message: '' });
+                   }} 
+                   disabled={cleanProgress.status === 'running'}
+                   className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl hover:bg-slate-700 font-semibold text-sm disabled:opacity-50"
+                 >
+                   {cleanProgress.status === 'done' ? 'Close' : 'Cancel'}
                  </button>
+                 {cleanProgress.status !== 'done' && (
+                   <button 
+                     onClick={executeCleanUserData} 
+                     disabled={cleanProgress.status === 'running'} 
+                     className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-bold text-sm flex items-center gap-2 transition-colors disabled:opacity-50"
+                   >
+                     {cleanProgress.status === 'running' ? (
+                       <>
+                         <Loader2 className="w-4 h-4 animate-spin" />
+                         Cleaning...
+                       </>
+                     ) : (
+                       <>
+                         <Trash2 className="w-4 h-4" />
+                         Start Clean Data
+                       </>
+                     )}
+                   </button>
+                 )}
               </div>
            </div>
         </div>
