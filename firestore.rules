@@ -34,8 +34,16 @@ service cloud.firestore {
       ]);
     }
 
-    // Absolute prohibition of Local-First application state in Firestore.
+    // Strict allowlist of notification fields.
     // Enforced for BOTH normal users and administrators.
+    function hasOnlyNotificationFields() {
+      return request.resource.data.keys().hasOnly([
+        'id', 'targetUid', 'type', 'message', 'userName', 'userEmail', 'createdAt', 'read'
+      ]);
+    }
+
+    // Absolute prohibition of Local-First application state in Firestore.
+    // Enforced for BOTH normal users and administrators across all collections.
     function hasNoForbiddenLocalData() {
       return !request.resource.data.keys().hasAny([
         'apiKeys', 'appData', 'config', 'preferences', 'apiUsage',
@@ -104,6 +112,45 @@ service cloud.firestore {
             )
           )
         );
+
+      // Delete: Strictly restricted to administrators
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================
+    // NOTIFICATIONS COLLECTION
+    // Admin-targeted lightweight notifications (e.g. new signup alerts)
+    // Enforced against schema allowlist for BOTH admins and new users.
+    // =========================================================
+    match /notifications/{notificationId} {
+      // Read: Strictly restricted to administrators
+      allow read: if isAdmin();
+
+      // Create: Enforces schema allowlist and prohibits local data for BOTH admins and new users.
+      // Newly registered users are constrained to creating ONLY their own deterministic signup alert.
+      allow create: if isAuthenticated() &&
+        hasOnlyNotificationFields() &&
+        hasNoForbiddenLocalData() &&
+        request.resource.data.targetUid == 'admin' &&
+        request.resource.data.createdAt is string &&
+        request.resource.data.read is bool &&
+        (
+          isAdmin() ||
+          (
+            notificationId == ('signup_' + request.auth.uid) &&
+            request.resource.data.type == 'signup' &&
+            request.resource.data.id == ('signup_' + request.auth.uid) &&
+            request.resource.data.userName is string &&
+            request.resource.data.userEmail is string &&
+            request.resource.data.message is string &&
+            request.resource.data.read == false
+          )
+        );
+
+      // Update: Restricted to administrators AND restricted to 'read' field only
+      allow update: if isAdmin() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) &&
+        request.resource.data.read is bool;
 
       // Delete: Strictly restricted to administrators
       allow delete: if isAdmin();

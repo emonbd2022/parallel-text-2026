@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 
 export interface UserData {
@@ -20,6 +20,17 @@ export interface UserData {
   planEndDate?: string;
 }
 
+export interface AppNotification {
+  id: string;
+  targetUid: string;
+  type: string;
+  message: string;
+  userName?: string;
+  userEmail?: string;
+  createdAt: string;
+  read: boolean;
+}
+
 interface AuthContextType {
   user: User | null;
   userData: UserData | null;
@@ -27,8 +38,8 @@ interface AuthContextType {
   setUserData: React.Dispatch<React.SetStateAction<UserData | null>>;
   maintenanceMode: boolean;
   setMaintenanceMode: React.Dispatch<React.SetStateAction<boolean>>;
-  notifications: any[];
-  setNotifications: React.Dispatch<React.SetStateAction<any[]>>;
+  notifications: AppNotification[];
+  setNotifications: React.Dispatch<React.SetStateAction<AppNotification[]>>;
   logout: () => Promise<void>;
 }
 
@@ -82,7 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return false;
     }
   });
-  const [notifications, setNotifications] = useState<any[]>(() => {
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
     try {
       const stored = localStorage.getItem('localNotifications');
       return stored ? JSON.parse(stored) : [];
@@ -94,6 +105,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Guard to ensure strictly 1 real-time Firestore fetch occurs after each page reload/initial auth
   const hasPerformedPageReloadFetchRef = useRef<boolean>(false);
   const fetchedSettingsRef = useRef<boolean>(false);
+  const hasFetchedAdminNotifsRef = useRef<boolean>(false);
+  const sentSignupNotifsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (fetchedSettingsRef.current || !db) return;
@@ -118,6 +131,73 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       saveUserDataToCache(userData);
     }
   }, [userData]);
+
+  // One-shot fetch admin notifications strictly once per session if user is admin
+  // Cached locally after first fetch so remounting/reopening Admin Panel never repeats query unnecessarily
+  useEffect(() => {
+    if (!userData || userData.role !== 'admin' || !db || hasFetchedAdminNotifsRef.current) return;
+    
+    // Check session cache to avoid repeating query on route changes / component remounts
+    const sessionFetched = sessionStorage.getItem('adminNotifsFetched') === 'true';
+    if (sessionFetched) {
+      hasFetchedAdminNotifsRef.current = true;
+      try {
+        const cached = localStorage.getItem('cachedAdminNotifs');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setNotifications(parsed);
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    hasFetchedAdminNotifsRef.current = true;
+    try { sessionStorage.setItem('adminNotifsFetched', 'true'); } catch {}
+
+    const notifsQuery = query(
+      collection(db, 'notifications'),
+      where('targetUid', '==', 'admin'),
+      orderBy('createdAt', 'desc'),
+      limit(20)
+    );
+
+    getDocs(notifsQuery)
+      .then((snap) => {
+        const readIds: string[] = JSON.parse(localStorage.getItem('readNotifs') || '[]');
+        const fetchedNotifs: AppNotification[] = snap.docs.map(d => {
+          const data = d.data();
+          const notifId = data.id || d.id;
+          return {
+            id: notifId,
+            targetUid: data.targetUid || 'admin',
+            type: data.type || 'signup',
+            message: data.message || `New User Signup\nName: ${data.userName || 'User'}\nEmail: ${data.userEmail || ''}`,
+            userName: data.userName,
+            userEmail: data.userEmail,
+            createdAt: data.createdAt || new Date().toISOString(),
+            read: readIds.includes(notifId) || data.read === true
+          };
+        });
+
+        setNotifications(prev => {
+          const existingIds = new Set(prev.map(p => p.id));
+          const combined = [...prev];
+          fetchedNotifs.forEach(fn => {
+            if (!existingIds.has(fn.id)) {
+              combined.push(fn);
+            }
+          });
+          const sorted = combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          try { localStorage.setItem('cachedAdminNotifs', JSON.stringify(sorted)); } catch {}
+          return sorted;
+        });
+      })
+      .catch((err) => {
+        console.warn("Could not load admin notifications:", err);
+      });
+  }, [userData?.role]);
 
   useEffect(() => {
     try {
@@ -201,24 +281,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 return prev;
               });
             } else {
-              // Create default doc if missing
+              // Genuinely NEW user: create initial user document and admin notification atomically
               const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+              const userName = currentUser.displayName || 'User';
+              const userEmail = currentUser.email || '';
+              const nowISO = new Date().toISOString();
+
               const newUserData: UserData = {
                 uid: currentUser.uid,
-                email: currentUser.email || '',
-                name: currentUser.displayName || '',
+                email: userEmail,
+                name: userName,
                 photoURL: currentUser.photoURL || '',
-                nickname: currentUser.displayName?.split(' ')[0] || 'User',
+                nickname: userName.split(' ')[0] || 'User',
                 credits: 100,
                 unlimited: false,
                 totalProcessedImages: 0,
-                joinDate: new Date().toISOString(),
+                joinDate: nowISO,
                 blocked: false,
                 role: isFirstUser ? 'admin' : 'user',
                 plan: 'free',
               };
-              
-              await setDoc(userRef, newUserData);
+
+              const notifId = `signup_${currentUser.uid}`;
+              const notifRef = doc(db, 'notifications', notifId);
+              const notifData: AppNotification = {
+                id: notifId,
+                targetUid: 'admin',
+                type: 'signup',
+                message: `New User Signup\nName: ${userName}\nEmail: ${userEmail}`,
+                userName,
+                userEmail,
+                createdAt: nowISO,
+                read: false,
+              };
+
+              const notifKey = `signup_notif_sent_${currentUser.uid}`;
+              sentSignupNotifsRef.current.add(currentUser.uid);
+              try { localStorage.setItem(notifKey, 'true'); } catch {}
+
+              // Atomic batch commit: guarantees both docs exist together without extra reads
+              const batch = writeBatch(db);
+              batch.set(userRef, newUserData);
+              batch.set(notifRef, notifData);
+              await batch.commit();
+
               setUserData(newUserData);
               saveUserDataToCache(newUserData);
             }
