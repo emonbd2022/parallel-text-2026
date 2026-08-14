@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, deleteDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 
 export interface UserData {
@@ -40,6 +40,7 @@ interface AuthContextType {
   setMaintenanceMode: React.Dispatch<React.SetStateAction<boolean>>;
   notifications: AppNotification[];
   setNotifications: React.Dispatch<React.SetStateAction<AppNotification[]>>;
+  deleteNotification: (id: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -52,6 +53,7 @@ const AuthContext = createContext<AuthContextType>({
   setMaintenanceMode: () => {},
   notifications: [],
   setNotifications: () => {},
+  deleteNotification: async () => {},
   logout: async () => {}
 });
 
@@ -204,6 +206,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
   }, [notifications]);
 
+  const deletingNotifIdsRef = useRef<Set<string>>(new Set());
+
+  const deleteNotification = async (id: string) => {
+    if (!id || deletingNotifIdsRef.current.has(id)) return;
+    deletingNotifIdsRef.current.add(id);
+
+    // 1. Immediately remove from React state & local caches
+    setNotifications(prev => {
+      const updated = prev.filter(n => n.id !== id);
+      try {
+        localStorage.setItem('localNotifications', JSON.stringify(updated));
+        localStorage.setItem('cachedAdminNotifs', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    // 2. Direct clean up of cachedAdminNotifs in localStorage
+    try {
+      const cached = localStorage.getItem('cachedAdminNotifs');
+      if (cached) {
+        const parsed: AppNotification[] = JSON.parse(cached);
+        const filtered = parsed.filter(n => n.id !== id);
+        localStorage.setItem('cachedAdminNotifs', JSON.stringify(filtered));
+      }
+    } catch {}
+
+    // 3. Single explicit deleteDoc() operation in Firestore
+    if (db) {
+      try {
+        await deleteDoc(doc(db, 'notifications', id));
+        console.log(`[Notification] Explicitly deleted viewed notification from Firestore: notifications/${id}`);
+      } catch (err: any) {
+        console.error(`[Notification] Failed to delete notification notifications/${id} from Firestore:`, err);
+        // Allow retry if deletion failed due to transient network error
+        deletingNotifIdsRef.current.delete(id);
+      }
+    }
+  };
+
   const logout = async () => {
     try {
       if (auth) {
@@ -351,7 +392,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, notifications, setNotifications, logout }}>
+    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, notifications, setNotifications, deleteNotification, logout }}>
       {!loading && children}
     </AuthContext.Provider>
   );

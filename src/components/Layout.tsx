@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth, AppNotification } from '../contexts/AuthContext';
 import { logout } from '../lib/firebase';
 import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell, Upload, UserPlus } from 'lucide-react';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { userData, loading, maintenanceMode, notifications, setNotifications } = useAuth();
+  const { userData, loading, maintenanceMode, notifications, deleteNotification } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenu, setMobileMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [viewingNotification, setViewingNotification] = useState<AppNotification | null>(null);
 
   const handleUploadClick = () => {
     if (location.pathname !== '/') {
@@ -22,31 +23,15 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     }
   };
 
-  const unreadCount = notifications.filter(n => !n.read).length;
-
-  const handleMarkAsRead = async (id: string) => {
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-    const readIds = JSON.parse(localStorage.getItem('readNotifs') || '[]');
-    if (!readIds.includes(id)) {
-      readIds.push(id);
-      localStorage.setItem('readNotifs', JSON.stringify(readIds));
-    }
+  const handleViewNotification = async (notification: AppNotification) => {
+    setViewingNotification(notification);
+    // Explicitly delete from Firestore and local cache upon viewing
+    await deleteNotification(notification.id);
   };
 
-  const handleOpenNotifications = () => {
-    const willShow = !showNotifications;
-    setShowNotifications(willShow);
-    if (willShow) {
-      const readIds = JSON.parse(localStorage.getItem('readNotifs') || '[]');
-      setNotifications(prev => {
-        const updated = prev.map(n => ({ ...n, read: true }));
-        updated.forEach(n => {
-          if (!readIds.includes(n.id)) readIds.push(n.id);
-        });
-        localStorage.setItem('readNotifs', JSON.stringify(readIds));
-        return updated;
-      });
-    }
+  const handleToggleNotifications = () => {
+    // Only toggles dropdown visibility. Does NOT delete notifications unless viewed.
+    setShowNotifications(prev => !prev);
   };
 
   const handleLogout = async () => {
@@ -126,14 +111,20 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <div className="w-px h-6 bg-slate-800 mx-2" />
             {userData ? (
               <>
-                <div className="relative cursor-pointer mr-2 flex items-center" onClick={handleOpenNotifications}>
+                <div className="relative cursor-pointer mr-2 flex items-center" onClick={handleToggleNotifications}>
                   <Bell className="w-5 h-5 text-slate-400 hover:text-white transition-colors" />
-                  {unreadCount > 0 && <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">{unreadCount}</span>}
+                  {notifications.length > 0 && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">
+                      {notifications.length}
+                    </span>
+                  )}
                 </div>
                 {showNotifications && (
                   <div className="absolute top-16 right-6 sm:right-20 w-84 bg-slate-900/95 backdrop-blur-xl border border-purple-500/20 rounded-xl shadow-[0_10px_40px_-10px_rgba(168,85,247,0.3)] z-[9999] overflow-hidden transform origin-top-right animate-in fade-in zoom-in-95 duration-200">
                     <div className="p-4 border-b border-slate-800/80 flex justify-between items-center bg-slate-950/50">
-                      <span className="font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-emerald-400 tracking-wide">Notifications</span>
+                      <span className="font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-emerald-400 tracking-wide text-sm">
+                        Notifications {notifications.length > 0 ? `(${notifications.length})` : ''}
+                      </span>
                       <button onClick={() => setShowNotifications(false)} className="p-1 rounded-full text-slate-400 hover:text-white hover:bg-slate-700/50 transition-all"><X className="w-4 h-4"/></button>
                     </div>
                     <div className="max-h-80 overflow-y-auto custom-scrollbar">
@@ -144,25 +135,31 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                         </div>
                       ) : (
                         notifications.map(n => (
-                          <div key={n.id} onClick={() => handleMarkAsRead(n.id)} className={`p-4 border-b border-slate-800/50 text-sm cursor-pointer transition-all duration-300 ${!n.read ? 'bg-gradient-to-r from-purple-900/40 to-emerald-900/10 hover:from-purple-900/50 hover:to-emerald-900/20 shadow-[inset_3px_0_0_0_#a855f7]' : 'opacity-70 hover:bg-slate-800/50'}`}>
+                          <div 
+                            key={n.id} 
+                            onClick={() => handleViewNotification(n)} 
+                            className="p-4 border-b border-slate-800/50 text-sm cursor-pointer transition-all duration-300 bg-gradient-to-r from-purple-900/40 to-emerald-900/10 hover:from-purple-900/60 hover:to-emerald-900/30 shadow-[inset_3px_0_0_0_#a855f7] group"
+                          >
                             <div className="flex items-start justify-between gap-3">
-                              <div className="space-y-1">
-                                {n.type === 'signup' && (
-                                  <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-400 mb-0.5">
+                              <div className="space-y-1 flex-1">
+                                <div className="flex items-center justify-between gap-1.5">
+                                  <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-400">
                                     <UserPlus className="w-3.5 h-3.5" />
                                     <span>New User Signup</span>
                                   </div>
-                                )}
-                                <div className={`whitespace-pre-line text-xs leading-relaxed ${!n.read ? 'text-purple-50 font-medium' : 'text-slate-400'}`}>
+                                  <span className="text-[10px] text-purple-300 font-medium px-1.5 py-0.5 rounded bg-purple-500/20 group-hover:bg-purple-500/30 transition-colors">
+                                    View
+                                  </span>
+                                </div>
+                                <div className="whitespace-pre-line text-xs leading-relaxed text-purple-50 font-medium pt-0.5">
                                   {n.message}
                                 </div>
                                 {n.createdAt && (
-                                  <div className="text-[10px] text-slate-500 pt-1">
+                                  <div className="text-[10px] text-slate-400 pt-1">
                                     {new Date(n.createdAt).toLocaleDateString()} {new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                   </div>
                                 )}
                               </div>
-                              {!n.read && <div className="w-2.5 h-2.5 mt-1 rounded-full bg-purple-400 shadow-[0_0_10px_rgba(168,85,247,1)] shrink-0 animate-pulse"></div>}
                             </div>
                           </div>
                         ))
@@ -201,9 +198,13 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
         {/* Mobile menu button */}
         <div className="flex items-center gap-2 md:hidden">
           {userData && (
-            <div className="relative cursor-pointer mr-1 flex items-center" onClick={handleOpenNotifications}>
+            <div className="relative cursor-pointer mr-1 flex items-center" onClick={handleToggleNotifications}>
               <Bell className="w-5 h-5 text-slate-400 hover:text-white" />
-              {unreadCount > 0 && <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">{unreadCount}</span>}
+              {notifications.length > 0 && (
+                <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+                  {notifications.length}
+                </span>
+              )}
             </div>
           )}
           <button
@@ -258,6 +259,55 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       <main className="flex-1 overflow-hidden relative">
         {children}
       </main>
+
+      {/* Viewed Notification Detail Modal */}
+      {viewingNotification && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[10000] flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-purple-500/30 rounded-2xl p-6 max-w-md w-full shadow-[0_20px_60px_-15px_rgba(168,85,247,0.3)] space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2 text-purple-400 font-bold">
+                <UserPlus className="w-5 h-5" />
+                <span>New User Registration</span>
+              </div>
+              <button
+                onClick={() => setViewingNotification(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="bg-slate-950/80 rounded-xl p-4 border border-slate-800/80 space-y-2.5 text-sm">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Name:</span>
+                <span className="text-white font-medium">{viewingNotification.userName || 'User'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Email:</span>
+                <span className="text-purple-300 font-mono text-xs">{viewingNotification.userEmail || 'N/A'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Registered:</span>
+                <span className="text-slate-300 text-xs">{new Date(viewingNotification.createdAt).toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400">Starting Credits:</span>
+                <span className="text-emerald-400 font-medium">100 Credits</span>
+              </div>
+            </div>
+            <div className="text-[11px] text-slate-400 text-center">
+              This notification has been viewed and deleted from Firestore.
+            </div>
+            <div className="flex justify-end pt-1">
+              <button
+                onClick={() => setViewingNotification(null)}
+                className="w-full py-2.5 px-4 bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-500 hover:to-emerald-500 text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-purple-900/30"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
