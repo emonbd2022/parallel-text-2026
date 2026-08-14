@@ -25,6 +25,7 @@ const STORAGE_STATS = 'parrarel_stats_v1';
 // Models
 const MODELS = [
   { id: 'auto', name: 'Auto (Best Effort)', rpm: 5 },
+  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash (20 RPD)', rpm: 5 },
   { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (20 RPD)', rpm: 5 },
   { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (20 RPD)', rpm: 5 },
   { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite (500 RPD)', rpm: 15 },
@@ -110,9 +111,9 @@ export default function App() {
       
       // Migration: Add usage if missing or reset if new session
       return loaded.map((k: any) => {
-        let usage = k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 };
+        let usage = k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
         if (usage.date !== currentSession) {
-            usage = { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 };
+            usage = { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
         }
         return { 
             ...k, 
@@ -300,7 +301,7 @@ export default function App() {
         setKeys(prev => prev.map(k => {
             // Check if usage exists, if not or date mismatch, reset
             if (!k.usage || k.usage.date !== currentSession) {
-                return { ...k, usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 } };
+                return { ...k, usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 } };
             }
             return k;
         }));
@@ -503,7 +504,7 @@ export default function App() {
                   return { 
                       ...k, 
                       errorCount: 0, // Reset errors too
-                      usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 } 
+                      usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 } 
                   };
               }
               return k;
@@ -518,7 +519,7 @@ export default function App() {
               ...k,
               errorCount: 0,
               cooldownUntil: undefined,
-              usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 }
+              usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 }
           })));
       }
   };
@@ -560,6 +561,7 @@ export default function App() {
 
       if (config.model === 'auto') {
         const autoModels = [
+          'gemini-3.7-flash',
           'gemini-3.6-flash',
           'gemini-3.5-flash',
           'gemini-3.5-flash-lite',
@@ -730,6 +732,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
 
       if (config.model === 'auto') {
         const autoModels = [
+          'gemini-3.7-flash',
           'gemini-3.6-flash',
           'gemini-3.5-flash',
           'gemini-3.5-flash-lite',
@@ -830,7 +833,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       setKeys(prev => prev.map(k => {
         if (k.id === keyObj.id) {
             const currentSession = getUsageSessionId();
-            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 }) };
+            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 }) };
             
             // Ensure usage date is current session before incrementing
             if (newUsage.date !== currentSession) {
@@ -841,10 +844,12 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                 newUsage.flash_3_1_lite = 0;
                 newUsage.flash_3_5 = 0;
                 newUsage.flash_3_5_lite = 0;
+                newUsage.flash_3_7 = 0;
                 newUsage.flash_3_6 = 0;
             }
 
-            if (usedModel === 'gemini-3.6-flash') newUsage.flash_3_6 = (newUsage.flash_3_6 || 0) + 1;
+            if (usedModel === 'gemini-3.7-flash') newUsage.flash_3_7 = (newUsage.flash_3_7 || 0) + 1;
+            else if (usedModel === 'gemini-3.6-flash') newUsage.flash_3_6 = (newUsage.flash_3_6 || 0) + 1;
             else if (usedModel === 'gemini-3.5-flash-lite') newUsage.flash_3_5_lite = (newUsage.flash_3_5_lite || 0) + 1;
             else if (usedModel.includes('gemini-3.5-flash')) newUsage.flash_3_5 = (newUsage.flash_3_5 || 0) + 1;
             else if (usedModel.includes('gemini-3.1-flash-lite-preview')) newUsage.flash_3_1_lite = (newUsage.flash_3_1_lite || 0) + 1;
@@ -1211,7 +1216,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
         
         // We rely on API error responses (429) to handle rate limits rather than strict client-side counting.
         // However, we keep a very high ceiling just in case.
-        const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0 };
+        const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
         
         // Ensure properties are numbers (handle undefined/null from old storage)
         const u = {
@@ -1226,7 +1231,9 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
 
         // Increased limits to 10,000 to effectively disable client-side blocking
         if (config.model === 'auto') {
-            return (u.flash_3_6 < 10000) || (u.flash_3_5_lite < 10000) || (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 20);
+            return (u.flash_3_7 < 10000) || (u.flash_3_6 < 10000) || (u.flash_3_5_lite < 10000) || (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 20);
+        } else if (config.model === 'gemini-3.7-flash') {
+            return u.flash_3_7 < 10000;
         } else if (config.model === 'gemini-3.6-flash') {
             return u.flash_3_6 < 10000;
         } else if (config.model === 'gemini-3.5-flash-lite') {

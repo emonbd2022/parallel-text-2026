@@ -7,6 +7,7 @@ export interface ApiKeyUsage {
   flash_3_1_lite: number;
   flash_3_5?: number;
   flash_3_5_lite?: number;
+  flash_3_7?: number;
   flash_3_6?: number;
 }
 

@@ -51,6 +51,15 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   };
 
   const handleLogout = async () => {
+    Object.keys(localStorage).forEach(key => {
+      if (!key.startsWith('firebase:')) {
+        localStorage.removeItem(key);
+      }
+    });
+    try {
+      const { clearProject } = await import('../services/projectStorage');
+      await clearProject();
+    } catch (e) {}
     await logout();
     navigate('/login');
   };

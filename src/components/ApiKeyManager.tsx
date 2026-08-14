@@ -147,6 +147,7 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
           const flash_3_1_lite_Limit = usage.flash_3_1_lite >= 10000;
           const flash_3_5_Limit = (usage.flash_3_5 || 0) >= 10000;
           const flash_3_5_lite_Limit = (usage.flash_3_5_lite || 0) >= 10000;
+          const flash_3_7_Limit = (usage.flash_3_7 || 0) >= 10000;
           const flash_3_6_Limit = (usage.flash_3_6 || 0) >= 10000;
           const health = Math.max(0, 100 - (k.errorCount * 5));
 
@@ -166,6 +167,9 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
                    </span>
 
                    {/* Usage Badges */}
+                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_7_Limit ? 'bg-red-500/20 text-red-400' : 'bg-pink-500/10 text-pink-400'}`} title="Gemini 3.7 Flash Usage">
+                      🚀 3.7F: {usage.flash_3_7 || 0}
+                   </span>
                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_6_Limit ? 'bg-red-500/20 text-red-400' : 'bg-indigo-500/10 text-indigo-400'}`} title="Gemini 3.6 Flash Usage">
                       🌟 3.6F: {usage.flash_3_6 || 0}
                    </span>

@@ -1,6 +1,6 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState, useRef } from 'react';
-import { getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc } from 'firebase/firestore';
+import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc } from 'firebase/firestore';
 import { collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
@@ -22,12 +22,10 @@ export const AdminDashboard: React.FC = () => {
     }
   })();
 
-  const [users, setUsers] = useState<UserData[]>(cachedUsers || []);
-  const [loading, setLoading] = useState(cachedUsers ? false : true);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [lastVisible, setLastVisible] = useState<any>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [usersByPage, setUsersByPage] = useState<Record<number, UserData[]>>({});
+  const [lastVisibleByPage, setLastVisibleByPage] = useState<Record<number, any>>({});
   const [hasMore, setHasMore] = useState(true);
-  const hasFetchedUsersRef = useRef<boolean>(!!cachedUsers && cachedUsers.length > 0);
 
   // Date range filter (calculated 100% locally)
   const [startDate, setStartDate] = useState<Date | null>(null);
@@ -51,18 +49,8 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const fetchUsers = async (isNextPage = false, forceRefresh = false) => {
-    const hasSessionData = (() => {
-      try {
-        const s = sessionStorage.getItem('adminCachedUsers');
-        return s && JSON.parse(s)?.length > 0;
-      } catch {
-        return false;
-      }
-    })();
-
-    if (!forceRefresh && !isNextPage && (hasFetchedUsersRef.current || hasSessionData || users.length > 0)) {
-      setLoading(false);
+  const fetchPage = async (page: number, forceRefresh = false) => {
+    if (!forceRefresh && usersByPage[page] && usersByPage[page].length > 0) {
       return;
     }
 
@@ -71,45 +59,34 @@ export const AdminDashboard: React.FC = () => {
       let q = query(
         collection(db, 'users'), 
         orderBy('totalProcessedImages', 'desc'),
-        limit(20)
+        limit(5)
       );
       
-      if (isNextPage && lastVisible) {
+      if (page > 1) {
+        const cursor = lastVisibleByPage[page - 1];
+        if (!cursor) {
+           return;
+        }
         q = query(
           collection(db, 'users'),
           orderBy('totalProcessedImages', 'desc'),
-          startAfter(lastVisible),
-          limit(20)
+          startAfter(cursor),
+          limit(5)
         );
       }
 
       const querySnapshot = await getDocs(q);
-      hasFetchedUsersRef.current = true;
       const usersData: UserData[] = [];
       querySnapshot.forEach((d) => {
         usersData.push(d.data() as UserData);
       });
 
       if (querySnapshot.docs.length > 0) {
-        setLastVisible(querySnapshot.docs[querySnapshot.docs.length - 1]);
+        setLastVisibleByPage(prev => ({ ...prev, [page]: querySnapshot.docs[querySnapshot.docs.length - 1] }));
       }
       
-      setHasMore(querySnapshot.docs.length >= 20);
-
-      let updatedList: UserData[];
-      if (isNextPage) {
-        updatedList = [...users];
-        usersData.forEach(u => {
-          if (!updatedList.find(x => x.uid === u.uid)) updatedList.push(u);
-        });
-      } else {
-        updatedList = usersData;
-      }
-
-      setUsers(updatedList);
-      try {
-        sessionStorage.setItem('adminCachedUsers', JSON.stringify(updatedList));
-      } catch {}
+      setHasMore(querySnapshot.docs.length === 5);
+      setUsersByPage(prev => ({ ...prev, [page]: usersData }));
     } catch (error) {
       console.error("Error fetching users:", error);
     } finally {
@@ -118,17 +95,40 @@ export const AdminDashboard: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchUsers(false);
-  }, []);
+    fetchPage(currentPage);
+  }, [currentPage]);
 
-  const totalSiteImages = users.reduce((acc, u) => acc + (u.totalProcessedImages || 0), 0);
+  
+  const handleSearch = async () => {
+    if (!searchTerm.trim()) {
+      fetchPage(1, true);
+      return;
+    }
+    setLoading(true);
+    try {
+      const q = query(collection(db, 'users'), where('email', '==', searchTerm.trim()), limit(1));
+      const snap = await getDocs(q);
+      const res: UserData[] = [];
+      snap.forEach(d => res.push(d.data()));
+      setUsersByPage({ 1: res });
+      setCurrentPage(1);
+      setHasMore(false);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleUpdateUser = async (uid: string, updates: Partial<UserData>) => {
     try {
       await updateDoc(doc(db, 'users', uid), updates);
-      setUsers(prev => {
-        const next = prev.map(u => u.uid === uid ? { ...u, ...updates } : u);
-        try { sessionStorage.setItem('adminCachedUsers', JSON.stringify(next)); } catch {}
+      setUsersByPage(prev => {
+        const next = { ...prev };
+        for (const p of Object.keys(next)) {
+           const pageNum = Number(p);
+           next[pageNum] = next[pageNum].map(u => u.uid === uid ? { ...u, ...updates } : u);
+        }
         return next;
       });
     } catch (error) {
@@ -180,11 +180,10 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  const filteredUsers = users.filter(u => 
-    (u.email || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
-    (u.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (u.nickname || '').toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const users = usersByPage[currentPage] || [];
+  const totalSiteImages = Object.values(usersByPage).flat().reduce((acc, u) => acc + (u.totalProcessedImages || 0), 0);
+  
+  const filteredUsers = users;
 
   return (
     <>
@@ -204,7 +203,7 @@ export const AdminDashboard: React.FC = () => {
           
           <div className="flex flex-wrap items-center gap-4">
             <button
-              onClick={() => fetchUsers(false, true)}
+              onClick={() => fetchPage(currentPage, true)}
               className="flex items-center gap-2 bg-slate-900/50 hover:bg-slate-800 border border-slate-800 rounded-xl px-4 py-2 text-sm font-bold text-slate-300 transition-colors"
             >
               <RefreshCw className="w-4 h-4 text-purple-400" />
@@ -250,11 +249,18 @@ export const AdminDashboard: React.FC = () => {
               <Search className="w-5 h-5 text-slate-500 ml-2" />
               <input 
                 type="text" 
-                placeholder="Search users by name, email, or nickname..." 
+                placeholder="Exact Email Search..." 
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                 className="bg-transparent border-none outline-none text-slate-200 w-full py-1"
               />
+              <button 
+                onClick={handleSearch}
+                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 rounded-lg transition-colors"
+              >
+                Search DB
+              </button>
             </div>
             <button 
               onClick={() => setNotifModal({isOpen: true, message: ''})}
@@ -286,7 +292,7 @@ export const AdminDashboard: React.FC = () => {
                   <tr><td colSpan={9} className="py-8 text-center text-slate-500">No users found.</td></tr>
                 ) : (
                   filteredUsers.map((user, index) => {
-                        const rank = index + 1;
+                        const rank = (currentPage - 1) * 5 + index + 1;
                         let avgPerDay = 0;
                         if (user.joinDate) {
                           const joinDate = new Date(user.joinDate);
@@ -387,14 +393,22 @@ export const AdminDashboard: React.FC = () => {
               </tbody>
             </table>
           </div>
-          {hasMore && !searchTerm && (
-            <div className="flex justify-center mt-6">
+          {!searchTerm && (
+            <div className="flex justify-center mt-6 items-center gap-4">
                 <button 
-                  onClick={() => fetchUsers(true)}
-                  disabled={loading}
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1 || loading}
                   className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-sm text-slate-300 transition-colors disabled:opacity-50"
                 >
-                    {loading ? 'Loading...' : 'Load More Users'}
+                    Previous
+                </button>
+                <span className="text-slate-400 text-sm font-bold">Page {currentPage}</span>
+                <button 
+                  onClick={() => setCurrentPage(p => p + 1)}
+                  disabled={users.length < 5 || loading}
+                  className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-sm text-slate-300 transition-colors disabled:opacity-50"
+                >
+                    Next
                 </button>
             </div>
           )}
