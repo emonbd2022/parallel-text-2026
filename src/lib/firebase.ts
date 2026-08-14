@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore, getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -19,7 +19,13 @@ try {
   if (firebaseConfig.apiKey) {
     app = initializeApp(firebaseConfig);
     const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
-    db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+    try {
+      db = initializeFirestore(app, {
+        experimentalAutoDetectLongPolling: true,
+      }, dbId);
+    } catch {
+      db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+    }
     auth = getAuth(app);
   }
 } catch (error) {

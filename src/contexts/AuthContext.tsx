@@ -42,19 +42,37 @@ const AuthContext = createContext<AuthContextType>({
   setNotifications: () => {}
 });
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const cachedData = (() => {
-    try {
-      const cached = localStorage.getItem('cachedUserData');
-      return cached ? JSON.parse(cached) : null;
-    } catch {
-      return null;
+// Cache helpers to store per-user data as well as the active cachedUserData
+const getUserDataFromCache = (uid?: string): UserData | null => {
+  try {
+    if (uid) {
+      const userSpecific = localStorage.getItem(`userCache_${uid}`);
+      if (userSpecific) return JSON.parse(userSpecific);
     }
-  })();
+    const general = localStorage.getItem('cachedUserData');
+    if (general) {
+      const parsed = JSON.parse(general);
+      if (!uid || parsed.uid === uid) return parsed;
+    }
+  } catch {}
+  return null;
+};
+
+const saveUserDataToCache = (data: UserData) => {
+  try {
+    if (data?.uid) {
+      localStorage.setItem(`userCache_${data.uid}`, JSON.stringify(data));
+      localStorage.setItem('cachedUserData', JSON.stringify(data));
+    }
+  } catch {}
+};
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const cachedData = getUserDataFromCache();
 
   const [user, setUser] = useState<User | null>(cachedData ? { uid: cachedData.uid } as User : null);
   const [userData, setUserData] = useState<UserData | null>(cachedData);
-  const [loading, setLoading] = useState(cachedData ? false : true);
+  const [loading, setLoading] = useState<boolean>(false);
   const [maintenanceMode, setMaintenanceMode] = useState<boolean>(() => {
     try {
       return localStorage.getItem('maintenanceMode') === 'true';
@@ -71,12 +89,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   });
 
-  // Track the UID for which we have already performed the single initial fetch in this browser session
-  const fetchedUidRef = useRef<string | null>(cachedData?.uid || null);
+  // Guard to ensure strictly 1 real-time Firestore fetch occurs after each page reload/initial auth
+  const hasPerformedPageReloadFetchRef = useRef<boolean>(false);
   const fetchedSettingsRef = useRef<boolean>(false);
 
   useEffect(() => {
-    if (fetchedSettingsRef.current) return;
+    if (fetchedSettingsRef.current || !db) return;
     fetchedSettingsRef.current = true;
 
     getDoc(doc(db, 'settings', 'general'))
@@ -92,9 +110,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
   }, []);
 
+  // Whenever userData changes, keep cache continuously updated
   useEffect(() => {
     if (userData) {
-      try { localStorage.setItem('cachedUserData', JSON.stringify(userData)); } catch {}
+      saveUserDataToCache(userData);
     }
   }, [userData]);
 
@@ -114,99 +133,89 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(currentUser);
       
       if (currentUser) {
-        // Check local storage cache as well
-        let hasLocalCache = false;
-        try {
-          const cachedStr = localStorage.getItem('cachedUserData');
-          if (cachedStr) {
-            const parsed = JSON.parse(cachedStr);
-            if (parsed && parsed.uid === currentUser.uid) {
-              hasLocalCache = true;
-              if (!userData) setUserData(parsed);
-            }
-          }
-        } catch {}
-
-        // STRICT CHECK: If profile was already fetched or exists in cache/ref, 0 Firestore reads!
-        if (fetchedUidRef.current === currentUser.uid || hasLocalCache) {
-          fetchedUidRef.current = currentUser.uid;
-          setLoading(false);
-          return;
+        // Step 1: Immediately hydrate from cache so the user instantly sees their data
+        const localCached = getUserDataFromCache(currentUser.uid);
+        if (localCached) {
+          setUserData(localCached);
         }
 
-        fetchedUidRef.current = currentUser.uid;
+        // Step 2: Exactly ONE real-time read after each page reload to check if user data changed in Firestore
+        if (!hasPerformedPageReloadFetchRef.current && db) {
+          hasPerformedPageReloadFetchRef.current = true;
 
-        try {
-          const userRef = doc(db, 'users', currentUser.uid);
-          const docSnap = await getDoc(userRef);
-          
-          if (docSnap.exists()) {
-            const d = docSnap.data();
-            const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
-            const data: UserData = {
-              uid: currentUser.uid,
-              email: d.email || currentUser.email || '',
-              name: d.name || currentUser.displayName || '',
-              photoURL: d.photoURL || currentUser.photoURL || '',
-              nickname: d.nickname || currentUser.displayName?.split(' ')[0] || 'User',
-              credits: typeof d.credits === 'number' ? d.credits : 100,
-              unlimited: !!d.unlimited,
-              totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
-              joinDate: d.joinDate || new Date().toISOString(),
-              blocked: !!d.blocked,
-              role: d.role === 'admin' ? 'admin' : (isFirstUser ? 'admin' : 'user'),
-              plan: d.plan || 'free',
-              planStartDate: d.planStartDate,
-              planEndDate: d.planEndDate,
-            };
-            setUserData(data);
-            try { localStorage.setItem('cachedUserData', JSON.stringify(data)); } catch {}
-          } else {
-            // Initialize new user document (1 write for brand new user creation)
-            const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
-            const newUserData: UserData = {
-              uid: currentUser.uid,
-              email: currentUser.email || '',
-              name: currentUser.displayName || '',
-              photoURL: currentUser.photoURL || '',
-              nickname: currentUser.displayName?.split(' ')[0] || 'User',
-              credits: 100,
-              unlimited: false,
-              totalProcessedImages: 0,
-              joinDate: new Date().toISOString(),
-              blocked: false,
-              role: isFirstUser ? 'admin' : 'user',
-              plan: 'free',
-            };
+          try {
+            const userRef = doc(db, 'users', currentUser.uid);
+            const docSnap = await getDoc(userRef);
             
-            await setDoc(userRef, newUserData);
-            setUserData(newUserData);
-            try { localStorage.setItem('cachedUserData', JSON.stringify(newUserData)); } catch {}
+            if (docSnap.exists()) {
+              const d = docSnap.data();
+              const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+              const serverData: UserData = {
+                uid: currentUser.uid,
+                email: d.email || currentUser.email || '',
+                name: d.name || currentUser.displayName || '',
+                photoURL: d.photoURL || currentUser.photoURL || '',
+                nickname: d.nickname || currentUser.displayName?.split(' ')[0] || 'User',
+                credits: typeof d.credits === 'number' ? d.credits : 100,
+                unlimited: !!d.unlimited,
+                totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
+                joinDate: d.joinDate || new Date().toISOString(),
+                blocked: !!d.blocked,
+                role: d.role === 'admin' ? 'admin' : (isFirstUser ? 'admin' : 'user'),
+                plan: d.plan || 'free',
+                planStartDate: d.planStartDate,
+                planEndDate: d.planEndDate,
+              };
+
+              // Update state & cache if data is changed or freshly fetched
+              setUserData(prev => {
+                // Check if different to avoid unnecessary rerenders
+                const isDifferent = !prev || 
+                  prev.credits !== serverData.credits ||
+                  prev.totalProcessedImages !== serverData.totalProcessedImages ||
+                  prev.plan !== serverData.plan ||
+                  prev.blocked !== serverData.blocked ||
+                  prev.nickname !== serverData.nickname ||
+                  prev.role !== serverData.role ||
+                  prev.unlimited !== serverData.unlimited;
+
+                if (isDifferent) {
+                  saveUserDataToCache(serverData);
+                  return serverData;
+                }
+                return prev;
+              });
+            } else {
+              // Create default doc if missing
+              const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+              const newUserData: UserData = {
+                uid: currentUser.uid,
+                email: currentUser.email || '',
+                name: currentUser.displayName || '',
+                photoURL: currentUser.photoURL || '',
+                nickname: currentUser.displayName?.split(' ')[0] || 'User',
+                credits: 100,
+                unlimited: false,
+                totalProcessedImages: 0,
+                joinDate: new Date().toISOString(),
+                blocked: false,
+                role: isFirstUser ? 'admin' : 'user',
+                plan: 'free',
+              };
+              
+              await setDoc(userRef, newUserData);
+              setUserData(newUserData);
+              saveUserDataToCache(newUserData);
+            }
+          } catch (error) {
+            console.error("Error checking user profile on reload:", error);
           }
-        } catch (error) {
-          console.error("Error fetching user profile on login:", error);
-          const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
-          const fallbackUserData: UserData = {
-            uid: currentUser.uid,
-            email: currentUser.email || '',
-            name: currentUser.displayName || '',
-            photoURL: currentUser.photoURL || '',
-            nickname: currentUser.displayName?.split(' ')[0] || 'User',
-            credits: 100,
-            unlimited: false,
-            totalProcessedImages: 0,
-            joinDate: new Date().toISOString(),
-            blocked: false,
-            role: isFirstUser ? 'admin' : 'user',
-            plan: 'free',
-          };
-          setUserData(prev => prev || fallbackUserData);
         }
       } else {
-        fetchedUidRef.current = null;
+        // User logged out: Reset current user state but keep persisted cache in localStorage
+        setUser(null);
         setUserData(null);
         setNotifications([]);
-        localStorage.removeItem('cachedUserData');
       }
       setLoading(false);
     });

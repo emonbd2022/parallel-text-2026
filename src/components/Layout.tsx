@@ -51,11 +51,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   };
 
   const handleLogout = async () => {
-    Object.keys(localStorage).forEach(key => {
-      if (!key.startsWith('firebase:')) {
-        localStorage.removeItem(key);
-      }
-    });
+    // Preserve user accounts and configurations cache in localStorage
+    // Only clear session-specific keys if necessary
     try {
       const { clearProject } = await import('../services/projectStorage');
       await clearProject();
