@@ -102,11 +102,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   });
 
-  // Guard to ensure strictly 1 real-time Firestore fetch occurs after each page reload/initial auth
-  const hasPerformedPageReloadFetchRef = useRef<boolean>(false);
+  // Guard to ensure strictly 1 real-time Firestore fetch occurs after each page reload/initial auth per UID
+  const checkedUserUidRef = useRef<string | null>(null);
   const fetchedSettingsRef = useRef<boolean>(false);
   const hasFetchedAdminNotifsRef = useRef<boolean>(false);
-  const sentSignupNotifsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (fetchedSettingsRef.current || !db) return;
@@ -195,7 +194,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
       })
       .catch((err) => {
-        console.warn("Could not load admin notifications:", err);
+        console.error("CRITICAL: Could not load admin notifications from Firestore:", err);
       });
   }, [userData?.role]);
 
@@ -217,6 +216,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
     setUserData(null);
     setNotifications([]);
+    checkedUserUidRef.current = null;
+    hasFetchedAdminNotifsRef.current = false;
+    try { sessionStorage.removeItem('adminNotifsFetched'); } catch {}
   };
 
   useEffect(() => {
@@ -229,15 +231,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(currentUser);
       
       if (currentUser) {
-        // Step 1: Immediately hydrate from cache so the user instantly sees their data
+        // Step 1: Hydrate from cache only if the cached profile explicitly matches this specific user UID
         const localCached = getUserDataFromCache(currentUser.uid);
-        if (localCached) {
+        if (localCached && localCached.uid === currentUser.uid) {
           setUserData(localCached);
         }
 
-        // Step 2: Exactly ONE real-time read after each page reload to check if user data changed in Firestore
-        if (!hasPerformedPageReloadFetchRef.current && db) {
-          hasPerformedPageReloadFetchRef.current = true;
+        // Step 2: Exactly ONE Firestore check per user session/reload
+        if (checkedUserUidRef.current !== currentUser.uid && db) {
+          checkedUserUidRef.current = currentUser.uid;
 
           try {
             const userRef = doc(db, 'users', currentUser.uid);
@@ -266,6 +268,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               // Update state & cache if data is changed or freshly fetched
               setUserData(prev => {
                 const isDifferent = !prev || 
+                  prev.uid !== serverData.uid ||
                   prev.credits !== serverData.credits ||
                   prev.totalProcessedImages !== serverData.totalProcessedImages ||
                   prev.plan !== serverData.plan ||
@@ -281,7 +284,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 return prev;
               });
             } else {
-              // Genuinely NEW user: create initial user document and admin notification atomically
+              // Genuinely NEW user: create initial user document and admin notification atomically in ONE writeBatch
               const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
               const userName = currentUser.displayName || 'User';
               const userEmail = currentUser.email || '';
@@ -315,21 +318,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 read: false,
               };
 
-              const notifKey = `signup_notif_sent_${currentUser.uid}`;
-              sentSignupNotifsRef.current.add(currentUser.uid);
-              try { localStorage.setItem(notifKey, 'true'); } catch {}
-
               // Atomic batch commit: guarantees both docs exist together without extra reads
               const batch = writeBatch(db);
               batch.set(userRef, newUserData);
               batch.set(notifRef, notifData);
               await batch.commit();
+              console.log(`[Auth] Atomically registered new user (${currentUser.uid}) and created admin notification (${notifId})`);
 
               setUserData(newUserData);
               saveUserDataToCache(newUserData);
             }
-          } catch (error) {
-            console.error("Error checking user profile on reload:", error);
+          } catch (error: any) {
+            console.error("CRITICAL: Failed to initialize new user and signup notification in Firestore:", error);
+            if (error?.code) {
+              console.error(`Firebase Error Code: ${error.code}, Message: ${error.message}`);
+            }
           }
         }
       } else {
@@ -337,6 +340,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(null);
         setUserData(null);
         setNotifications([]);
+        checkedUserUidRef.current = null;
       }
       setLoading(false);
     });
