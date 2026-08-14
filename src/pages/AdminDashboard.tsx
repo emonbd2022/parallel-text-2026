@@ -27,6 +27,7 @@ export const AdminDashboard: React.FC = () => {
   const [usersByPage, setUsersByPage] = useState<Record<number, UserData[]>>({});
   const [lastVisibleByPage, setLastVisibleByPage] = useState<Record<number, any>>({});
   const [hasMore, setHasMore] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   // Date range filter (calculated 100% locally)
   const [startDate, setStartDate] = useState<Date | null>(null);
@@ -110,7 +111,7 @@ export const AdminDashboard: React.FC = () => {
       const q = query(collection(db, 'users'), where('email', '==', searchTerm.trim()), limit(1));
       const snap = await getDocs(q);
       const res: UserData[] = [];
-      snap.forEach(d => res.push(d.data()));
+      snap.forEach(d => res.push(d.data() as UserData));
       setUsersByPage({ 1: res });
       setCurrentPage(1);
       setHasMore(false);
@@ -182,7 +183,7 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const users = usersByPage[currentPage] || [];
-  const totalSiteImages = Object.values(usersByPage).flat().reduce((acc, u) => acc + (u.totalProcessedImages || 0), 0);
+  const totalSiteImages = Object.values(usersByPage).flat().reduce((acc, u: any) => acc + (u.totalProcessedImages || 0), 0);
   
   const filteredUsers = users;
 
@@ -317,7 +318,7 @@ export const AdminDashboard: React.FC = () => {
                            <input 
                               type="text"
                               value={user.nickname || ''}
-                              onChange={(e) => setUsers(prev => prev.map(u => u.uid === user.uid ? {...u, nickname: e.target.value} : u))}
+                              onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, nickname: e.target.value} : u)}))}
                               onBlur={(e) => handleUpdateUser(user.uid, { nickname: e.target.value })}
                               className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-purple-500"
                            />
@@ -327,7 +328,7 @@ export const AdminDashboard: React.FC = () => {
                             <input 
                               type="number"
                               value={user.credits}
-                              onChange={(e) => setUsers(prev => prev.map(u => u.uid === user.uid ? {...u, credits: parseInt(e.target.value) || 0} : u))}
+                              onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, credits: parseInt(e.target.value) || 0} : u)}))}
                               onBlur={(e) => handleUpdateUser(user.uid, { credits: parseInt(e.target.value) || 0 })}
                               className="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-purple-500"
                             />

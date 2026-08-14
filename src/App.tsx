@@ -1226,7 +1226,8 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             flash_3_1_lite: Number(usage.flash_3_1_lite || 0),
             flash_3_5: Number(usage.flash_3_5 || 0),
             flash_3_5_lite: Number(usage.flash_3_5_lite || 0),
-            flash_3_6: Number(usage.flash_3_6 || 0)
+            flash_3_6: Number(usage.flash_3_6 || 0),
+            flash_3_7: Number(usage.flash_3_7 || 0)
         };
 
         // Increased limits to 10,000 to effectively disable client-side blocking
