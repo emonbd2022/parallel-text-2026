@@ -40,7 +40,7 @@ interface AuthContextType {
   setMaintenanceMode: React.Dispatch<React.SetStateAction<boolean>>;
   notifications: AppNotification[];
   setNotifications: React.Dispatch<React.SetStateAction<AppNotification[]>>;
-  deleteNotification: (id: string) => Promise<void>;
+  deleteNotification: (id: string, globalDelete?: boolean) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -97,12 +97,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
     try {
-      const stored = localStorage.getItem('localNotifications');
+      const activeUid = cachedData?.uid;
+      const stored = activeUid ? localStorage.getItem(`localNotifications_${activeUid}`) : localStorage.getItem('localNotifications');
       return stored ? JSON.parse(stored) : [];
     } catch {
       return [];
     }
   });
+
+  const notificationsRef = useRef<AppNotification[]>(notifications);
+  useEffect(() => {
+    notificationsRef.current = notifications;
+  }, [notifications]);
 
   // Guard to ensure strictly 1 real-time Firestore fetch occurs after each page reload/initial auth per UID
   const checkedUserUidRef = useRef<string | null>(null);
@@ -110,7 +116,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const hasFetchedAdminNotifsRef = useRef<boolean>(false);
 
   useEffect(() => {
-    if (fetchedSettingsRef.current || !db) return;
+    if (!user || fetchedSettingsRef.current || !db) return;
     fetchedSettingsRef.current = true;
 
     getDoc(doc(db, 'settings', 'general'))
@@ -124,7 +130,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .catch((err) => {
         console.warn("Could not check maintenance mode settings:", err);
       });
-  }, []);
+  }, [user]);
 
   // Whenever userData changes, keep cache continuously updated
   useEffect(() => {
@@ -133,17 +139,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [userData]);
 
-  // One-shot fetch admin notifications strictly once per session if user is admin
-  // Cached locally after first fetch so remounting/reopening Admin Panel never repeats query unnecessarily
+  // One-shot fetch notifications strictly once per session
   useEffect(() => {
-    if (!userData || userData.role !== 'admin' || !db || hasFetchedAdminNotifsRef.current) return;
+    if (!userData || !db || hasFetchedAdminNotifsRef.current) return;
     
     // Check session cache to avoid repeating query on route changes / component remounts
-    const sessionFetched = sessionStorage.getItem('adminNotifsFetched') === 'true';
+    const sessionKey = `notifsFetched_${userData.uid}`;
+    const sessionFetched = sessionStorage.getItem(sessionKey) === 'true';
     if (sessionFetched) {
       hasFetchedAdminNotifsRef.current = true;
       try {
-        const cached = localStorage.getItem('cachedAdminNotifs');
+        const cached = localStorage.getItem(`cachedNotifs_${userData.uid}`) || localStorage.getItem('cachedNotifs');
         if (cached) {
           const parsed = JSON.parse(cached);
           if (Array.isArray(parsed) && parsed.length > 0) {
@@ -155,91 +161,143 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     hasFetchedAdminNotifsRef.current = true;
-    try { sessionStorage.setItem('adminNotifsFetched', 'true'); } catch {}
+    try { sessionStorage.setItem(sessionKey, 'true'); } catch {}
 
-    const notifsQuery = query(
-      collection(db, 'notifications'),
-      where('targetUid', '==', 'admin'),
-      orderBy('createdAt', 'desc'),
-      limit(20)
-    );
+    const queries = [];
+    
+    if (userData.role === 'admin') {
+      queries.push(query(
+        collection(db, 'notifications'),
+        where('targetUid', '==', 'admin'),
+        orderBy('createdAt', 'desc'),
+        limit(5)
+      ));
+    }
+    
+    queries.push(query(
+        collection(db, 'notifications'),
+        where('targetUid', '==', 'all'),
+        orderBy('createdAt', 'desc'),
+        limit(5)
+    ));
 
-    getDocs(notifsQuery)
-      .then((snap) => {
-        const readIds: string[] = JSON.parse(localStorage.getItem('readNotifs') || '[]');
-        const fetchedNotifs: AppNotification[] = snap.docs.map(d => {
-          const data = d.data();
-          const notifId = data.id || d.id;
-          return {
-            id: notifId,
-            targetUid: data.targetUid || 'admin',
-            type: data.type || 'signup',
-            message: data.message || `New User Signup\nName: ${data.userName || 'User'}\nEmail: ${data.userEmail || ''}`,
-            userName: data.userName,
-            userEmail: data.userEmail,
-            createdAt: data.createdAt || new Date().toISOString(),
-            read: readIds.includes(notifId) || data.read === true
-          };
+    Promise.all(queries.map(q => getDocs(q).catch(e => {
+        console.error("Failed to fetch notification query:", e);
+        return { docs: [] };
+    })))
+      .then((results) => {
+        const dismissedGlobal: string[] = JSON.parse(localStorage.getItem(`dismissedGlobalNotifs_${userData.uid}`) || '[]');
+        
+        let allFetched: AppNotification[] = [];
+        results.forEach(snap => {
+            snap.docs.forEach(d => {
+                const data = d.data();
+                const notifId = data.id || d.id;
+                // Exclude if it's a global notification that user already dismissed
+                if (data.targetUid === 'all' && dismissedGlobal.includes(notifId)) return;
+                
+                allFetched.push({
+                    id: notifId,
+                    targetUid: data.targetUid || 'admin',
+                    type: data.type || 'signup',
+                    message: data.message || `New User Signup\nName: ${data.userName || 'User'}\nEmail: ${data.userEmail || ''}`,
+                    userName: data.userName,
+                    userEmail: data.userEmail,
+                    createdAt: data.createdAt || new Date().toISOString(),
+                    read: data.read === true
+                });
+            });
         });
 
         setNotifications(prev => {
           const existingIds = new Set(prev.map(p => p.id));
           const combined = [...prev];
-          fetchedNotifs.forEach(fn => {
+          allFetched.forEach(fn => {
             if (!existingIds.has(fn.id)) {
               combined.push(fn);
             }
           });
           const sorted = combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-          try { localStorage.setItem('cachedAdminNotifs', JSON.stringify(sorted)); } catch {}
+          try { 
+            localStorage.setItem(`cachedNotifs_${userData.uid}`, JSON.stringify(sorted));
+            localStorage.setItem(`localNotifications_${userData.uid}`, JSON.stringify(sorted));
+          } catch {}
           return sorted;
         });
       })
       .catch((err) => {
-        console.error("CRITICAL: Could not load admin notifications from Firestore:", err);
+        console.error("CRITICAL: Could not load notifications from Firestore:", err);
       });
-  }, [userData?.role]);
+  }, [userData]);
 
   useEffect(() => {
     try {
-      localStorage.setItem('localNotifications', JSON.stringify(notifications));
+      if (userData?.uid) {
+        localStorage.setItem(`localNotifications_${userData.uid}`, JSON.stringify(notifications));
+      }
     } catch {}
-  }, [notifications]);
+  }, [notifications, userData]);
 
   const deletingNotifIdsRef = useRef<Set<string>>(new Set());
 
-  const deleteNotification = async (id: string) => {
-    if (!id || deletingNotifIdsRef.current.has(id)) return;
-    deletingNotifIdsRef.current.add(id);
+  const deleteNotification = async (id: string, globalDelete: boolean = false) => {
+    if (!id) return;
+    // If it's a global delete, we bypass the ref check because it might have been dismissed locally first
+    if (!globalDelete && deletingNotifIdsRef.current.has(id)) return;
+    if (!globalDelete) deletingNotifIdsRef.current.add(id);
+
+    // Get the targetUid of the notification being deleted to know how to handle it
+    const targetNotif = notificationsRef.current.find(n => n.id === id);
+    const isGlobal = targetNotif ? targetNotif.targetUid === 'all' : id.startsWith('global_');
 
     // 1. Immediately remove from React state & local caches
     setNotifications(prev => {
       const updated = prev.filter(n => n.id !== id);
       try {
-        localStorage.setItem('localNotifications', JSON.stringify(updated));
-        localStorage.setItem('cachedAdminNotifs', JSON.stringify(updated));
+        if (userData?.uid) {
+          localStorage.setItem(`localNotifications_${userData.uid}`, JSON.stringify(updated));
+          localStorage.setItem(`cachedNotifs_${userData.uid}`, JSON.stringify(updated));
+        }
       } catch {}
       return updated;
     });
 
-    // 2. Direct clean up of cachedAdminNotifs in localStorage
+    // 2. Direct clean up of cachedNotifs in localStorage
     try {
-      const cached = localStorage.getItem('cachedAdminNotifs');
-      if (cached) {
-        const parsed: AppNotification[] = JSON.parse(cached);
-        const filtered = parsed.filter(n => n.id !== id);
-        localStorage.setItem('cachedAdminNotifs', JSON.stringify(filtered));
+      if (userData?.uid) {
+        const cached = localStorage.getItem(`cachedNotifs_${userData.uid}`);
+        if (cached) {
+          const parsed: AppNotification[] = JSON.parse(cached);
+          const filtered = parsed.filter(n => n.id !== id);
+          localStorage.setItem(`cachedNotifs_${userData.uid}`, JSON.stringify(filtered));
+        }
       }
     } catch {}
 
-    // 3. Single explicit deleteDoc() operation in Firestore
+    // 3. Handle Global Notifications (Dismiss locally vs Delete globally)
+    if (isGlobal && !globalDelete) {
+        // Just hide it locally
+        if (userData?.uid) {
+            try {
+                const key = `dismissedGlobalNotifs_${userData.uid}`;
+                const dismissed: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+                if (!dismissed.includes(id)) {
+                    dismissed.push(id);
+                    localStorage.setItem(key, JSON.stringify(dismissed));
+                }
+            } catch {}
+        }
+        // Keep it in deletingNotifIdsRef so duplicate calls don't accidentally reach Step 4
+        return; // Do NOT delete from Firestore!
+    }
+
+    // 4. Single explicit deleteDoc() operation in Firestore for admin/globally-deleted ones
     if (db) {
       try {
         await deleteDoc(doc(db, 'notifications', id));
         console.log(`[Notification] Explicitly deleted viewed notification from Firestore: notifications/${id}`);
       } catch (err: any) {
         console.error(`[Notification] Failed to delete notification notifications/${id} from Firestore:`, err);
-        // Allow retry if deletion failed due to transient network error
         deletingNotifIdsRef.current.delete(id);
       }
     }
@@ -259,7 +317,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setNotifications([]);
     checkedUserUidRef.current = null;
     hasFetchedAdminNotifsRef.current = false;
-    try { sessionStorage.removeItem('adminNotifsFetched'); } catch {}
+    try { 
+      sessionStorage.removeItem('adminNotifsFetched'); 
+      sessionStorage.removeItem('notifsFetched');
+      if (userData?.uid) {
+        sessionStorage.removeItem(`notifsFetched_${userData.uid}`);
+      }
+    } catch {}
   };
 
   useEffect(() => {

@@ -19,12 +19,21 @@ try {
   if (firebaseConfig.apiKey) {
     app = initializeApp(firebaseConfig);
     const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
+    const firestoreSettings = {
+      experimentalAutoDetectLongPolling: false,
+      experimentalForceLongPolling: true,
+      experimentalLongPolling: {
+        useFetchStreams: false,
+      },
+    };
     try {
-      db = initializeFirestore(app, {
-        experimentalAutoDetectLongPolling: true,
-      }, dbId);
+      db = dbId ? initializeFirestore(app, firestoreSettings, dbId) : initializeFirestore(app, firestoreSettings);
     } catch {
-      db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+      try {
+        db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+      } catch (e) {
+        console.error("Firestore initialization fallback error", e);
+      }
     }
     auth = getAuth(app);
   }

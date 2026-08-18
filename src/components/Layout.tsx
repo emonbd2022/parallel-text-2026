@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, AppNotification } from '../contexts/AuthContext';
 import { logout } from '../lib/firebase';
-import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell, Upload, UserPlus, HelpCircle } from 'lucide-react';
+import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell, Upload, UserPlus, HelpCircle, Info, AlertTriangle, CheckCircle } from 'lucide-react';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { userData, loading, maintenanceMode, notifications, deleteNotification } = useAuth();
@@ -144,9 +144,15 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                             <div className="flex items-start justify-between gap-3">
                               <div className="space-y-1 flex-1">
                                 <div className="flex items-center justify-between gap-1.5">
-                                  <div className="flex items-center gap-1.5 text-xs font-semibold text-purple-400">
-                                    <UserPlus className="w-3.5 h-3.5" />
-                                    <span>New User Signup</span>
+                                  <div className={`flex items-center gap-1.5 text-xs font-semibold ${n.targetUid === 'all' ? (n.type === 'warning' ? 'text-amber-400' : n.type === 'success' ? 'text-emerald-400' : 'text-blue-400') : 'text-purple-400'}`}>
+                                    {n.targetUid === 'all' ? (
+                                      n.type === 'warning' ? <AlertTriangle className="w-3.5 h-3.5" /> :
+                                      n.type === 'success' ? <CheckCircle className="w-3.5 h-3.5" /> :
+                                      <Info className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <UserPlus className="w-3.5 h-3.5" />
+                                    )}
+                                    <span>{n.targetUid === 'all' ? n.userName || 'Global Notice' : 'New User Signup'}</span>
                                   </div>
                                   <span className="text-[10px] text-purple-300 font-medium px-1.5 py-0.5 rounded bg-purple-500/20 group-hover:bg-purple-500/30 transition-colors">
                                     View
@@ -264,11 +270,25 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       {/* Viewed Notification Detail Modal */}
       {viewingNotification && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[10000] flex items-center justify-center p-4 animate-in fade-in duration-150">
-          <div className="bg-slate-900 border border-purple-500/30 rounded-2xl p-6 max-w-md w-full shadow-[0_20px_60px_-15px_rgba(168,85,247,0.3)] space-y-4">
+          <div className={`bg-slate-900 border rounded-2xl p-6 max-w-md w-full space-y-4 ${
+            viewingNotification.targetUid === 'all' 
+              ? (viewingNotification.type === 'warning' ? 'border-amber-500/30 shadow-[0_20px_60px_-15px_rgba(245,158,11,0.3)]' : viewingNotification.type === 'success' ? 'border-emerald-500/30 shadow-[0_20px_60px_-15px_rgba(16,185,129,0.3)]' : 'border-blue-500/30 shadow-[0_20px_60px_-15px_rgba(59,130,246,0.3)]')
+              : 'border-purple-500/30 shadow-[0_20px_60px_-15px_rgba(168,85,247,0.3)]'
+          }`}>
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2 text-purple-400 font-bold">
-                <UserPlus className="w-5 h-5" />
-                <span>New User Registration</span>
+              <div className={`flex items-center gap-2 font-bold ${
+                viewingNotification.targetUid === 'all' 
+                  ? (viewingNotification.type === 'warning' ? 'text-amber-400' : viewingNotification.type === 'success' ? 'text-emerald-400' : 'text-blue-400')
+                  : 'text-purple-400'
+              }`}>
+                {viewingNotification.targetUid === 'all' ? (
+                  viewingNotification.type === 'warning' ? <AlertTriangle className="w-5 h-5" /> :
+                  viewingNotification.type === 'success' ? <CheckCircle className="w-5 h-5" /> :
+                  <Info className="w-5 h-5" />
+                ) : (
+                  <UserPlus className="w-5 h-5" />
+                )}
+                <span>{viewingNotification.targetUid === 'all' ? viewingNotification.userName || 'Global Notice' : 'New User Registration'}</span>
               </div>
               <button
                 onClick={() => setViewingNotification(null)}
@@ -277,34 +297,66 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="bg-slate-950/80 rounded-xl p-4 border border-slate-800/80 space-y-2.5 text-sm">
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Name:</span>
-                <span className="text-white font-medium">{viewingNotification.userName || 'User'}</span>
+            
+            {viewingNotification.targetUid === 'all' ? (
+              <div className="bg-slate-950/80 rounded-xl p-4 border border-slate-800/80 space-y-2.5 text-sm">
+                <div className="whitespace-pre-line text-slate-200 leading-relaxed">
+                  {viewingNotification.message}
+                </div>
+                <div className="text-[10px] text-slate-400 pt-2 border-t border-slate-800/50 mt-2">
+                  Posted: {new Date(viewingNotification.createdAt).toLocaleString()}
+                </div>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Email:</span>
-                <span className="text-purple-300 font-mono text-xs">{viewingNotification.userEmail || 'N/A'}</span>
+            ) : (
+              <div className="bg-slate-950/80 rounded-xl p-4 border border-slate-800/80 space-y-2.5 text-sm">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Name:</span>
+                  <span className="text-white font-medium">{viewingNotification.userName || 'User'}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Email:</span>
+                  <span className="text-purple-300 font-mono text-xs">{viewingNotification.userEmail || 'N/A'}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Registered:</span>
+                  <span className="text-slate-300 text-xs">{new Date(viewingNotification.createdAt).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Starting Credits:</span>
+                  <span className="text-emerald-400 font-medium">100 Credits</span>
+                </div>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Registered:</span>
-                <span className="text-slate-300 text-xs">{new Date(viewingNotification.createdAt).toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Starting Credits:</span>
-                <span className="text-emerald-400 font-medium">100 Credits</span>
-              </div>
-            </div>
+            )}
+            
             <div className="text-[11px] text-slate-400 text-center">
-              This notification has been viewed and deleted from Firestore.
+              {viewingNotification.targetUid === 'all' ? 'This notification has been dismissed locally.' : 'This notification has been viewed and deleted from Firestore.'}
             </div>
+            
             <div className="flex justify-end pt-1">
-              <button
-                onClick={() => setViewingNotification(null)}
-                className="w-full py-2.5 px-4 bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-500 hover:to-emerald-500 text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-purple-900/30"
-              >
-                Done
-              </button>
+              <div className="w-full flex gap-2">
+                {userData?.role === 'admin' && viewingNotification.targetUid === 'all' && (
+                  <button
+                    onClick={async () => {
+                      await deleteNotification(viewingNotification.id, true);
+                      setViewingNotification(null);
+                    }}
+                    className="py-2.5 px-4 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-red-900/30 shrink-0"
+                    title="Delete permanently from Firestore for all users"
+                  >
+                    Delete Globally
+                  </button>
+                )}
+                <button
+                  onClick={() => setViewingNotification(null)}
+                  className={`flex-1 py-2.5 px-4 text-white rounded-xl font-bold text-sm transition-all shadow-md ${
+                    viewingNotification.targetUid === 'all' 
+                      ? (viewingNotification.type === 'warning' ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-900/30' : viewingNotification.type === 'success' ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-900/30' : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/30')
+                      : 'bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-500 hover:to-emerald-500 shadow-purple-900/30'
+                  }`}
+                >
+                  Done
+                </button>
+              </div>
             </div>
           </div>
         </div>

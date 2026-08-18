@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Calendar, Trash2, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
+import { Shield, Search, RefreshCw, Calendar, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle } from 'lucide-react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
@@ -32,6 +32,11 @@ export const AdminDashboard: React.FC = () => {
   const [showStats, setShowStats] = useState(false);
   
   // Clean Data Modal & Execution State
+  const [globalNotifModalOpen, setGlobalNotifModalOpen] = useState(false);
+  const [globalNotifTitle, setGlobalNotifTitle] = useState('');
+  const [globalNotifMessage, setGlobalNotifMessage] = useState('');
+  const [globalNotifType, setGlobalNotifType] = useState('info');
+  const [sendingNotif, setSendingNotif] = useState(false);
   const [cleanModalOpen, setCleanModalOpen] = useState(false);
   const [cleanProgress, setCleanProgress] = useState<{ total: number; current: number; status: 'idle' | 'running' | 'done' | 'error'; message: string }>({
     total: 0,
@@ -52,6 +57,31 @@ export const AdminDashboard: React.FC = () => {
       }
     } catch {}
   }, [usersByPage]);
+
+  const handleSendGlobalNotification = async () => {
+    if (!globalNotifMessage.trim()) return;
+    setSendingNotif(true);
+    try {
+      const notifId = 'global_' + Date.now() + '_' + Math.random().toString(36).substring(2,9);
+      await setDoc(doc(db, 'notifications', notifId), {
+        id: notifId,
+        targetUid: 'all',
+        type: globalNotifType,
+        userName: globalNotifTitle || 'Global Notice',
+        message: globalNotifMessage,
+        createdAt: new Date().toISOString(),
+        read: false
+      });
+      setGlobalNotifModalOpen(false);
+      setGlobalNotifTitle('');
+      setGlobalNotifMessage('');
+    } catch (e) {
+      console.error("Failed to send global notification:", e);
+      alert("Failed to send notification.");
+    } finally {
+      setSendingNotif(false);
+    }
+  };
 
   const toggleMaintenance = async () => {
     const newMode = !maintenanceMode;
@@ -302,6 +332,15 @@ export const AdminDashboard: React.FC = () => {
           </h1>
           
           <div className="flex flex-wrap items-center gap-4">
+            <button
+              onClick={() => setGlobalNotifModalOpen(true)}
+              className="flex items-center gap-2 bg-purple-950/40 hover:bg-purple-900/60 border border-purple-800/80 rounded-xl px-4 py-2 text-sm font-bold text-purple-300 transition-colors shadow-lg"
+              title="Broadcast a global announcement to all users"
+            >
+              <Bell className="w-4 h-4 text-purple-400" />
+              Send Notification
+            </button>
+
             <button
               onClick={() => fetchPage(currentPage, true)}
               className="flex items-center gap-2 bg-slate-900/50 hover:bg-slate-800 border border-slate-800 rounded-xl px-4 py-2 text-sm font-bold text-slate-300 transition-colors"
@@ -589,7 +628,7 @@ export const AdminDashboard: React.FC = () => {
                 </div>
               )}
 
-              <div className="flex gap-3 justify-end">
+               <div className="flex gap-3 justify-end">
                  <button 
                    onClick={() => {
                      setCleanModalOpen(false);
@@ -621,6 +660,135 @@ export const AdminDashboard: React.FC = () => {
                  )}
               </div>
            </div>
+        </div>
+      )}
+
+      {/* Global Notification Composer Modal */}
+      {globalNotifModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5 text-purple-400 font-bold text-lg">
+                <Bell className="w-5 h-5" />
+                <span>Send Global Notification</span>
+              </div>
+              <button
+                onClick={() => setGlobalNotifModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Type / Category Selector */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">Notification Category</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: 'info', label: 'Info', icon: Info, color: 'text-blue-400 border-blue-500/40 bg-blue-950/30' },
+                    { id: 'warning', label: 'Warning', icon: AlertTriangle, color: 'text-amber-400 border-amber-500/40 bg-amber-950/30' },
+                    { id: 'success', label: 'Success', icon: CheckCircle, color: 'text-emerald-400 border-emerald-500/40 bg-emerald-950/30' },
+                  ].map(t => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setGlobalNotifType(t.id)}
+                      className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
+                        globalNotifType === t.id
+                          ? `${t.color} ring-1 ring-white/20 shadow-md`
+                          : 'border-slate-800 bg-slate-950/50 text-slate-400 hover:bg-slate-800/50'
+                      }`}
+                    >
+                      <t.icon className="w-3.5 h-3.5" />
+                      <span>{t.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Title input */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                  Notification Title <span className="text-slate-500 font-normal">(Optional)</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. System Update, Maintenance Notice..."
+                  value={globalNotifTitle}
+                  onChange={(e) => setGlobalNotifTitle(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 outline-none focus:border-purple-500 transition-colors"
+                />
+              </div>
+
+              {/* Message input */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                  Notification Message <span className="text-rose-400">*</span>
+                </label>
+                <textarea
+                  rows={4}
+                  placeholder="Write your announcement to all users here..."
+                  value={globalNotifMessage}
+                  onChange={(e) => setGlobalNotifMessage(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3.5 text-sm text-slate-200 outline-none focus:border-purple-500 transition-colors custom-scrollbar resize-none leading-relaxed"
+                />
+              </div>
+
+              {/* Live Preview */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">Live User Preview</label>
+                <div className="p-3.5 rounded-xl border border-slate-800 bg-gradient-to-r from-purple-900/30 to-emerald-900/10 shadow-[inset_3px_0_0_0_#a855f7]">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className={`flex items-center gap-1.5 text-xs font-semibold ${
+                      globalNotifType === 'warning' ? 'text-amber-400' : globalNotifType === 'success' ? 'text-emerald-400' : 'text-blue-400'
+                    }`}>
+                      {globalNotifType === 'warning' ? <AlertTriangle className="w-3.5 h-3.5" /> : globalNotifType === 'success' ? <CheckCircle className="w-3.5 h-3.5" /> : <Info className="w-3.5 h-3.5" />}
+                      <span>{globalNotifTitle.trim() || 'Global Notice'}</span>
+                    </div>
+                    <span className="text-[10px] text-purple-300 font-medium px-1.5 py-0.5 rounded bg-purple-500/20">
+                      View
+                    </span>
+                  </div>
+                  <div className="text-xs text-purple-50 leading-relaxed whitespace-pre-line">
+                    {globalNotifMessage.trim() || 'Your notification text will appear here...'}
+                  </div>
+                  <div className="text-[10px] text-slate-500 pt-1.5 mt-1.5 border-t border-slate-800/50">
+                    Just now • Target: All Users (1 document)
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 justify-end pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setGlobalNotifModalOpen(false)}
+                disabled={sendingNotif}
+                className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl hover:bg-slate-700 font-semibold text-sm transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSendGlobalNotification}
+                disabled={sendingNotif || !globalNotifMessage.trim()}
+                className="px-5 py-2 bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-500 hover:to-emerald-500 text-white rounded-xl font-bold text-sm flex items-center gap-2 transition-all shadow-lg shadow-purple-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {sendingNotif ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    Send to All Users
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </motion.div>
