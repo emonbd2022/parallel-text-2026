@@ -329,7 +329,9 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             )}
             
             <div className="text-[11px] text-slate-400 text-center">
-              {viewingNotification.targetUid === 'all' ? 'This notification has been dismissed locally.' : 'This notification has been viewed and deleted from Firestore.'}
+              {viewingNotification.targetUid === 'all' 
+                ? (userData?.role === 'admin' ? 'Global announcement • Active on server' : 'Marked as viewed and removed from your notification panel.') 
+                : 'New user registration alert • Viewed'}
             </div>
             
             <div className="flex justify-end pt-1">

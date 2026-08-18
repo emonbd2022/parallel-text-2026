@@ -1,15 +1,18 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection } from 'firebase/firestore';
+import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { useAuth, UserData } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Calendar, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle } from 'lucide-react';
+import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
+import { Shield, Search, RefreshCw, Calendar, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare } from 'lucide-react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
 export const AdminDashboard: React.FC = () => {
-  const { userData: currentAdmin, maintenanceMode, setMaintenanceMode } = useAuth();
+  const { userData: currentAdmin, maintenanceMode, setMaintenanceMode, notifications, setNotifications, deleteNotification } = useAuth();
   
+  // Dashboard Tabs: 'users' | 'notifications'
+  const [activeTab, setActiveTab] = useState<'users' | 'notifications'>('users');
+
   // Cache pages in sessionStorage so navigating away and returning costs 0 Firestore reads
   const getInitialUsersCache = (): Record<number, UserData[]> => {
     try {
@@ -45,6 +48,56 @@ export const AdminDashboard: React.FC = () => {
     message: ''
   });
 
+  // Server Notification Management State
+  const [serverNotifications, setServerNotifications] = useState<AppNotification[]>(notifications || []);
+  const [loadingNotifs, setLoadingNotifs] = useState(false);
+  const [notifFilter, setNotifFilter] = useState<'all' | 'global' | 'signups'>('all');
+  const [deletingNotifId, setDeletingNotifId] = useState<string | null>(null);
+  const [viewingAdminNotif, setViewingAdminNotif] = useState<AppNotification | null>(null);
+
+  // Keep serverNotifications in sync with context notifications
+  useEffect(() => {
+    if (notifications) {
+      setServerNotifications(notifications);
+    }
+  }, [notifications]);
+
+  // Fetch all active notifications directly from server
+  const fetchServerNotifications = async () => {
+    if (!db) return;
+    setLoadingNotifs(true);
+    try {
+      const q = query(collection(db, 'notifications'), orderBy('createdAt', 'desc'), limit(25));
+      const snap = await getDocs(q);
+      const list: AppNotification[] = [];
+      snap.forEach(d => list.push(d.data() as AppNotification));
+      setServerNotifications(list);
+      setNotifications(list);
+    } catch (e) {
+      console.error("Error fetching notifications from server:", e);
+    } finally {
+      setLoadingNotifs(false);
+    }
+  };
+
+  // Delete notification from server (Admin action)
+  const handleDeleteServerNotif = async (id: string) => {
+    if (!id) return;
+    setDeletingNotifId(id);
+    try {
+      await deleteNotification(id, true);
+      setServerNotifications(prev => prev.filter(n => n.id !== id));
+      if (viewingAdminNotif?.id === id) {
+        setViewingAdminNotif(null);
+      }
+    } catch (e) {
+      console.error("Failed to delete notification from server:", e);
+      alert("Failed to delete notification from server.");
+    } finally {
+      setDeletingNotifId(null);
+    }
+  };
+
   // Guard against duplicate in-flight requests and StrictMode double-mount executions
   const isFetchingRef = useRef(false);
   const initialFetchAttemptedRef = useRef(false);
@@ -63,7 +116,7 @@ export const AdminDashboard: React.FC = () => {
     setSendingNotif(true);
     try {
       const notifId = 'global_' + Date.now() + '_' + Math.random().toString(36).substring(2,9);
-      await setDoc(doc(db, 'notifications', notifId), {
+      const newNotif: AppNotification = {
         id: notifId,
         targetUid: 'all',
         type: globalNotifType,
@@ -71,7 +124,10 @@ export const AdminDashboard: React.FC = () => {
         message: globalNotifMessage,
         createdAt: new Date().toISOString(),
         read: false
-      });
+      };
+      await setDoc(doc(db, 'notifications', notifId), newNotif);
+      setServerNotifications(prev => [newNotif, ...prev.filter(n => n.id !== notifId)]);
+      setNotifications(prev => [newNotif, ...prev.filter(n => n.id !== notifId)]);
       setGlobalNotifModalOpen(false);
       setGlobalNotifTitle('');
       setGlobalNotifMessage('');
@@ -391,155 +447,396 @@ export const AdminDashboard: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl relative">
-          <div className="flex justify-between items-center mb-6">
-            <div className="flex-1 flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800 mr-4">
-              <Search className="w-5 h-5 text-slate-500 ml-2" />
-              <input 
-                type="text" 
-                placeholder="Exact Email Search..." 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                className="bg-transparent border-none outline-none text-slate-200 w-full py-1"
-              />
-              <button 
-                onClick={handleSearch}
-                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 rounded-lg transition-colors"
-              >
-                Search DB
-              </button>
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-800 text-slate-400 text-sm">
-                  <th className="pb-3 font-semibold w-16">Rank</th>
-                  <th className="pb-3 font-semibold w-1/4">User</th>
-                  <th className="pb-3 font-semibold">Nickname</th>
-                  <th className="pb-3 font-semibold">Credits</th>
-                  <th className="pb-3 font-semibold">Plan & Validity</th>
-                  <th className="pb-3 font-semibold">Processed</th>
-                  <th className="pb-3 font-semibold">Avg/Day</th>
-                  <th className="pb-3 font-semibold">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {loading ? (
-                  <tr><td colSpan={8} className="py-8 text-center text-slate-500">Loading users...</td></tr>
-                ) : filteredUsers.length === 0 ? (
-                  <tr><td colSpan={8} className="py-8 text-center text-slate-500">No users found.</td></tr>
-                ) : (
-                  filteredUsers.map((user, index) => {
-                        const rank = (currentPage - 1) * 5 + index + 1;
-                        let avgPerDay = 0;
-                        if (user.joinDate) {
-                          const joinDate = new Date(user.joinDate);
-                          const days = Math.max(1, Math.floor((Date.now() - joinDate.getTime()) / (1000 * 60 * 60 * 24)));
-                          avgPerDay = Math.round((user.totalProcessedImages || 0) / days);
-                        }
-                        return (
-                      <tr key={user.uid} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="py-4 font-bold text-slate-400">#{rank}</td>
-                        <td className="py-4">
-                          <div className="flex items-center gap-3">
-                            <img src={user.photoURL || 'https://via.placeholder.com/32'} alt="" className="w-8 h-8 rounded-full" />
-                            <div>
-                              <div className="font-medium text-slate-200">{user.name || 'User'}</div>
-                              <div className="text-xs text-slate-500">{user.email}</div>
-                            </div>
-                          </div>
-                        </td>
-                        
-                        <td className="py-4 text-slate-300">
-                           <input 
-                              type="text" 
-                              value={user.nickname || ''}
-                              onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, nickname: e.target.value} : u)}))}
-                              onBlur={(e) => handleUpdateUser(user.uid, { nickname: e.target.value })}
-                              className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-purple-500"
-                           />
-                        </td>
-                        
-                        <td className="py-4 text-slate-300 font-mono">
-                            <input 
-                              type="number" 
-                              value={user.credits}
-                              onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, credits: parseInt(e.target.value) || 0} : u)}))}
-                              onBlur={(e) => handleUpdateUser(user.uid, { credits: parseInt(e.target.value) || 0 })}
-                              className="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-purple-500"
-                            />
-                        </td>
-                        
-                        <td className="py-4">
-                           <div className="flex flex-col gap-1">
-                            <select
-                              value={user.plan || (user.unlimited ? 'unlimited' : (user.credits >= 5000 ? 'pro' : 'free'))}
-                              onChange={(e) => handlePlanChange(user.uid, e.target.value)}
-                              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none text-slate-200 capitalize w-28"
-                            >
-                              <option value="free">Free</option>
-                              <option value="starter">Starter</option>
-                              <option value="pro">Pro</option>
-                              <option value="elite">Elite</option>
-                              <option value="unlimited">Unlimited</option>
-                            </select>
-                            {user.plan && user.plan !== 'free' && user.planStartDate && (
-                                <span className="text-[10px] text-slate-500">
-                                   From: {new Date(user.planStartDate).toLocaleDateString()}
-                                </span>
-                            )}
-                           </div>
-                        </td>
-                        
-                        <td className="py-4 font-bold text-white">
-                          {(user.totalProcessedImages || 0).toLocaleString()}
-                        </td>
-                        <td className="py-4 text-emerald-400 font-medium">
-                          {avgPerDay.toLocaleString()}/d
-                        </td>
-                        
-                        <td className="py-4">
-                            <label className="flex items-center gap-2 cursor-pointer">
-                              <input 
-                                type="checkbox" 
-                                checked={user.blocked || false}
-                                onChange={(e) => handleUpdateUser(user.uid, { blocked: e.target.checked })}
-                                disabled={user.uid === currentAdmin?.uid}
-                                className="w-4 h-4 accent-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                              />
-                              <span className="text-sm text-slate-400">{user.blocked ? <span className="text-red-400">Blocked</span> : <span className="text-emerald-400">Active</span>}</span>
-                            </label>
-                        </td>
-                      </tr>
-                  );
-                })
-                )}
-              </tbody>
-            </table>
-          </div>
-          {!searchTerm && (
-            <div className="flex justify-center mt-6 items-center gap-4">
-                <button 
-                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                  disabled={currentPage === 1 || loading}
-                  className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-sm text-slate-300 transition-colors disabled:opacity-50"
-                >
-                    Previous
-                </button>
-                <span className="text-slate-400 text-sm font-bold">Page {currentPage}</span>
-                <button 
-                  onClick={() => setCurrentPage(p => p + 1)}
-                  disabled={users.length < 5 || loading}
-                  className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-sm text-slate-300 transition-colors disabled:opacity-50"
-                >
-                    Next
-                </button>
-            </div>
-          )}
-
+        {/* Navigation Tabs */}
+        <div className="flex border-b border-slate-800 gap-2 sm:gap-6 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`flex items-center gap-2.5 pb-3 px-1 font-bold text-sm transition-all border-b-2 whitespace-nowrap ${
+              activeTab === 'users'
+                ? 'border-purple-500 text-purple-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            <span>User Management</span>
+          </button>
+          
+          <button
+            onClick={() => {
+              setActiveTab('notifications');
+              if (serverNotifications.length === 0) {
+                fetchServerNotifications();
+              }
+            }}
+            className={`flex items-center gap-2.5 pb-3 px-1 font-bold text-sm transition-all border-b-2 whitespace-nowrap ${
+              activeTab === 'notifications'
+                ? 'border-purple-500 text-purple-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            <span>Notification Center</span>
+            {serverNotifications.length > 0 && (
+              <span className="px-2 py-0.5 text-xs rounded-full bg-purple-500/20 text-purple-300 font-mono font-bold">
+                {serverNotifications.length}
+              </span>
+            )}
+          </button>
         </div>
+
+        {/* TAB 1: USER MANAGEMENT */}
+        {activeTab === 'users' && (
+          <div className="space-y-6">
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl relative">
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex-1 flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800 mr-4">
+                  <Search className="w-5 h-5 text-slate-500 ml-2" />
+                  <input 
+                    type="text" 
+                    placeholder="Exact Email Search..." 
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    className="bg-transparent border-none outline-none text-slate-200 w-full py-1"
+                  />
+                  <button 
+                    onClick={handleSearch}
+                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 rounded-lg transition-colors"
+                  >
+                    Search DB
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400 text-sm">
+                      <th className="pb-3 font-semibold w-16">Rank</th>
+                      <th className="pb-3 font-semibold w-1/4">User</th>
+                      <th className="pb-3 font-semibold">Nickname</th>
+                      <th className="pb-3 font-semibold">Credits</th>
+                      <th className="pb-3 font-semibold">Plan & Validity</th>
+                      <th className="pb-3 font-semibold">Processed</th>
+                      <th className="pb-3 font-semibold">Avg/Day</th>
+                      <th className="pb-3 font-semibold">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {loading ? (
+                      <tr><td colSpan={8} className="py-8 text-center text-slate-500">Loading users...</td></tr>
+                    ) : filteredUsers.length === 0 ? (
+                      <tr><td colSpan={8} className="py-8 text-center text-slate-500">No users found.</td></tr>
+                    ) : (
+                      filteredUsers.map((user, index) => {
+                            const rank = (currentPage - 1) * 5 + index + 1;
+                            let avgPerDay = 0;
+                            if (user.joinDate) {
+                              const joinDate = new Date(user.joinDate);
+                              const days = Math.max(1, Math.floor((Date.now() - joinDate.getTime()) / (1000 * 60 * 60 * 24)));
+                              avgPerDay = Math.round((user.totalProcessedImages || 0) / days);
+                            }
+                            return (
+                          <tr key={user.uid} className="hover:bg-slate-800/30 transition-colors">
+                            <td className="py-4 font-bold text-slate-400">#{rank}</td>
+                            <td className="py-4">
+                              <div className="flex items-center gap-3">
+                                <img src={user.photoURL || 'https://via.placeholder.com/32'} alt="" className="w-8 h-8 rounded-full" />
+                                <div>
+                                  <div className="font-medium text-slate-200">{user.name || 'User'}</div>
+                                  <div className="text-xs text-slate-500">{user.email}</div>
+                                </div>
+                              </div>
+                            </td>
+                            
+                            <td className="py-4 text-slate-300">
+                               <input 
+                                  type="text" 
+                                  value={user.nickname || ''}
+                                  onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, nickname: e.target.value} : u)}))}
+                                  onBlur={(e) => handleUpdateUser(user.uid, { nickname: e.target.value })}
+                                  className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-purple-500"
+                               />
+                            </td>
+                            
+                            <td className="py-4 text-slate-300 font-mono">
+                                <input 
+                                  type="number" 
+                                  value={user.credits}
+                                  onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, credits: parseInt(e.target.value) || 0} : u)}))}
+                                  onBlur={(e) => handleUpdateUser(user.uid, { credits: parseInt(e.target.value) || 0 })}
+                                  className="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-purple-500"
+                                />
+                            </td>
+                            
+                            <td className="py-4">
+                               <div className="flex flex-col gap-1">
+                                <select
+                                  value={user.plan || (user.unlimited ? 'unlimited' : (user.credits >= 5000 ? 'pro' : 'free'))}
+                                  onChange={(e) => handlePlanChange(user.uid, e.target.value)}
+                                  className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none text-slate-200 capitalize w-28"
+                                >
+                                  <option value="free">Free</option>
+                                  <option value="starter">Starter</option>
+                                  <option value="pro">Pro</option>
+                                  <option value="elite">Elite</option>
+                                  <option value="unlimited">Unlimited</option>
+                                </select>
+                                {user.plan && user.plan !== 'free' && user.planStartDate && (
+                                    <span className="text-[10px] text-slate-500">
+                                       From: {new Date(user.planStartDate).toLocaleDateString()}
+                                    </span>
+                                )}
+                               </div>
+                            </td>
+                            
+                            <td className="py-4 font-bold text-white">
+                              {(user.totalProcessedImages || 0).toLocaleString()}
+                            </td>
+                            <td className="py-4 text-emerald-400 font-medium">
+                              {avgPerDay.toLocaleString()}/d
+                            </td>
+                            
+                            <td className="py-4">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={user.blocked || false}
+                                    onChange={(e) => handleUpdateUser(user.uid, { blocked: e.target.checked })}
+                                    disabled={user.uid === currentAdmin?.uid}
+                                    className="w-4 h-4 accent-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  />
+                                  <span className="text-sm text-slate-400">{user.blocked ? <span className="text-red-400">Blocked</span> : <span className="text-emerald-400">Active</span>}</span>
+                                </label>
+                            </td>
+                          </tr>
+                      );
+                    })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {!searchTerm && (
+                <div className="flex justify-center mt-6 items-center gap-4">
+                    <button 
+                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                      disabled={currentPage === 1 || loading}
+                      className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-sm text-slate-300 transition-colors disabled:opacity-50"
+                    >
+                        Previous
+                    </button>
+                    <span className="text-slate-400 text-sm font-bold">Page {currentPage}</span>
+                    <button 
+                      onClick={() => setCurrentPage(p => p + 1)}
+                      disabled={users.length < 5 || loading}
+                      className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-sm text-slate-300 transition-colors disabled:opacity-50"
+                    >
+                        Next
+                    </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2: NOTIFICATION CENTER (Server Management) */}
+        {activeTab === 'notifications' && (
+          <div className="space-y-6 animate-in fade-in duration-200">
+            {/* KPI Stat Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active on Server</span>
+                  <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400">
+                    <Bell className="w-4 h-4" />
+                  </div>
+                </div>
+                <div className="text-2xl font-bold text-white mt-2">{serverNotifications.length}</div>
+                <div className="text-xs text-slate-500 mt-1">Live Firestore notification documents</div>
+              </div>
+
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Global Announcements</span>
+                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                    <Globe className="w-4 h-4" />
+                  </div>
+                </div>
+                <div className="text-2xl font-bold text-emerald-400 mt-2">
+                  {serverNotifications.filter(n => n.targetUid === 'all').length}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">Broadcasts visible to all users</div>
+              </div>
+
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Signup Alerts</span>
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400">
+                    <UserPlus className="w-4 h-4" />
+                  </div>
+                </div>
+                <div className="text-2xl font-bold text-blue-400 mt-2">
+                  {serverNotifications.filter(n => n.targetUid === 'admin').length}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">New user registration notifications</div>
+              </div>
+            </div>
+
+            {/* Management Panel */}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+              {/* Header & Filter Controls */}
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-4 border-b border-slate-800">
+                <div className="flex items-center gap-2">
+                  {[
+                    { id: 'all', label: `All (${serverNotifications.length})` },
+                    { id: 'global', label: `Global (${serverNotifications.filter(n => n.targetUid === 'all').length})` },
+                    { id: 'signups', label: `Signups (${serverNotifications.filter(n => n.targetUid === 'admin').length})` },
+                  ].map(f => (
+                    <button
+                      key={f.id}
+                      onClick={() => setNotifFilter(f.id as any)}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        notifFilter === f.id
+                          ? 'bg-purple-600 text-white shadow-md shadow-purple-900/30'
+                          : 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-3 w-full sm:w-auto">
+                  <button
+                    onClick={fetchServerNotifications}
+                    disabled={loadingNotifs}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-bold text-slate-300 transition-colors disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-purple-400 ${loadingNotifs ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
+
+                  <button
+                    onClick={() => setGlobalNotifModalOpen(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-500 hover:to-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-purple-900/30"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Send Announcement</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Notifications List */}
+              {loadingNotifs ? (
+                <div className="py-16 text-center text-slate-500 flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="w-6 h-6 text-purple-400 animate-spin" />
+                  <span className="text-sm font-medium">Loading notifications from server...</span>
+                </div>
+              ) : serverNotifications.length === 0 ? (
+                <div className="py-16 text-center text-slate-500 flex flex-col items-center justify-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-center text-slate-600">
+                    <CheckCircle2 className="w-6 h-6 text-emerald-500/50" />
+                  </div>
+                  <div className="font-bold text-slate-300 text-base">No Active Notifications on Server</div>
+                  <div className="text-xs text-slate-500 max-w-sm">
+                    All notifications have been viewed or deleted. Use "Send Announcement" above to broadcast a notice to all users.
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3">
+                  {serverNotifications
+                    .filter(n => {
+                      if (notifFilter === 'global') return n.targetUid === 'all';
+                      if (notifFilter === 'signups') return n.targetUid === 'admin';
+                      return true;
+                    })
+                    .map(n => {
+                      const isGlobal = n.targetUid === 'all';
+                      const isDeleting = deletingNotifId === n.id;
+                      return (
+                        <div
+                          key={n.id}
+                          className="bg-slate-950/70 border border-slate-800/90 hover:border-slate-700/80 rounded-xl p-4 transition-all duration-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 group"
+                        >
+                          <div className="space-y-1.5 flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {/* Type Badge */}
+                              <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md ${
+                                isGlobal
+                                  ? (n.type === 'warning' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : n.type === 'success' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20')
+                                  : 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                              }`}>
+                                {isGlobal ? (
+                                  n.type === 'warning' ? <AlertTriangle className="w-3 h-3" /> :
+                                  n.type === 'success' ? <CheckCircle className="w-3 h-3" /> :
+                                  <Info className="w-3 h-3" />
+                                ) : (
+                                  <UserPlus className="w-3 h-3" />
+                                )}
+                                <span className="capitalize">{n.type || 'Notice'}</span>
+                              </span>
+
+                              {/* Target Badge */}
+                              <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md ${
+                                isGlobal ? 'bg-emerald-500/10 text-emerald-300' : 'bg-slate-800 text-slate-400'
+                              }`}>
+                                {isGlobal ? <Globe className="w-3 h-3 text-emerald-400" /> : <Shield className="w-3 h-3 text-purple-400" />}
+                                <span>{isGlobal ? 'Global (All Users)' : 'Admin Only'}</span>
+                              </span>
+
+                              {/* Timestamp */}
+                              <span className="text-[11px] text-slate-500">
+                                {n.createdAt ? new Date(n.createdAt).toLocaleString() : 'Unknown date'}
+                              </span>
+                            </div>
+
+                            <div className="font-bold text-sm text-slate-200 truncate">
+                              {n.userName || (isGlobal ? 'Global Notice' : 'New User Signup')}
+                            </div>
+
+                            <div className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
+                              {n.message}
+                            </div>
+
+                            {n.userEmail && (
+                              <div className="text-[11px] text-purple-300 font-mono pt-0.5">
+                                User Email: {n.userEmail}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Action Buttons */}
+                          <div className="flex items-center gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-850">
+                            <button
+                              onClick={() => setViewingAdminNotif(n)}
+                              className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                              title="Preview notification"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>View</span>
+                            </button>
+
+                            <button
+                              onClick={() => handleDeleteServerNotif(n.id)}
+                              disabled={isDeleting}
+                              className="px-3 py-1.5 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/60 text-rose-300 hover:text-rose-200 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-50"
+                              title="Delete permanently from Firestore server"
+                            >
+                              {isDeleting ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                              )}
+                              <span>Delete from Server</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {showStats && (
@@ -786,6 +1083,100 @@ export const AdminDashboard: React.FC = () => {
                     Send to All Users
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Notification Preview & Deletion Modal */}
+      {viewingAdminNotif && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                  viewingAdminNotif.targetUid === 'all'
+                    ? (viewingAdminNotif.type === 'warning' ? 'bg-amber-500/10 text-amber-400' : viewingAdminNotif.type === 'success' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-blue-500/10 text-blue-400')
+                    : 'bg-purple-500/10 text-purple-400'
+                }`}>
+                  {viewingAdminNotif.targetUid === 'all' ? (
+                    viewingAdminNotif.type === 'warning' ? <AlertTriangle className="w-5 h-5" /> :
+                    viewingAdminNotif.type === 'success' ? <CheckCircle className="w-5 h-5" /> :
+                    <Info className="w-5 h-5" />
+                  ) : (
+                    <UserPlus className="w-5 h-5" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-100 text-lg">
+                    {viewingAdminNotif.userName || (viewingAdminNotif.targetUid === 'all' ? 'Global Notice' : 'New User Registration')}
+                  </h3>
+                  <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
+                    <span>{viewingAdminNotif.createdAt ? new Date(viewingAdminNotif.createdAt).toLocaleString() : 'Unknown date'}</span>
+                    <span>•</span>
+                    <span className="font-mono text-[11px] text-slate-400">ID: {viewingAdminNotif.id}</span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setViewingAdminNotif(null)}
+                className="text-slate-500 hover:text-slate-300 p-1.5 rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg ${
+                viewingAdminNotif.targetUid === 'all' ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-purple-500/10 text-purple-300 border border-purple-500/20'
+              }`}>
+                {viewingAdminNotif.targetUid === 'all' ? <Globe className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
+                <span>{viewingAdminNotif.targetUid === 'all' ? 'Broadcast to All Users' : 'Direct Admin Alert'}</span>
+              </span>
+
+              <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-400">
+                <span>Category:</span>
+                <span className="font-semibold text-slate-200 capitalize">{viewingAdminNotif.type || 'Standard'}</span>
+              </span>
+            </div>
+
+            <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-xl space-y-3">
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Message Content</div>
+              <div className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
+                {viewingAdminNotif.message}
+              </div>
+
+              {viewingAdminNotif.userEmail && (
+                <div className="pt-2 border-t border-slate-850 flex items-center justify-between text-xs">
+                  <span className="text-slate-400">Registered Email:</span>
+                  <span className="font-mono text-purple-300 font-medium">{viewingAdminNotif.userEmail}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => handleDeleteServerNotif(viewingAdminNotif.id)}
+                disabled={deletingNotifId === viewingAdminNotif.id}
+                className="px-4 py-2 bg-rose-950/50 hover:bg-rose-900/80 border border-rose-800/80 text-rose-300 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-md disabled:opacity-50"
+              >
+                {deletingNotifId === viewingAdminNotif.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4 text-rose-400" />
+                )}
+                <span>Delete from Server</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setViewingAdminNotif(null)}
+                className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-xl transition-colors"
+              >
+                Close
               </button>
             </div>
           </div>

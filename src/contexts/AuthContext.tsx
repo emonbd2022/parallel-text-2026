@@ -274,28 +274,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch {}
 
-    // 3. Handle Global Notifications (Dismiss locally vs Delete globally)
-    if (isGlobal && !globalDelete) {
-        // Just hide it locally
-        if (userData?.uid) {
-            try {
-                const key = `dismissedGlobalNotifs_${userData.uid}`;
-                const dismissed: string[] = JSON.parse(localStorage.getItem(key) || '[]');
-                if (!dismissed.includes(id)) {
-                    dismissed.push(id);
-                    localStorage.setItem(key, JSON.stringify(dismissed));
-                }
-            } catch {}
-        }
-        // Keep it in deletingNotifIdsRef so duplicate calls don't accidentally reach Step 4
-        return; // Do NOT delete from Firestore!
+    // 3. For regular (non-admin) users OR non-global-delete actions:
+    // Dismiss ONLY locally for this user, NEVER delete from Firestore!
+    if (userData?.role !== 'admin' || (isGlobal && !globalDelete)) {
+      if (userData?.uid) {
+        try {
+          const key = `dismissedGlobalNotifs_${userData.uid}`;
+          const dismissed: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+          if (!dismissed.includes(id)) {
+            dismissed.push(id);
+            localStorage.setItem(key, JSON.stringify(dismissed));
+          }
+        } catch {}
+      }
+      return; // Regular users NEVER delete from Firestore!
     }
 
     // 4. Single explicit deleteDoc() operation in Firestore for admin/globally-deleted ones
-    if (db) {
+    if (db && userData?.role === 'admin') {
       try {
         await deleteDoc(doc(db, 'notifications', id));
-        console.log(`[Notification] Explicitly deleted viewed notification from Firestore: notifications/${id}`);
+        console.log(`[Notification] Admin explicitly deleted notification from Firestore: notifications/${id}`);
       } catch (err: any) {
         console.error(`[Notification] Failed to delete notification notifications/${id} from Firestore:`, err);
         deletingNotifIdsRef.current.delete(id);
