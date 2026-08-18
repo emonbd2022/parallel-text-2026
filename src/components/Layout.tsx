@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, AppNotification } from '../contexts/AuthContext';
 import { logout } from '../lib/firebase';
-import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell, Upload, UserPlus } from 'lucide-react';
+import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell, Upload, UserPlus, HelpCircle } from 'lucide-react';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { userData, loading, maintenanceMode, notifications, deleteNotification } = useAuth();
@@ -42,6 +42,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
   const navItems = [
     { name: userData?.plan && userData.plan !== 'free' ? 'Upgrade' : 'Pricing', path: '/pricing', icon: CreditCard },
+    { name: 'Tutorial', path: '/tutorial', icon: HelpCircle },
   ];
 
   if (userData) {

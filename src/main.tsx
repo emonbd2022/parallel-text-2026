@@ -8,6 +8,7 @@ import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { AdminDashboard } from './pages/AdminDashboard';
 import { Pricing } from './pages/Pricing';
+import { Tutorial } from './pages/Tutorial';
 import { Layout } from './components/Layout';
 import { Cat } from 'lucide-react';
 import './index.css';
@@ -45,6 +46,7 @@ const AnimatedRoutes = () => {
         <Route path="/" element={<PublicRoute><App /></PublicRoute>} />
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/pricing" element={<PublicRoute><Pricing /></PublicRoute>} />
+        <Route path="/tutorial" element={<PublicRoute><Tutorial /></PublicRoute>} />
         <Route path="/admin" element={<ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
