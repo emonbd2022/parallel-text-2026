@@ -20,11 +20,10 @@ const STORAGE_KEYS = 'parrarel_keys_v5';
 const STORAGE_HISTORY = 'parrarel_history_v3';
 const STORAGE_LOGS = 'parrarel_logs_v1';
 const STORAGE_CONFIG = 'parrarel_config_v3';
-const STORAGE_STATS = 'parrarel_stats_v1';
 
 // Models
 const MODELS = [
-  { id: 'auto', name: 'Auto (Best Effort)', rpm: 5 },
+  { id: 'turbo', name: 'Turbo', rpm: 5 },
   { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash (20 RPD)', rpm: 5 },
   { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (20 RPD)', rpm: 5 },
   { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (20 RPD)', rpm: 5 },
@@ -150,14 +149,53 @@ export default function App() {
   const [items, setItems] = useState<ProcessingItem[]>([]);
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
 
-  const [modelStats, setModelStats] = useState<Record<string, { totalTimeMs: number, count: number, fails: number }>>(() => {
-      try {
-          return JSON.parse(localStorage.getItem(STORAGE_STATS) || '{}');
-      } catch {
-          return {};
-      }
-  });
 
+
+  const turboTitleStatsRef = useRef<Record<string, { latencies: number[], fails: number, lastFailTime: number }>>({});
+  const turboCategoryStatsRef = useRef<Record<string, { latencies: number[], fails: number, lastFailTime: number }>>({});
+
+  const getBestTurboModel = (statsRef: React.MutableRefObject<Record<string, { latencies: number[], fails: number, lastFailTime: number }>>) => {
+      const models = [
+          'gemini-3.5-flash-lite',
+          'gemini-3.1-flash-lite-preview',
+          'gemini-3.7-flash',
+          'gemini-3.6-flash',
+          'gemini-3.5-flash',
+          'gemini-3-flash-preview',
+          'gemini-2.5-flash',
+          'gemini-2.5-flash-lite'
+      ];
+      let bestModel = models[0];
+      let bestScore = Infinity;
+      const now = Date.now();
+
+      for (const m of models) {
+          const stat = statsRef.current[m];
+          let score = 10000;
+          if (stat) {
+              const lats = stat.latencies;
+              const recent = lats.slice(-5);
+              const avgLat = recent.length > 0 ? recent.reduce((a, b) => a + b, 0) / recent.length : 10000;
+              
+              let failPenalty = 0;
+              if (stat.fails > 0) {
+                  const timeSinceFail = now - stat.lastFailTime;
+                  if (timeSinceFail < 60000) failPenalty = 50000;
+                  else if (timeSinceFail < 300000) failPenalty = 10000;
+                  else stat.fails = 0;
+              }
+              score = avgLat + failPenalty;
+          } else {
+              if (m.includes('lite')) score = 5000;
+              else score = 8000;
+          }
+          if (score < bestScore) {
+              bestScore = score;
+              bestModel = m;
+          }
+      }
+      return bestModel;
+  };
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string>('Ready');
   const [tick, setTick] = useState(0); 
@@ -280,10 +318,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs));
   }, [logs]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_STATS, JSON.stringify(modelStats));
-  }, [modelStats]);
 
             
   // Auto-save items safely via IndexedDB and localStorage
@@ -569,7 +603,7 @@ export default function App() {
   // --- Processing Engine (Batch Enabled) ---
 
   const getModelDelay = (modelId: string) => {
-    if (modelId === 'auto') return 12500;
+    if (modelId === 'turbo') return 12500;
     const model = MODELS.find(m => m.id === modelId);
     if (!model) return 12000;
     return (60000 / model.rpm) + 500;
@@ -592,51 +626,31 @@ export default function App() {
       let results: any;
       let usedModel = config.model;
 
-      if (config.model === 'auto') {
-        const autoModels = [
-          'gemini-3.7-flash',
-          'gemini-3.6-flash',
-          'gemini-3.5-flash',
-          'gemini-3.5-flash-lite',
-          'gemini-3-flash-preview',
-          'gemini-2.5-flash',
-          'gemini-3.1-flash-lite-preview',
-          'gemini-2.5-flash-lite'
-        ];
-        
-        autoModels.sort((a, b) => {
-            const statA = modelStats[a];
-            const statB = modelStats[b];
-            const scoreA = statA ? ((statA.totalTimeMs / Math.max(1, statA.count)) + (statA.fails * 5000)) : 10000;
-            const scoreB = statB ? ((statB.totalTimeMs / Math.max(1, statB.count)) + (statB.fails * 5000)) : 10000;
-            return scoreA - scoreB;
-        });
-        let success = false;
-        let lastError = null;
-
-        for (let i = 0; i < autoModels.length; i++) {
-            usedModel = autoModels[i];
-            const startTime = Date.now();
-            try {
-                sessionRequestCountRef.current += 1;
-                results = await generateCategoriesBatch(
-                  keyObj.key,
-                  payload,
-                  usedModel,
-                  (msg) => {
-                    setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
-                  }
-                );
-                success = true;
-                break;
-            } catch (err) {
-                console.warn(`Auto category: ${usedModel} failed, retrying...`, err);
-                lastError = err;
+      if (config.model === 'turbo') {
+        usedModel = getBestTurboModel(turboCategoryStatsRef);
+        const startTime = Date.now();
+        try {
+            sessionRequestCountRef.current += 1;
+            results = await generateCategoriesBatch(
+              keyObj.key,
+              payload,
+              usedModel,
+              (msg) => {
+                setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
+              }
+            );
+            const elapsed = Date.now() - startTime;
+            if (!turboCategoryStatsRef.current[usedModel]) {
+                turboCategoryStatsRef.current[usedModel] = { latencies: [], fails: 0, lastFailTime: 0 };
             }
-        }
-        
-        if (!success) {
-            throw lastError;
+            turboCategoryStatsRef.current[usedModel].latencies.push(elapsed);
+        } catch (err) {
+            if (!turboCategoryStatsRef.current[usedModel]) {
+                turboCategoryStatsRef.current[usedModel] = { latencies: [], fails: 0, lastFailTime: 0 };
+            }
+            turboCategoryStatsRef.current[usedModel].fails += 1;
+            turboCategoryStatsRef.current[usedModel].lastFailTime = Date.now();
+            throw err;
         }
       } else {
         sessionRequestCountRef.current += 1;
@@ -668,19 +682,42 @@ export default function App() {
       
       setKeys(prev => prev.map(k => {
         if (k.id === keyObj.id) {
+            const currentSession = getUsageSessionId();
+            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 }) };
+            
+            if (newUsage.date !== currentSession) {
+                newUsage.date = currentSession;
+                newUsage.flash = 0;
+                newUsage.lite = 0;
+                newUsage.flash_3 = 0;
+                newUsage.flash_3_1_lite = 0;
+                newUsage.flash_3_5 = 0;
+                newUsage.flash_3_5_lite = 0;
+                newUsage.flash_3_7 = 0;
+                newUsage.flash_3_6 = 0;
+            }
+
+            if (usedModel === 'gemini-3.7-flash') newUsage.flash_3_7 = (newUsage.flash_3_7 || 0) + 1;
+            else if (usedModel === 'gemini-3.6-flash') newUsage.flash_3_6 = (newUsage.flash_3_6 || 0) + 1;
+            else if (usedModel === 'gemini-3.5-flash-lite') newUsage.flash_3_5_lite = (newUsage.flash_3_5_lite || 0) + 1;
+            else if (usedModel.includes('gemini-3.5-flash')) newUsage.flash_3_5 = (newUsage.flash_3_5 || 0) + 1;
+            else if (usedModel.includes('gemini-3.1-flash-lite-preview')) newUsage.flash_3_1_lite = (newUsage.flash_3_1_lite || 0) + 1;
+            else if (usedModel.includes('gemini-2.5-flash-lite')) newUsage.lite = (newUsage.lite || 0) + 1;
+            else if (usedModel.includes('gemini-2.5-flash')) newUsage.flash = (newUsage.flash || 0) + 1;
+            else if (usedModel.includes('gemini-3-flash-preview')) newUsage.flash_3 = (newUsage.flash_3 || 0) + 1;
+
             return { 
                  ...k, 
                  errorCount: Math.max(0, k.errorCount - 1),
-                 cooldownUntil: Date.now() + cooldownMs
+                 cooldownUntil: Date.now() + cooldownMs,
+                 usage: newUsage
             };
         }
         return k;
       }));
       
       const batchDuration = Date.now() - batchStartTime;
-      // const newLog = { id: Date.now().toString(), timestamp: new Date().toISOString(), itemCount: batchItems.length, durationMs: batchDuration };
-      // setLogs(prev => [newLog, ...prev].slice(0, 5000));
-      setStatusMsg("Waiting...");
+      setStatusMsg("Pipeline active...");
 
     } catch (error: any) {
       console.error("Batch processing error:", error);
@@ -763,64 +800,31 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       let results: any;
       let usedModel = config.model;
 
-      if (config.model === 'auto') {
-        const autoModels = [
-          'gemini-3.7-flash',
-          'gemini-3.6-flash',
-          'gemini-3.5-flash',
-          'gemini-3.5-flash-lite',
-          'gemini-3-flash-preview',
-          'gemini-2.5-flash',
-          'gemini-3.1-flash-lite-preview',
-          'gemini-2.5-flash-lite'
-        ];
-
-        // Sort by average latency + penalty for fails
-        autoModels.sort((a, b) => {
-            const statA = modelStats[a];
-            const statB = modelStats[b];
-            
-            const scoreA = statA ? ((statA.totalTimeMs / Math.max(1, statA.count)) + (statA.fails * 5000)) : 10000;
-            const scoreB = statB ? ((statB.totalTimeMs / Math.max(1, statB.count)) + (statB.fails * 5000)) : 10000;
-            
-            return scoreA - scoreB;
-        });
-
-        let success = false;
-        let lastError = null;
-
-        for (let i = 0; i < autoModels.length; i++) {
-            usedModel = autoModels[i];
-            const startTime = Date.now();
-            try {
-                sessionRequestCountRef.current += 2;
-                results = await generateMetadataBatch(
-                  keyObj.key,
-                  payload,
-                  { ...config, model: usedModel },
-                  (msg) => {
-                    setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
-                  }
-                );
-                success = true;
-                const elapsed = Date.now() - startTime;
-                setModelStats(prev => {
-                    const current = prev[usedModel!] || { totalTimeMs: 0, count: 0, fails: 0 };
-                    return { ...prev, [usedModel!]: { ...current, totalTimeMs: current.totalTimeMs + elapsed, count: current.count + 1 } };
-                });
-                break;
-            } catch (err) {
-                console.warn(`Auto: ${usedModel} failed, retrying...`, err);
-                lastError = err;
-                setModelStats(prev => {
-                    const current = prev[usedModel!] || { totalTimeMs: 0, count: 0, fails: 0 };
-                    return { ...prev, [usedModel!]: { ...current, fails: current.fails + 1 } };
-                });
+      if (config.model === 'turbo') {
+        usedModel = getBestTurboModel(turboTitleStatsRef);
+        const startTime = Date.now();
+        try {
+            sessionRequestCountRef.current += 2;
+            results = await generateMetadataBatch(
+              keyObj.key,
+              payload,
+              { ...config, model: usedModel },
+              (msg) => {
+                setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
+              }
+            );
+            const elapsed = Date.now() - startTime;
+            if (!turboTitleStatsRef.current[usedModel]) {
+                turboTitleStatsRef.current[usedModel] = { latencies: [], fails: 0, lastFailTime: 0 };
             }
-        }
-        
-        if (!success) {
-            throw lastError;
+            turboTitleStatsRef.current[usedModel].latencies.push(elapsed);
+        } catch (err) {
+            if (!turboTitleStatsRef.current[usedModel]) {
+                turboTitleStatsRef.current[usedModel] = { latencies: [], fails: 0, lastFailTime: 0 };
+            }
+            turboTitleStatsRef.current[usedModel].fails += 1;
+            turboTitleStatsRef.current[usedModel].lastFailTime = Date.now();
+            throw err;
         }
       } else {
         const startTime = Date.now();
@@ -833,11 +837,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
             }
         );
-        const elapsed = Date.now() - startTime;
-        setModelStats(prev => {
-            const current = prev[usedModel!] || { totalTimeMs: 0, count: 0, fails: 0 };
-            return { ...prev, [usedModel!]: { ...current, totalTimeMs: current.totalTimeMs + elapsed, count: current.count + 1 } };
-        });
+        
       }
 
 
@@ -1162,49 +1162,28 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
         return;
     }
 
-    // 1. Calculate slots (Unlimited concurrency - limited only by available keys)
-    const activeKeyIds = new Set(items.filter(i => i.status === 'processing' && i.assignedKeyId).map(i => i.assignedKeyId));
-    const activeRequests = activeKeyIds.size;
-    // No concurrency limit check here
+    const now = Date.now();
+    const currentSession = getUsageSessionId();
 
-    // 2. Get pending items
-    const pendingMetadataItems = items.filter(i => i.status === 'pending' && !i.title && i.thumb);
+    // 1. Calculate active key assignments across all items
+    const activeKeyIds = new Set<string>(
+        items.filter(i => (i.status === 'processing' || i.status === 'compressing') && !!i.assignedKeyId).map(i => i.assignedKeyId!)
+    );
+    // Track keys that are busy or dispatched during this tick
+    const busyKeyIds = new Set<string>(Array.from(activeKeyIds));
+
+    // 2. Identify Pending Items for both stages concurrently
+    // Stage 1 (Title/Keywords): items pending with thumbnail that have no title yet
+    const pendingTitleItems = items.filter(i => i.status === 'pending' && !i.title && i.thumb);
+    // Stage 2 (Category): items pending that HAVE title/keywords but NO category yet
     const pendingCategoryItems = items.filter(i => i.status === 'pending' && i.title && !i.category);
-    
-    const isProcessingMetadata = items.some(i => (i.status === 'processing' || i.status === 'compressing') && !i.title);
-    
-    // Phase 1 is incomplete if there are pending metadata items OR items currently processing metadata.
-    const isMetadataPhase = pendingMetadataItems.length > 0 || isProcessingMetadata;
-    const pendingItems = isMetadataPhase ? pendingMetadataItems : pendingCategoryItems;
 
-    if (!isMetadataPhase && pendingCategoryItems.length > 0 && lastPhaseRef.current !== 'category') {
-        lastPhaseRef.current = 'category';
-        showNotification('Phase 2 Started', 'Metadata complete. Now generating categories...');
-    } else if (isMetadataPhase && lastPhaseRef.current !== 'metadata') {
-        lastPhaseRef.current = 'metadata';
-    }
-    
-    if (config.prioritizeFastest) {
-        let totalMs = 0;
-        logs.forEach(l => totalMs += l.durationMs);
-        
-        let totalDoneBytes = 0;
-        items.forEach(i => {
-            if (i.status === 'done') totalDoneBytes += i.size;
-        });
+    const isProcessingTitle = items.some(i => (i.status === 'processing' || i.status === 'compressing') && !i.title);
+    const isProcessingCategory = items.some(i => i.status === 'processing' && i.title && !i.category);
 
-        const msPerByte = (totalDoneBytes > 0 && totalMs > 0) ? (totalMs / totalDoneBytes) : 1;
-        
-        pendingItems.sort((a, b) => {
-             const expectedA = a.size * msPerByte;
-             const expectedB = b.size * msPerByte;
-             return expectedA - expectedB;
-        });
-    }
-    
-    if (pendingItems.length === 0) {
-        const hasActive = items.some(i => i.status === 'processing' || i.status === 'compressing');
-        if (!hasActive) {
+    // If both queues are empty
+    if (pendingTitleItems.length === 0 && pendingCategoryItems.length === 0) {
+        if (!isProcessingTitle && !isProcessingCategory) {
             setIsProcessing(false);
             const allDone = items.length > 0 && items.every(i => i.status === 'done');
             if (allDone) {
@@ -1232,26 +1211,23 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                 }
             }
         } else {
-            setStatusMsg('Waiting for current batches...');
+            const titleCount = items.filter(i => (i.status === 'processing' || i.status === 'compressing') && !i.title).length;
+            const catCount = items.filter(i => i.status === 'processing' && i.title && !i.category).length;
+            if (titleCount > 0 && catCount > 0) {
+                setStatusMsg(`Pipeline active: ${titleCount} generating Title/Keywords, ${catCount} generating Category...`);
+            } else if (titleCount > 0) {
+                setStatusMsg(`Generating Title/Keywords for ${titleCount} items...`);
+            } else if (catCount > 0) {
+                setStatusMsg(`Generating Categories for ${catCount} items...`);
+            }
         }
         return;
     }
 
-    // 3. Find Key
-    const now = Date.now();
-    const currentSession = getUsageSessionId();
-
-    // Check usage limits and validity
+    // 3. Validate API keys and session limits
     const validKeys = keys.filter(k => {
-        // REMOVED: if (k.errorCount >= 20) return false; 
-        // We no longer permanently disable keys based on error count. 
-        // We just prioritize better keys and rely on cooldowns.
-        
-        // We rely on API error responses (429) to handle rate limits rather than strict client-side counting.
-        // However, we keep a very high ceiling just in case.
         const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
         
-        // Ensure properties are numbers (handle undefined/null from old storage)
         const u = {
             flash: Number(usage.flash || 0),
             lite: Number(usage.lite || 0),
@@ -1263,8 +1239,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             flash_3_7: Number(usage.flash_3_7 || 0)
         };
 
-        // Increased limits to 10,000 to effectively disable client-side blocking
-        if (config.model === 'auto') {
+        if (config.model === 'turbo') {
             return (u.flash_3_7 < 10000) || (u.flash_3_6 < 10000) || (u.flash_3_5_lite < 10000) || (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 20);
         } else if (config.model === 'gemini-3.7-flash') {
             return u.flash_3_7 < 10000;
@@ -1294,120 +1269,110 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
         return;
     }
 
-    const availableKeys = validKeys.filter(k => 
-        !activeKeyIds.has(k.id) && 
-        (!k.cooldownUntil || k.cooldownUntil < now)
-    );
-
-    if (availableKeys.length === 0) {
-        const cooldownKeys = validKeys.filter(k => k.cooldownUntil && k.cooldownUntil > now);
-        if (cooldownKeys.length > 0) {
-             const minWait = Math.min(...cooldownKeys.map(k => k.cooldownUntil! - now));
-             setStatusMsg(`Waiting for API keys cooldown (${Math.ceil(minWait/1000)}s)...`);
-        } else if (activeRequests > 0) {
-             setStatusMsg("All keys busy...");
-        } else {
-             setStatusMsg("Waiting for available keys...");
-        }
-        return;
+    // Sort queue items if prioritizeFastest is on
+    if (config.prioritizeFastest) {
+        let totalMs = 0;
+        logs.forEach(l => totalMs += l.durationMs);
+        let totalDoneBytes = 0;
+        items.forEach(i => {
+            if (i.status === 'done') totalDoneBytes += i.size;
+        });
+        const msPerByte = (totalDoneBytes > 0 && totalMs > 0) ? (totalMs / totalDoneBytes) : 1;
+        pendingTitleItems.sort((a, b) => (a.size * msPerByte) - (b.size * msPerByte));
+        pendingCategoryItems.sort((a, b) => (a.size * msPerByte) - (b.size * msPerByte));
     }
 
-    // 4. Filter Keys By Phase
-    let categoryKeyIds: string[] = [];
-    if (keys.length > 1) {
-        const titlePoolSize = Math.ceil(keys.length / 2);
-        categoryKeyIds = keys.slice(titlePoolSize).map(k => k.id);
-    }
-    
-    let phaseAvailableKeys = availableKeys;
-    if (categoryKeyIds.length > 0) {
-        let preferredAvailable: import("./types").ApiKey[] = [];
-        let fallbackAvailable: import("./types").ApiKey[] = [];
-        let preferredUsableCount = 0;
-        
-        if (isMetadataPhase) {
-            preferredAvailable = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
-            fallbackAvailable = availableKeys.filter(k => categoryKeyIds.includes(k.id));
-            preferredUsableCount = validKeys.filter(k => !categoryKeyIds.includes(k.id)).length;
-        } else {
-            preferredAvailable = availableKeys.filter(k => categoryKeyIds.includes(k.id));
-            fallbackAvailable = availableKeys.filter(k => !categoryKeyIds.includes(k.id));
-            preferredUsableCount = validKeys.filter(k => categoryKeyIds.includes(k.id)).length;
-        }
-
-        if (preferredUsableCount > 0) {
-            if (preferredAvailable.length > 0) {
-                phaseAvailableKeys = preferredAvailable;
-            } else {
-                // Preferred pool has usable keys, but they are all currently busy or on cooldown.
-                // We wait for them instead of falling back to the other pool.
-                phaseAvailableKeys = [];
-            }
-        } else {
-            // Entire dedicated pool has zero usable keys. Activate global fallback.
-            phaseAvailableKeys = fallbackAvailable;
-            if (fallbackAvailable.length > 0) {
-                console.log(`[API Routing] Fallback activated for ${isMetadataPhase ? 'Title' : 'Category'} task. Dedicated pool has 0 usable keys.`);
-            }
-        }
-    }
-
-    if (phaseAvailableKeys.length === 0) {
-        setStatusMsg("Waiting for available keys...");
-        return;
-    }
-
-    // 5. Fill Slots
-    const sortedQueue = [...pendingItems].sort((a, b) => a.attempts - b.attempts);
+    // 4. GLOBAL WORK QUEUE & BIDIRECTIONAL FALLBACK
     const batchSize = config.batchSize || 1;
+    const titleQueue = [...pendingTitleItems].sort((a, b) => a.attempts - b.attempts);
+    const categoryQueue = [...pendingCategoryItems].sort((a, b) => a.attempts - b.attempts);
 
-    // Sort keys: prioritize those with fewer errors (healthier)
-    phaseAvailableKeys.sort((a, b) => {
-        const healthA = Math.max(0, 100 - (a.errorCount * 5));
-        const healthB = Math.max(0, 100 - (b.errorCount * 5));
-        return healthB - healthA;
-    });
+    const titlePoolSize = keys.length > 1 ? Math.ceil(keys.length / 2) : keys.length;
+    const titleKeyIds = new Set(keys.slice(0, titlePoolSize).map(k => k.id));
 
-    let currentItemIndex = 0;
-    
-    // Iterate through available keys to find work
-    for (const chosenKey of phaseAvailableKeys) {
+    // Sort valid keys by health (least errors first)
+    validKeys.sort((a, b) => Math.max(0, 100 - (b.errorCount * 5)) - Math.max(0, 100 - (a.errorCount * 5)));
+
+    const getBatch = (queue: ProcessingItem[], keyObj: ApiKey): ProcessingItem[] => {
         const batch: ProcessingItem[] = [];
-        // Scan queue for items that HAVEN'T failed with this specific key
-        let scannedCount = 0;
-        
-        while (batch.length < batchSize && currentItemIndex < sortedQueue.length) {
-            const candidate = sortedQueue[currentItemIndex];
-            
-            // Check retry timer
+        let itemIndex = 0;
+        while (batch.length < batchSize && itemIndex < queue.length) {
+            const candidate = queue[itemIndex];
             if (candidate.retryAfter && candidate.retryAfter > now) {
-                currentItemIndex++;
+                itemIndex++;
                 continue;
             }
-
-            // CRITICAL: Check if this item has already failed with this specific key
-            const isDifferentKeyRequired = !isMetadataPhase && keys.length > 1;
-            const meetsKeyCondition = !candidate.failedKeyIds.includes(chosenKey.id) &&
-                                      (!isDifferentKeyRequired || candidate.metadataKeyId !== chosenKey.id);
-
-            if (meetsKeyCondition) {
+            if (!candidate.failedKeyIds.includes(keyObj.id)) {
                 batch.push(candidate);
-                // Remove from local queue so other keys don't pick it in this tick
-                sortedQueue.splice(currentItemIndex, 1);
+                queue.splice(itemIndex, 1);
             } else {
-                currentItemIndex++;
+                itemIndex++;
             }
         }
-        
-        // Reset index for next key scan (scan from remaining sortedQueue)
-        currentItemIndex = 0;
+        return batch;
+    };
 
-        if (batch.length > 0) {
-            if (isMetadataPhase) {
-                startBatchProcessing(batch, chosenKey);
-            } else {
-                startCategoryBatchProcessing(batch, chosenKey);
+    // 5. DISPATCH LOOP (MAXIMUM UTILIZATION)
+    for (const keyObj of validKeys) {
+        if (busyKeyIds.has(keyObj.id)) continue;
+        if (keyObj.cooldownUntil && keyObj.cooldownUntil > now) continue;
+
+        const isTitlePrimary = titleKeyIds.has(keyObj.id);
+
+        // Try Primary Queue first
+        if (isTitlePrimary && titleQueue.length > 0) {
+            const batch = getBatch(titleQueue, keyObj);
+            if (batch.length > 0) {
+                busyKeyIds.add(keyObj.id);
+                startBatchProcessing(batch, keyObj);
+                continue;
             }
+        } else if (!isTitlePrimary && categoryQueue.length > 0) {
+            const batch = getBatch(categoryQueue, keyObj);
+            if (batch.length > 0) {
+                busyKeyIds.add(keyObj.id);
+                startCategoryBatchProcessing(batch, keyObj);
+                continue;
+            }
+        }
+
+        // Try Secondary (Fallback) Queue if Primary was empty or exhausted
+        if (isTitlePrimary && categoryQueue.length > 0) {
+            const batch = getBatch(categoryQueue, keyObj);
+            if (batch.length > 0) {
+                busyKeyIds.add(keyObj.id);
+                startCategoryBatchProcessing(batch, keyObj);
+                continue;
+            }
+        } else if (!isTitlePrimary && titleQueue.length > 0) {
+            const batch = getBatch(titleQueue, keyObj);
+            if (batch.length > 0) {
+                busyKeyIds.add(keyObj.id);
+                startBatchProcessing(batch, keyObj);
+                continue;
+            }
+        }
+    }
+
+    // 6. Status Message if no requests active and waiting on cooldowns
+    const totalActive = items.filter(i => (i.status === 'processing' || i.status === 'compressing')).length;
+    if (totalActive === 0 && busyKeyIds.size === 0) {
+        const cooldownKeys = validKeys.filter(k => k.cooldownUntil && k.cooldownUntil > now);
+        if (cooldownKeys.length > 0) {
+            const minWait = Math.min(...cooldownKeys.map(k => k.cooldownUntil! - now));
+            setStatusMsg(`Waiting for API keys cooldown (${Math.ceil(minWait/1000)}s)...`);
+        } else {
+            setStatusMsg("Waiting for available keys...");
+        }
+    } else {
+        const activeTitle = items.filter(i => (i.status === 'processing' || i.status === 'compressing') && !i.title).length;
+        const activeCat = items.filter(i => i.status === 'processing' && i.title && !i.category).length;
+        if (activeTitle > 0 && activeCat > 0) {
+            setStatusMsg(`Pipeline active: ${activeTitle} in Title/Keywords, ${activeCat} in Category...`);
+        } else if (activeTitle > 0) {
+            setStatusMsg(`Generating Title/Keywords for ${activeTitle} items...`);
+        } else if (activeCat > 0) {
+            setStatusMsg(`Generating Categories for ${activeCat} items...`);
         }
     }
 
@@ -1636,6 +1601,35 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+
+  let fastestTitleModel = '';
+  let fastestCategoryModel = '';
+  let titleLatency = 0;
+  let categoryLatency = 0;
+  let titleSamples = 0;
+  let categorySamples = 0;
+
+  if (config.model === 'turbo') {
+     const tModel = getBestTurboModel(turboTitleStatsRef);
+     const cModel = getBestTurboModel(turboCategoryStatsRef);
+     fastestTitleModel = MODELS.find(m => m.id === tModel)?.name || tModel;
+     fastestCategoryModel = MODELS.find(m => m.id === cModel)?.name || cModel;
+     
+     const tStat = turboTitleStatsRef.current[tModel];
+     if (tStat && tStat.latencies.length > 0) {
+        const recent = tStat.latencies.slice(-5);
+        titleLatency = recent.reduce((a,b)=>a+b,0)/recent.length;
+        titleSamples = tStat.latencies.length;
+     }
+     
+     const cStat = turboCategoryStatsRef.current[cModel];
+     if (cStat && cStat.latencies.length > 0) {
+        const recent = cStat.latencies.slice(-5);
+        categoryLatency = recent.reduce((a,b)=>a+b,0)/recent.length;
+        categorySamples = cStat.latencies.length;
+     }
+  }
+
   return (
     <>
       <style>{`
@@ -1665,7 +1659,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
          onStartStop={handleStartStop}
          hasItems={items.length > 0}
          models={MODELS}
-         modelStats={modelStats}
+         modelStats={{}}
          history={history}
          onViewStats={() => setShowStats(true)}
          onClearHistory={handleClearHistory}
@@ -1806,9 +1800,37 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
            </div>
         </div>
 
+        
+        {config.model === 'turbo' && (titleSamples > 0 || categorySamples > 0) && (
+          <div className="bg-slate-900/50 p-4 border-b border-slate-800">
+             <div className="flex items-center gap-6 max-w-7xl mx-auto flex-wrap">
+                 <div className="flex items-center gap-2">
+                     <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                     <span className="font-bold text-slate-200">Turbo Active</span>
+                 </div>
+                 {titleSamples > 0 && (
+                     <div className="flex items-center gap-2 text-xs">
+                         <span className="text-slate-500">Title Pool:</span>
+                         <span className="text-purple-400 font-bold">{fastestTitleModel}</span>
+                         <span className="text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">{(titleLatency / 1000).toFixed(1)}s</span>
+                         <span className="text-slate-600">({titleSamples} runs)</span>
+                     </div>
+                 )}
+                 {categorySamples > 0 && (
+                     <div className="flex items-center gap-2 text-xs">
+                         <span className="text-slate-500">Category Pool:</span>
+                         <span className="text-purple-400 font-bold">{fastestCategoryModel}</span>
+                         <span className="text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">{(categoryLatency / 1000).toFixed(1)}s</span>
+                         <span className="text-slate-600">({categorySamples} runs)</span>
+                     </div>
+                 )}
+             </div>
+          </div>
+        )}
         <div 
           ref={scrollContainerRef}
           className="flex-1 overflow-y-auto p-8 custom-scrollbar scroll-smooth space-y-8 relative"
+
           id="main-scroll-area"
           onWheel={() => lastUserScrollRef.current = Date.now()}
           onTouchMove={() => lastUserScrollRef.current = Date.now()}

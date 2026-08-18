@@ -5,7 +5,7 @@ import { User, Calendar, Image as ImageIcon, Zap, Crown, BarChart2 } from 'lucid
 import { StatisticsModal } from '../components/StatisticsModal';
 
 const MODELS = [
-  { id: 'auto', name: 'Auto (Best Effort)' },
+  { id: 'turbo', name: 'Turbo' },
   { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash' },
   { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
   { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
@@ -20,12 +20,11 @@ export const Dashboard: React.FC = () => {
   const { userData } = useAuth();
   const [showStats, setShowStats] = useState(false);
   const [logs, setLogs] = useState([]);
-  const [modelStats, setModelStats] = useState({});
+  
 
   useEffect(() => {
     try {
       setLogs(JSON.parse(localStorage.getItem('parrarel_logs_v1') || '[]'));
-      setModelStats(JSON.parse(localStorage.getItem('parrarel_stats_v1') || '{}'));
     } catch {}
   }, [userData?.totalProcessedImages, showStats]);
 
@@ -134,7 +133,7 @@ export const Dashboard: React.FC = () => {
       {showStats && (
         <StatisticsModal 
           logs={logs} 
-          modelStats={modelStats} 
+          modelStats={{}} 
           models={MODELS} 
           onClose={() => setShowStats(false)} 
         />

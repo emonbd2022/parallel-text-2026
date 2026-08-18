@@ -86,7 +86,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
 
     // 5. Model Efficiency
     const modelPerformance = useMemo(() => {
-        const results = models.filter(m => m.id !== 'auto').map(m => {
+        const results = models.filter(m => m.id !== 'turbo').map(m => {
             const stat = modelStats[m.id];
             const avgTime = stat && stat.count > 0 ? stat.totalTimeMs / stat.count : 0;
             const totalAttempts = stat ? (stat.count + stat.fails) : 0;

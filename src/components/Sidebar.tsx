@@ -118,7 +118,7 @@ export const Sidebar: React.FC<Props> = ({
                             </div>
                         </div>
                         <div className="space-y-1.5">
-                        {models.filter(m => m.id !== 'auto').map(m => {
+                        {models.filter(m => m.id !== 'turbo').map(m => {
                             const stat = modelStats[m.id];
                             const avgTime = stat && stat.count > 0 ? stat.totalTimeMs / stat.count : 0;
                             const totalAttempts = stat ? (stat.count + stat.fails) : 0;
