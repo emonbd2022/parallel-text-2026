@@ -79,7 +79,27 @@ export const Tutorial: React.FC = () => {
           <Section id="api-keys" active={activeSection}>
             <h2 className="text-2xl font-bold text-white mb-4 border-b border-slate-800 pb-2">2. Managing API Keys</h2>
             <div className="space-y-4">
-              <p>To generate metadata, you need to provide your own Google Gemini API keys in the left sidebar.</p>
+              <p>To generate metadata, you need to provide your own Google Gemini API keys. Here is how to get and add them:</p>
+              
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mt-4">
+                <h3 className="text-lg font-bold text-emerald-400 mb-3">How to get a Gemini API Key</h3>
+                <ol className="list-decimal pl-5 space-y-3 text-slate-300">
+                  <li>Go to <strong><a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Google AI Studio</a></strong> and sign in with your Google account.</li>
+                  <li>Click on the <strong>"Get API key"</strong> button (usually on the left menu).</li>
+                  <li>Click <strong>"Create API key"</strong>. You can create it in a new or existing Google Cloud project.</li>
+                  <li>Once generated, <strong>Copy</strong> the long string of text (your API key).</li>
+                </ol>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mt-4">
+                <h3 className="text-lg font-bold text-blue-400 mb-3">How to add it to Parallel Text</h3>
+                <ol className="list-decimal pl-5 space-y-3 text-slate-300">
+                  <li>Open the <strong>left sidebar</strong> in Parallel Text.</li>
+                  <li>Locate the <strong>API Keys</strong> section at the top.</li>
+                  <li>Paste your copied key into the text box and click the <strong>Add Key</strong> button (or press Enter).</li>
+                  <li>Your key will now appear in the list below.</li>
+                </ol>
+              </div>
               
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 mt-4">
                 <h3 className="text-lg font-bold text-purple-300 mb-2">Two Pools of Keys</h3>
