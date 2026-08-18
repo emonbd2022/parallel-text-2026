@@ -45,6 +45,10 @@ export const AdminDashboard: React.FC = () => {
   const [allUsersModalOpen, setAllUsersModalOpen] = useState(false);
   const [allUsersError, setAllUsersError] = useState<string | null>(null);
   
+  // User Deletion State
+  const [userToDelete, setUserToDelete] = useState<UserData | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
+  
   // Clean Data Modal & Execution State
   const [globalNotifModalOpen, setGlobalNotifModalOpen] = useState(false);
   const [globalNotifTitle, setGlobalNotifTitle] = useState('');
@@ -306,24 +310,43 @@ export const AdminDashboard: React.FC = () => {
     }
   }, [currentPage, fetchPage, usersByPage]);
 
-  // Search executes ONLY on explicit user action (button click or Enter key)
+  // Search executes on explicit user action (button click or Enter key)
   const handleSearch = async () => {
-    if (viewMode === 'all') {
-      // In All Users mode, searching operates 100% in-memory (0 Firestore reads)
-      return;
-    }
-    if (!searchTerm.trim()) {
-      fetchPage(1, true);
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) {
+      if (viewMode === 'paginated') {
+        fetchPage(1, true);
+      }
       return;
     }
     setLoading(true);
     try {
-      const q = query(collection(db, 'users'), where('email', '==', searchTerm.trim()), limit(1));
-      const snap = await getDocs(q);
-      const res: UserData[] = [];
-      snap.forEach(d => res.push(d.data() as UserData));
-      setUsersByPage({ 1: res });
-      setCurrentPage(1);
+      let candidateUsers = allUsers;
+      if (!candidateUsers || candidateUsers.length === 0) {
+        const snap = await getDocs(collection(db, 'users'));
+        const list: UserData[] = [];
+        snap.forEach(d => list.push(d.data() as UserData));
+        candidateUsers = list;
+        setAllUsers(list);
+        try {
+          sessionStorage.setItem('adminCachedAllUsers', JSON.stringify(list));
+        } catch {}
+      }
+
+      const res = candidateUsers.filter(u => 
+        (u.email && u.email.toLowerCase().includes(term)) ||
+        (u.name && u.name.toLowerCase().includes(term)) ||
+        (u.nickname && u.nickname.toLowerCase().includes(term)) ||
+        (u.uid && u.uid.toLowerCase().includes(term)) ||
+        (u.plan && u.plan.toLowerCase().includes(term))
+      );
+
+      if (viewMode === 'all') {
+        // In all mode, filteredUsers will automatically reflect this
+      } else {
+        setUsersByPage({ 1: res });
+        setCurrentPage(1);
+      }
     } catch (e) {
       console.error("Search query error:", e);
     } finally {
@@ -345,6 +368,44 @@ export const AdminDashboard: React.FC = () => {
       setAllUsers(prev => prev.map(u => u.uid === uid ? { ...u, ...updates } : u));
     } catch (error) {
       console.error("Error updating user:", error);
+    }
+  };
+
+  const confirmDeleteUser = async () => {
+    if (!userToDelete || !db) return;
+    setIsDeletingUser(true);
+    try {
+      const uid = userToDelete.uid;
+      await deleteDoc(doc(db, 'users', uid));
+
+      // Remove from paginated state and sessionStorage cache
+      setUsersByPage(prev => {
+        const next = { ...prev };
+        for (const p of Object.keys(next)) {
+          const pageNum = Number(p);
+          next[pageNum] = (next[pageNum] || []).filter(u => u.uid !== uid);
+        }
+        try {
+          sessionStorage.setItem('adminCachedUsersByPage', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      // Remove from allUsers state and sessionStorage cache
+      setAllUsers(prev => {
+        const next = prev.filter(u => u.uid !== uid);
+        try {
+          sessionStorage.setItem('adminCachedAllUsers', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      setUserToDelete(null);
+    } catch (error: any) {
+      console.error("Error deleting user from database:", error);
+      alert(`Failed to delete user: ${error?.message || 'Unknown error'}`);
+    } finally {
+      setIsDeletingUser(false);
     }
   };
 
@@ -466,19 +527,32 @@ export const AdminDashboard: React.FC = () => {
 
   const filteredUsers = useMemo(() => {
     let list: UserData[] = [];
+    const term = searchTerm.trim().toLowerCase();
+
     if (viewMode === 'all') {
-      if (searchTerm.trim()) {
-        const term = searchTerm.trim().toLowerCase();
+      if (term) {
         list = allUsers.filter(u => 
           (u.email && u.email.toLowerCase().includes(term)) ||
           (u.name && u.name.toLowerCase().includes(term)) ||
-          (u.nickname && u.nickname.toLowerCase().includes(term))
+          (u.nickname && u.nickname.toLowerCase().includes(term)) ||
+          (u.uid && u.uid.toLowerCase().includes(term)) ||
+          (u.plan && u.plan.toLowerCase().includes(term))
         );
       } else {
         list = [...allUsers];
       }
     } else {
-      list = [...users];
+      if (term) {
+        list = users.filter(u => 
+          (u.email && u.email.toLowerCase().includes(term)) ||
+          (u.name && u.name.toLowerCase().includes(term)) ||
+          (u.nickname && u.nickname.toLowerCase().includes(term)) ||
+          (u.uid && u.uid.toLowerCase().includes(term)) ||
+          (u.plan && u.plan.toLowerCase().includes(term))
+        );
+      } else {
+        list = [...users];
+      }
     }
 
     const getAvgPerDay = (u: UserData) => {
@@ -610,17 +684,34 @@ export const AdminDashboard: React.FC = () => {
                   <Search className="w-5 h-5 text-slate-500 ml-2 shrink-0" />
                   <input 
                     type="text" 
-                    placeholder="Exact Email Search..." 
+                    placeholder="Search by name, email, nickname, UID..." 
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                    className="bg-transparent border-none outline-none text-slate-200 w-full py-1"
+                    className="bg-transparent border-none outline-none text-slate-200 w-full py-1 text-sm placeholder:text-slate-500"
                   />
+                  {searchTerm && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchTerm("");
+                        if (viewMode === 'paginated') {
+                          fetchPage(1, true);
+                        }
+                      }}
+                      className="p-1 text-slate-500 hover:text-slate-300 hover:bg-slate-800 rounded-md transition-colors shrink-0"
+                      title="Clear search"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
                   <button 
                     onClick={handleSearch}
-                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 rounded-lg transition-colors shrink-0"
+                    disabled={loading}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 hover:text-white rounded-lg transition-colors shrink-0 flex items-center gap-1.5 disabled:opacity-50"
                   >
-                    Search DB
+                    {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                    <span>Search DB</span>
                   </button>
                 </div>
 
@@ -682,12 +773,13 @@ export const AdminDashboard: React.FC = () => {
                       <th className="pb-3 font-semibold">Processed</th>
                       <th className="pb-3 font-semibold">Avg/Day</th>
                       <th className="pb-3 font-semibold">Status</th>
+                      <th className="pb-3 font-semibold text-right pr-3">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
                     {(loading || isFetchingAllUsers) ? (
                       <tr>
-                        <td colSpan={8} className="py-12 text-center text-slate-400">
+                        <td colSpan={9} className="py-12 text-center text-slate-400">
                           <div className="flex flex-col items-center justify-center gap-3">
                             <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
                             <span className="text-sm font-medium">
@@ -697,7 +789,7 @@ export const AdminDashboard: React.FC = () => {
                         </td>
                       </tr>
                     ) : filteredUsers.length === 0 ? (
-                      <tr><td colSpan={8} className="py-8 text-center text-slate-500">No users found.</td></tr>
+                      <tr><td colSpan={9} className="py-8 text-center text-slate-500">No users found.</td></tr>
                     ) : (
                       filteredUsers.map((user, index) => {
                             const rank = viewMode === 'all' ? index + 1 : (currentPage - 1) * 5 + index + 1;
@@ -794,6 +886,17 @@ export const AdminDashboard: React.FC = () => {
                                   <span className="text-sm text-slate-400">{user.blocked ? <span className="text-red-400">Blocked</span> : <span className="text-emerald-400">Active</span>}</span>
                                 </label>
                             </td>
+
+                            <td className="py-4 text-right pr-3">
+                                <button 
+                                  onClick={() => setUserToDelete(user)}
+                                  disabled={user.uid === currentAdmin?.uid}
+                                  className="p-1.5 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/60 hover:border-rose-600 text-rose-400 hover:text-rose-300 rounded-lg transition-all shadow-sm disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-rose-950/40 inline-flex items-center justify-center group"
+                                  title={user.uid === currentAdmin?.uid ? "You cannot delete your own admin account" : `Delete ${user.name || user.email || 'user'} from database`}
+                                >
+                                  <Trash2 className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                                </button>
+                            </td>
                           </tr>
                       );
                     })
@@ -807,7 +910,11 @@ export const AdminDashboard: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></span>
                     <span>
-                      Showing all <strong className="text-purple-300 font-semibold">{filteredUsers.length}</strong> loaded user accounts on a single page
+                      {searchTerm.trim() ? (
+                        <>Matching <strong className="text-purple-300 font-semibold">{filteredUsers.length}</strong> of {allUsers.length} total user accounts</>
+                      ) : (
+                        <>Showing all <strong className="text-purple-300 font-semibold">{filteredUsers.length}</strong> loaded user accounts on a single page</>
+                      )}
                     </span>
                   </div>
                   <button
@@ -817,7 +924,25 @@ export const AdminDashboard: React.FC = () => {
                     Switch back to Paginated View
                   </button>
                 </div>
-              ) : !searchTerm && (
+              ) : searchTerm.trim() ? (
+                <div className="flex flex-col sm:flex-row justify-between items-center mt-6 pt-4 border-t border-slate-800 text-xs text-slate-400 gap-3">
+                  <div className="flex items-center gap-2">
+                    <Search className="w-4 h-4 text-purple-400" />
+                    <span>
+                      Found <strong className="text-purple-300 font-semibold">{filteredUsers.length}</strong> matching user{filteredUsers.length === 1 ? '' : 's'} for "<span className="text-slate-200">{searchTerm}</span>"
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setSearchTerm("");
+                      fetchPage(1, true);
+                    }}
+                    className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-semibold transition-colors"
+                  >
+                    Clear Search & View All
+                  </button>
+                </div>
+              ) : (
                 <div className="flex justify-center mt-6 items-center gap-4">
                     <button 
                       onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
@@ -1416,6 +1541,89 @@ export const AdminDashboard: React.FC = () => {
                   <>
                     <Users className="w-3.5 h-3.5" />
                     <span>Load All Users</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete User Confirmation Modal */}
+      {userToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-rose-800/60 rounded-2xl p-6 max-w-md w-full shadow-2xl shadow-rose-950/50 relative space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Delete User Account</h3>
+                  <p className="text-xs text-rose-400 font-medium">Permanent Database Action</p>
+                </div>
+              </div>
+              <button
+                onClick={() => !isDeletingUser && setUserToDelete(null)}
+                disabled={isDeletingUser}
+                className="text-slate-500 hover:text-slate-300 p-1.5 rounded-lg hover:bg-slate-800 transition-colors disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 bg-slate-950/80 border border-slate-800/80 rounded-xl space-y-2.5 text-xs text-slate-300">
+              <div className="flex items-center gap-3 pb-2.5 border-b border-slate-850">
+                <img 
+                  src={userToDelete.photoURL || 'https://via.placeholder.com/36'} 
+                  alt="" 
+                  className="w-9 h-9 rounded-full border border-slate-700 shrink-0" 
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-slate-100 truncate text-sm">{userToDelete.name || 'User'}</div>
+                  <div className="text-purple-300 font-mono text-xs truncate">{userToDelete.email}</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 pt-1 text-slate-400">
+                <div>Plan: <span className="text-slate-200 font-semibold capitalize">{userToDelete.plan || 'Free'}</span></div>
+                <div>Credits: <span className="text-slate-200 font-semibold">{userToDelete.unlimited ? '∞' : (userToDelete.credits || 0).toLocaleString()}</span></div>
+                <div>Processed: <span className="text-slate-200 font-semibold">{(userToDelete.totalProcessedImages || 0).toLocaleString()}</span></div>
+                <div>Joined: <span className="text-slate-200 font-semibold">{userToDelete.joinDate ? new Date(userToDelete.joinDate).toLocaleDateString() : 'N/A'}</span></div>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-rose-950/30 border border-rose-800/40 rounded-xl text-xs text-rose-200 flex items-start gap-2.5 leading-relaxed">
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <span>
+                Are you sure you want to permanently delete this user document from the Firestore database? This action cannot be undone.
+              </span>
+            </div>
+
+            <div className="flex justify-end items-center gap-3 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setUserToDelete(null)}
+                disabled={isDeletingUser}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-semibold text-xs transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteUser}
+                disabled={isDeletingUser}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-bold text-xs flex items-center gap-2 transition-all shadow-lg shadow-rose-950/50 disabled:opacity-50"
+              >
+                {isDeletingUser ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting User...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete User</span>
                   </>
                 )}
               </button>
