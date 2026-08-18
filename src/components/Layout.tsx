@@ -25,8 +25,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
   const handleViewNotification = async (notification: AppNotification) => {
     setViewingNotification(notification);
-    // Explicitly delete from Firestore and local cache upon viewing
-    await deleteNotification(notification.id);
+    // Dismiss locally for current user's notification icon and badge (does not delete from server)
+    await deleteNotification(notification.id, false);
   };
 
   const handleToggleNotifications = () => {

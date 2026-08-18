@@ -102,7 +102,7 @@ export default function App() {
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-    const [filter, setFilter] = useState<'all' | 'ongoing' | 'uncompleted' | 'failed'>('all');
+    const [filter, setFilter] = useState<'all' | 'ongoing' | 'completed' | 'uncompleted' | 'failed'>('all');
     const [keys, setKeys] = useState<ApiKey[]>(() => {
     try {
       const loaded = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '[]');
@@ -1950,6 +1950,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                           <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All</button>
                           <button onClick={() => setFilter('ongoing')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'ongoing' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>On going</button>
                           <button onClick={() => setFilter('uncompleted')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'uncompleted' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Uncompleted</button>
+                          <button onClick={() => setFilter('completed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'completed' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Completed</button>
                           <button onClick={() => setFilter('failed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'failed' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Failed</button>
                       </div>
                       <div className="flex items-center gap-3">
@@ -1968,7 +1969,17 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                 )}
 
                 <ProcessingQueue 
-                  items={filter === 'failed' ? items.filter(i => i.status === 'error') : filter === 'uncompleted' ? items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()) : filter === 'ongoing' ? items.filter(i => i.status === 'processing' || i.status === 'compressing') : items} 
+                  items={
+                    filter === 'failed' 
+                      ? items.filter(i => i.status === 'error') 
+                      : filter === 'uncompleted' 
+                      ? items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()) 
+                      : filter === 'completed'
+                      ? items.filter(i => i.status === 'done' || (i.status !== 'error' && i.status !== 'processing' && i.status !== 'compressing' && Boolean(i.title?.trim()) && Boolean(i.keywords?.trim()) && Boolean(i.category?.trim())))
+                      : filter === 'ongoing' 
+                      ? items.filter(i => i.status === 'processing' || i.status === 'compressing') 
+                      : items
+                  } 
                   itemRefs={itemRefs}
                   onRemove={removeItem}
                   onUpdate={updateItem}

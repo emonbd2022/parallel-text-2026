@@ -1,17 +1,19 @@
 import { motion } from 'motion/react';
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Calendar, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare } from 'lucide-react';
-import DatePicker from 'react-datepicker';
-import 'react-datepicker/dist/react-datepicker.css';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown } from 'lucide-react';
+
+type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active';
 
 export const AdminDashboard: React.FC = () => {
   const { userData: currentAdmin, maintenanceMode, setMaintenanceMode, notifications, setNotifications, deleteNotification } = useAuth();
   
   // Dashboard Tabs: 'users' | 'notifications'
   const [activeTab, setActiveTab] = useState<'users' | 'notifications'>('users');
+  const [sortBy, setSortBy] = useState<SortOption>('recent_active');
+  const [viewMode, setViewMode] = useState<'paginated' | 'all'>('paginated');
 
   // Cache pages in sessionStorage so navigating away and returning costs 0 Firestore reads
   const getInitialUsersCache = (): Record<number, UserData[]> => {
@@ -23,16 +25,25 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  // Cache All Users dataset in sessionStorage so repeat viewings in current session cost 0 reads
+  const getInitialAllUsersCache = (): UserData[] => {
+    try {
+      const s = sessionStorage.getItem('adminCachedAllUsers');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  };
+
   const [currentPage, setCurrentPage] = useState(1);
   const [searchTerm, setSearchTerm] = useState("");
   const [usersByPage, setUsersByPage] = useState<Record<number, UserData[]>>(getInitialUsersCache);
+  const [allUsers, setAllUsers] = useState<UserData[]>(getInitialAllUsersCache);
   const [lastVisibleByPage, setLastVisibleByPage] = useState<Record<number, any>>({});
   const [loading, setLoading] = useState(false);
-
-  // Date range filter (calculated 100% locally from cached/loaded users)
-  const [startDate, setStartDate] = useState<Date | null>(null);
-  const [endDate, setEndDate] = useState<Date | null>(null);
-  const [showStats, setShowStats] = useState(false);
+  const [isFetchingAllUsers, setIsFetchingAllUsers] = useState(false);
+  const [allUsersModalOpen, setAllUsersModalOpen] = useState(false);
+  const [allUsersError, setAllUsersError] = useState<string | null>(null);
   
   // Clean Data Modal & Execution State
   const [globalNotifModalOpen, setGlobalNotifModalOpen] = useState(false);
@@ -48,31 +59,33 @@ export const AdminDashboard: React.FC = () => {
     message: ''
   });
 
-  // Server Notification Management State
-  const [serverNotifications, setServerNotifications] = useState<AppNotification[]>(notifications || []);
+  // Server Notification Management State (Independent from user's personal unread bell notifications)
+  const [serverNotifications, setServerNotifications] = useState<AppNotification[]>(() => {
+    try {
+      const s = sessionStorage.getItem('adminCachedServerNotifs');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
   const [loadingNotifs, setLoadingNotifs] = useState(false);
   const [notifFilter, setNotifFilter] = useState<'all' | 'global' | 'signups'>('all');
   const [deletingNotifId, setDeletingNotifId] = useState<string | null>(null);
   const [viewingAdminNotif, setViewingAdminNotif] = useState<AppNotification | null>(null);
 
-  // Keep serverNotifications in sync with context notifications
-  useEffect(() => {
-    if (notifications) {
-      setServerNotifications(notifications);
-    }
-  }, [notifications]);
-
-  // Fetch all active notifications directly from server
+  // Fetch all active notifications directly from server for the Admin Notification Center
   const fetchServerNotifications = async () => {
     if (!db) return;
     setLoadingNotifs(true);
     try {
-      const q = query(collection(db, 'notifications'), orderBy('createdAt', 'desc'), limit(25));
+      const q = query(collection(db, 'notifications'), orderBy('createdAt', 'desc'), limit(50));
       const snap = await getDocs(q);
       const list: AppNotification[] = [];
       snap.forEach(d => list.push(d.data() as AppNotification));
       setServerNotifications(list);
-      setNotifications(list);
+      try {
+        sessionStorage.setItem('adminCachedServerNotifs', JSON.stringify(list));
+      } catch {}
     } catch (e) {
       console.error("Error fetching notifications from server:", e);
     } finally {
@@ -80,13 +93,24 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
-  // Delete notification from server (Admin action)
+  // Auto-fetch server notifications when switching to the notifications tab
+  useEffect(() => {
+    if (activeTab === 'notifications') {
+      fetchServerNotifications();
+    }
+  }, [activeTab]);
+
+  // Delete notification from server (Admin action only)
   const handleDeleteServerNotif = async (id: string) => {
     if (!id) return;
     setDeletingNotifId(id);
     try {
       await deleteNotification(id, true);
-      setServerNotifications(prev => prev.filter(n => n.id !== id));
+      setServerNotifications(prev => {
+        const updated = prev.filter(n => n.id !== id);
+        try { sessionStorage.setItem('adminCachedServerNotifs', JSON.stringify(updated)); } catch {}
+        return updated;
+      });
       if (viewingAdminNotif?.id === id) {
         setViewingAdminNotif(null);
       }
@@ -101,6 +125,7 @@ export const AdminDashboard: React.FC = () => {
   // Guard against duplicate in-flight requests and StrictMode double-mount executions
   const isFetchingRef = useRef(false);
   const initialFetchAttemptedRef = useRef(false);
+  const isFetchingAllUsersRef = useRef(false);
 
   // Sync usersByPage to sessionStorage for 0-cost repeat viewings across routes
   useEffect(() => {
@@ -110,6 +135,15 @@ export const AdminDashboard: React.FC = () => {
       }
     } catch {}
   }, [usersByPage]);
+
+  // Sync allUsers to sessionStorage
+  useEffect(() => {
+    try {
+      if (allUsers.length > 0) {
+        sessionStorage.setItem('adminCachedAllUsers', JSON.stringify(allUsers));
+      }
+    } catch {}
+  }, [allUsers]);
 
   const handleSendGlobalNotification = async () => {
     if (!globalNotifMessage.trim()) return;
@@ -126,8 +160,11 @@ export const AdminDashboard: React.FC = () => {
         read: false
       };
       await setDoc(doc(db, 'notifications', notifId), newNotif);
-      setServerNotifications(prev => [newNotif, ...prev.filter(n => n.id !== notifId)]);
-      setNotifications(prev => [newNotif, ...prev.filter(n => n.id !== notifId)]);
+      setServerNotifications(prev => {
+        const updated = [newNotif, ...prev.filter(n => n.id !== notifId)];
+        try { sessionStorage.setItem('adminCachedServerNotifs', JSON.stringify(updated)); } catch {}
+        return updated;
+      });
       setGlobalNotifModalOpen(false);
       setGlobalNotifTitle('');
       setGlobalNotifMessage('');
@@ -204,6 +241,57 @@ export const AdminDashboard: React.FC = () => {
     }
   }, [lastVisibleByPage, usersByPage]);
 
+  // Explicit All Users Fetcher — ONLY executed upon explicit admin confirmation
+  const fetchAllUsers = async () => {
+    if (isFetchingAllUsersRef.current) return;
+    isFetchingAllUsersRef.current = true;
+    setIsFetchingAllUsers(true);
+    setAllUsersError(null);
+
+    try {
+      const q = query(collection(db, 'users'), orderBy('totalProcessedImages', 'desc'));
+      const snapshot = await getDocs(q);
+      const list: UserData[] = [];
+      snapshot.forEach(docSnap => {
+        const d = docSnap.data();
+        // Strict allowlist mapping to avoid pulling any unneeded fields
+        list.push({
+          uid: d.uid || docSnap.id,
+          name: d.name || 'User',
+          email: d.email || '',
+          photoURL: d.photoURL || '',
+          nickname: d.nickname || '',
+          credits: typeof d.credits === 'number' ? d.credits : 0,
+          unlimited: Boolean(d.unlimited),
+          totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
+          plan: d.plan || (d.unlimited ? 'unlimited' : 'free'),
+          planStartDate: d.planStartDate || '',
+          planEndDate: d.planEndDate || '',
+          blocked: Boolean(d.blocked),
+          role: d.role || 'user',
+          joinDate: d.joinDate || d.createdAt || '',
+          createdAt: d.createdAt || d.joinDate || '',
+          lastActiveAt: d.lastActiveAt || d.lastLoginAt || d.lastSeen || '',
+        } as UserData);
+      });
+
+      setAllUsers(list);
+      setViewMode('all');
+      setAllUsersModalOpen(false);
+      try {
+        sessionStorage.setItem('adminCachedAllUsers', JSON.stringify(list));
+      } catch (e) {
+        console.warn("Could not cache all users to sessionStorage:", e);
+      }
+    } catch (err: any) {
+      console.error("Failed to load all users:", err);
+      setAllUsersError(err?.message || "Failed to load all users from database.");
+    } finally {
+      setIsFetchingAllUsers(false);
+      isFetchingAllUsersRef.current = false;
+    }
+  };
+
   useEffect(() => {
     // Fetch only if page 1 has no cached data and hasn't been fetched yet
     if (currentPage === 1 && !initialFetchAttemptedRef.current) {
@@ -220,6 +308,10 @@ export const AdminDashboard: React.FC = () => {
 
   // Search executes ONLY on explicit user action (button click or Enter key)
   const handleSearch = async () => {
+    if (viewMode === 'all') {
+      // In All Users mode, searching operates 100% in-memory (0 Firestore reads)
+      return;
+    }
     if (!searchTerm.trim()) {
       fetchPage(1, true);
       return;
@@ -250,6 +342,7 @@ export const AdminDashboard: React.FC = () => {
         }
         return next;
       });
+      setAllUsers(prev => prev.map(u => u.uid === uid ? { ...u, ...updates } : u));
     } catch (error) {
       console.error("Error updating user:", error);
     }
@@ -370,7 +463,57 @@ export const AdminDashboard: React.FC = () => {
 
   const users = usersByPage[currentPage] || [];
   const totalSiteImages = Object.values(usersByPage).flat().reduce((acc, u: any) => acc + (u.totalProcessedImages || 0), 0);
-  const filteredUsers = users;
+
+  const filteredUsers = useMemo(() => {
+    let list: UserData[] = [];
+    if (viewMode === 'all') {
+      if (searchTerm.trim()) {
+        const term = searchTerm.trim().toLowerCase();
+        list = allUsers.filter(u => 
+          (u.email && u.email.toLowerCase().includes(term)) ||
+          (u.name && u.name.toLowerCase().includes(term)) ||
+          (u.nickname && u.nickname.toLowerCase().includes(term))
+        );
+      } else {
+        list = [...allUsers];
+      }
+    } else {
+      list = [...users];
+    }
+
+    const getAvgPerDay = (u: UserData) => {
+      if (!u.joinDate) return 0;
+      const join = new Date(u.joinDate);
+      const days = Math.max(1, Math.floor((Date.now() - join.getTime()) / (1000 * 60 * 60 * 24)));
+      return Math.round((u.totalProcessedImages || 0) / days);
+    };
+
+    switch (sortBy) {
+      case 'recent_active':
+        // Default: Sort by activity / login / join timestamp descending
+        return list.sort((a, b) => {
+          const timeA = new Date((a as any).lastActiveAt || (a as any).lastLoginAt || (a as any).lastSeen || a.planStartDate || a.joinDate || 0).getTime();
+          const timeB = new Date((b as any).lastActiveAt || (b as any).lastLoginAt || (b as any).lastSeen || b.planStartDate || b.joinDate || 0).getTime();
+          if (timeB !== timeA) return timeB - timeA;
+          return (b.totalProcessedImages || 0) - (a.totalProcessedImages || 0);
+        });
+      case 'recently_signed_up':
+        // Newest joinDate / createdAt first
+        return list.sort((a, b) => {
+          const timeA = new Date(a.joinDate || (a as any).createdAt || 0).getTime();
+          const timeB = new Date(b.joinDate || (b as any).createdAt || 0).getTime();
+          return timeB - timeA;
+        });
+      case 'top_users':
+        // Highest Avg/Day first
+        return list.sort((a, b) => getAvgPerDay(b) - getAvgPerDay(a));
+      case 'least_active':
+        // Lowest Avg/Day first
+        return list.sort((a, b) => getAvgPerDay(a) - getAvgPerDay(b));
+      default:
+        return list;
+    }
+  }, [users, allUsers, viewMode, searchTerm, sortBy]);
 
   return (
     <>
@@ -418,32 +561,6 @@ export const AdminDashboard: React.FC = () => {
                 <input type="checkbox" checked={maintenanceMode} onChange={toggleMaintenance} className="w-4 h-4 accent-red-500" />
                 <span className="text-sm font-bold text-red-400">Maintenance Mode</span>
             </label>
-            
-            <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-6 py-3 shadow-lg">
-              <div className="text-sm text-slate-400">Date Range Filter</div>
-              <div className="flex items-center gap-2 mt-1">
-                 <DatePicker
-                    selected={startDate}
-                    onChange={(date) => setStartDate(date)}
-                    selectsStart
-                    startDate={startDate}
-                    endDate={endDate}
-                    placeholderText="Start Date"
-                    className="bg-slate-950 border border-slate-700 text-xs rounded px-2 py-1 text-slate-300 w-24 focus:outline-none focus:border-purple-500"
-                 />
-                 <span className="text-slate-500">-</span>
-                 <DatePicker
-                    selected={endDate}
-                    onChange={(date) => setEndDate(date)}
-                    selectsEnd
-                    startDate={startDate}
-                    endDate={endDate}
-                    minDate={startDate}
-                    placeholderText="End Date"
-                    className="bg-slate-950 border border-slate-700 text-xs rounded px-2 py-1 text-slate-300 w-24 focus:outline-none focus:border-purple-500"
-                 />
-              </div>
-            </div>
           </div>
         </div>
 
@@ -488,9 +605,9 @@ export const AdminDashboard: React.FC = () => {
         {activeTab === 'users' && (
           <div className="space-y-6">
             <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl relative">
-              <div className="flex justify-between items-center mb-6">
-                <div className="flex-1 flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800 mr-4">
-                  <Search className="w-5 h-5 text-slate-500 ml-2" />
+              <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 mb-6">
+                <div className="flex-1 flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800">
+                  <Search className="w-5 h-5 text-slate-500 ml-2 shrink-0" />
                   <input 
                     type="text" 
                     placeholder="Exact Email Search..." 
@@ -501,10 +618,56 @@ export const AdminDashboard: React.FC = () => {
                   />
                   <button 
                     onClick={handleSearch}
-                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 rounded-lg transition-colors"
+                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 rounded-lg transition-colors shrink-0"
                   >
                     Search DB
                   </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 shrink-0">
+                  <button
+                    onClick={() => {
+                      if (viewMode === 'paginated') {
+                        if (allUsers.length > 0) {
+                          // Already cached in memory / session storage! 0 Firestore reads needed
+                          setViewMode('all');
+                        } else {
+                          setAllUsersModalOpen(true);
+                        }
+                      } else {
+                        setViewMode('paginated');
+                      }
+                    }}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all border shadow-sm ${
+                      viewMode === 'all'
+                        ? 'bg-purple-900/60 border-purple-600 text-purple-200 hover:bg-purple-900/80 shadow-purple-900/20'
+                        : 'bg-slate-950 hover:bg-slate-900 border-slate-800 text-slate-300 hover:text-white'
+                    }`}
+                    title={viewMode === 'all' ? "Switch to standard paginated view" : "Fetch all users into a single view"}
+                  >
+                    <Users className="w-4 h-4 text-purple-400" />
+                    <span>{viewMode === 'all' ? 'Paginated View' : 'All Users'}</span>
+                    {viewMode === 'all' && (
+                      <span className="ml-1 px-1.5 py-0.5 rounded-full bg-purple-500/20 text-[10px] font-mono text-purple-300">
+                        {allUsers.length}
+                      </span>
+                    )}
+                  </button>
+
+                  <div className="flex items-center gap-2 bg-slate-950 p-2 px-3.5 rounded-xl border border-slate-800 shrink-0">
+                    <ArrowUpDown className="w-4 h-4 text-purple-400 shrink-0" />
+                    <span className="text-xs font-bold text-slate-400 whitespace-nowrap">Sort By:</span>
+                    <select
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value as SortOption)}
+                      className="bg-transparent border-none outline-none text-xs font-bold text-purple-300 cursor-pointer pr-1"
+                    >
+                      <option value="recent_active" className="bg-slate-900 text-slate-200">Recent Active Users</option>
+                      <option value="recently_signed_up" className="bg-slate-900 text-slate-200">Recently Signed Up</option>
+                      <option value="top_users" className="bg-slate-900 text-slate-200">Top Users</option>
+                      <option value="least_active" className="bg-slate-900 text-slate-200">Least Active Users</option>
+                    </select>
+                  </div>
                 </div>
               </div>
               <div className="overflow-x-auto">
@@ -522,13 +685,22 @@ export const AdminDashboard: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
-                    {loading ? (
-                      <tr><td colSpan={8} className="py-8 text-center text-slate-500">Loading users...</td></tr>
+                    {(loading || isFetchingAllUsers) ? (
+                      <tr>
+                        <td colSpan={8} className="py-12 text-center text-slate-400">
+                          <div className="flex flex-col items-center justify-center gap-3">
+                            <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
+                            <span className="text-sm font-medium">
+                              {isFetchingAllUsers ? 'Retrieving all user accounts from database...' : 'Loading users...'}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
                     ) : filteredUsers.length === 0 ? (
                       <tr><td colSpan={8} className="py-8 text-center text-slate-500">No users found.</td></tr>
                     ) : (
                       filteredUsers.map((user, index) => {
-                            const rank = (currentPage - 1) * 5 + index + 1;
+                            const rank = viewMode === 'all' ? index + 1 : (currentPage - 1) * 5 + index + 1;
                             let avgPerDay = 0;
                             if (user.joinDate) {
                               const joinDate = new Date(user.joinDate);
@@ -552,7 +724,14 @@ export const AdminDashboard: React.FC = () => {
                                <input 
                                   type="text" 
                                   value={user.nickname || ''}
-                                  onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, nickname: e.target.value} : u)}))}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (viewMode === 'all') {
+                                      setAllUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, nickname: val } : u));
+                                    } else {
+                                      setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, nickname: val} : u)}));
+                                    }
+                                  }}
                                   onBlur={(e) => handleUpdateUser(user.uid, { nickname: e.target.value })}
                                   className="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-purple-500"
                                />
@@ -562,7 +741,14 @@ export const AdminDashboard: React.FC = () => {
                                 <input 
                                   type="number" 
                                   value={user.credits}
-                                  onChange={(e) => setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, credits: parseInt(e.target.value) || 0} : u)}))}
+                                  onChange={(e) => {
+                                    const val = parseInt(e.target.value) || 0;
+                                    if (viewMode === 'all') {
+                                      setAllUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, credits: val } : u));
+                                    } else {
+                                      setUsersByPage(prev => ({...prev, [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? {...u, credits: val} : u)}));
+                                    }
+                                  }}
                                   onBlur={(e) => handleUpdateUser(user.uid, { credits: parseInt(e.target.value) || 0 })}
                                   className="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none focus:border-purple-500"
                                 />
@@ -615,7 +801,23 @@ export const AdminDashboard: React.FC = () => {
                   </tbody>
                 </table>
               </div>
-              {!searchTerm && (
+
+              {viewMode === 'all' ? (
+                <div className="flex flex-col sm:flex-row justify-between items-center mt-6 pt-4 border-t border-slate-800 text-xs text-slate-400 gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></span>
+                    <span>
+                      Showing all <strong className="text-purple-300 font-semibold">{filteredUsers.length}</strong> loaded user accounts on a single page
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setViewMode('paginated')}
+                    className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-semibold transition-colors"
+                  >
+                    Switch back to Paginated View
+                  </button>
+                </div>
+              ) : !searchTerm && (
                 <div className="flex justify-center mt-6 items-center gap-4">
                     <button 
                       onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
@@ -838,30 +1040,6 @@ export const AdminDashboard: React.FC = () => {
           </div>
         )}
       </div>
-
-      {showStats && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl max-w-lg w-full">
-            <h2 className="text-2xl font-bold mb-6 text-white flex items-center gap-3">
-               <Calendar className="w-6 h-6 text-purple-400" />
-               Date Range Statistics
-            </h2>
-            <div className="space-y-4 mb-8">
-               <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 flex justify-between items-center">
-                  <span className="text-slate-400">Total Users</span>
-                  <span className="text-xl font-bold text-white">{filteredUsers.length}</span>
-               </div>
-               <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700/50 flex justify-between items-center">
-                  <span className="text-slate-400">Total Images Processed</span>
-                  <span className="text-xl font-bold text-emerald-400">{totalSiteImages}</span>
-               </div>
-            </div>
-            <button onClick={() => setShowStats(false)} className="w-full py-3 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-white transition-colors">
-               Close
-            </button>
-          </motion.div>
-        </div>
-      )}
 
       {/* Clean Database Modal */}
       {cleanModalOpen && (
@@ -1177,6 +1355,69 @@ export const AdminDashboard: React.FC = () => {
                 className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-xl transition-colors"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* All Users Fetch Confirmation Modal */}
+      {allUsersModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl relative space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Users className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Load All User Accounts</h3>
+                <p className="text-xs text-slate-400">Single-page comprehensive view</p>
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-950/70 border border-slate-800 rounded-xl space-y-2.5 text-xs text-slate-300 leading-relaxed">
+              <div className="flex items-start gap-2 text-amber-300">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>This action will perform a full scan of all user records in your Firestore database.</span>
+              </div>
+              <p className="text-slate-400">
+                Once loaded, all users are cached in your active session. All sorting, filtering, and searches will execute instantly in-memory with <strong className="text-emerald-400 font-semibold">0 extra Firestore reads</strong>.
+              </p>
+            </div>
+
+            {allUsersError && (
+              <div className="p-3 bg-rose-950/40 border border-rose-800/60 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                <span>{allUsersError}</span>
+              </div>
+            )}
+
+            <div className="flex justify-end items-center gap-3 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setAllUsersModalOpen(false)}
+                disabled={isFetchingAllUsers}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-semibold text-xs transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={fetchAllUsers}
+                disabled={isFetchingAllUsers}
+                className="px-5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold text-xs flex items-center gap-2 transition-all shadow-lg shadow-purple-900/30 disabled:opacity-50"
+              >
+                {isFetchingAllUsers ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Loading All Users...</span>
+                  </>
+                ) : (
+                  <>
+                    <Users className="w-3.5 h-3.5" />
+                    <span>Load All Users</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

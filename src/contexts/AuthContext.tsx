@@ -98,8 +98,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
     try {
       const activeUid = cachedData?.uid;
+      const dismissed = activeUid ? [
+        ...JSON.parse(localStorage.getItem(`dismissedNotifs_${activeUid}`) || '[]'),
+        ...JSON.parse(localStorage.getItem(`dismissedGlobalNotifs_${activeUid}`) || '[]')
+      ] : [];
       const stored = activeUid ? localStorage.getItem(`localNotifications_${activeUid}`) : localStorage.getItem('localNotifications');
-      return stored ? JSON.parse(stored) : [];
+      if (!stored) return [];
+      const parsed: AppNotification[] = JSON.parse(stored);
+      return Array.isArray(parsed) ? parsed.filter(n => !dismissed.includes(n.id)) : [];
     } catch {
       return [];
     }
@@ -149,11 +155,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (sessionFetched) {
       hasFetchedAdminNotifsRef.current = true;
       try {
+        const dismissedNotifs = [
+          ...JSON.parse(localStorage.getItem(`dismissedNotifs_${userData.uid}`) || '[]'),
+          ...JSON.parse(localStorage.getItem(`dismissedGlobalNotifs_${userData.uid}`) || '[]')
+        ];
         const cached = localStorage.getItem(`cachedNotifs_${userData.uid}`) || localStorage.getItem('cachedNotifs');
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setNotifications(parsed);
+          if (Array.isArray(parsed)) {
+            const filtered = parsed.filter(n => !dismissedNotifs.includes(n.id));
+            setNotifications(filtered);
             return;
           }
         }
@@ -213,10 +224,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
 
         setNotifications(prev => {
-          const existingIds = new Set(prev.map(p => p.id));
-          const combined = [...prev];
+          const dismissedSet = new Set(dismissedNotifs);
+          const filteredPrev = prev.filter(p => !dismissedSet.has(p.id));
+          const existingIds = new Set(filteredPrev.map(p => p.id));
+          const combined = [...filteredPrev];
           allFetched.forEach(fn => {
-            if (!existingIds.has(fn.id)) {
+            if (!existingIds.has(fn.id) && !dismissedSet.has(fn.id)) {
               combined.push(fn);
             }
           });
