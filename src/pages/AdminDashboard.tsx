@@ -521,9 +521,9 @@ export const AdminDashboard: React.FC = () => {
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 20 }}
-      className="flex-1 overflow-y-auto p-8 custom-scrollbar"
+      className="flex-1 w-full h-full overflow-y-auto p-4 sm:p-8 custom-scrollbar min-h-0"
     >
-      <div className="max-w-7xl mx-auto space-y-8">
+      <div className="max-w-7xl mx-auto space-y-8 pb-24">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <h1 className="text-3xl font-bold text-white flex items-center gap-3">
             <Shield className="w-8 h-8 text-emerald-400" />

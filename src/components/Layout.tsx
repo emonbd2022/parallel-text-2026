@@ -263,7 +263,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       )}
 
       {/* Main Content Viewport */}
-      <main className="flex-1 overflow-hidden relative">
+      <main className="flex-1 overflow-hidden relative flex flex-col min-h-0">
         {children}
       </main>
 
