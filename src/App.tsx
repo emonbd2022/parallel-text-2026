@@ -141,6 +141,10 @@ export default function App() {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportStats, setExportStats] = useState({ count: 0, path: '', elapsedTime: '0s', requestCount: 0, timeSaved: '0s' });
   const sessionRequestCountRef = useRef(parseInt(localStorage.getItem('sessionReqCount') || '0'));
+  const schedulerRunningRef = useRef(false);
+  const scheduleAgainRef = useRef(false);
+  const taskClaimLockRef = useRef<Set<string>>(new Set());
+  const keyClaimLockRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const idx = setInterval(() => localStorage.setItem('sessionReqCount', sessionRequestCountRef.current.toString()), 5000);
     return () => clearInterval(idx);
@@ -611,8 +615,20 @@ export default function App() {
 
   
   const startCategoryBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey) => {
+    // 0. ATOMIC CLAIM CHECK
+    const validBatch: ProcessingItem[] = [];
+    for (const item of batchItems) {
+        if (!taskClaimLockRef.current.has(item.id)) {
+            taskClaimLockRef.current.add(item.id);
+            validBatch.push(item);
+        }
+    }
+    if (validBatch.length === 0) return;
+    if (keyClaimLockRef.current.has(keyObj.id)) return;
+    keyClaimLockRef.current.add(keyObj.id);
+
     // 1. Mark all as processing
-    setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { 
+    setItems(prev => prev.map(p => validBatch.find(b => b.id === p.id) ? { 
       ...p, 
       status: 'processing', 
       assignedKeyId: keyObj.id 
@@ -777,11 +793,26 @@ export default function App() {
       });
       
       setStatusMsg(`Error: ${errorMessage.substring(0, 40)}`);
+    } finally {
+        keyClaimLockRef.current.delete(keyObj.id);
+        for (const item of validBatch) taskClaimLockRef.current.delete(item.id);
     }
   };
 const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey) => {
+    // 0. ATOMIC CLAIM CHECK
+    const validBatch: ProcessingItem[] = [];
+    for (const item of batchItems) {
+        if (!taskClaimLockRef.current.has(item.id)) {
+            taskClaimLockRef.current.add(item.id);
+            validBatch.push(item);
+        }
+    }
+    if (validBatch.length === 0) return;
+    if (keyClaimLockRef.current.has(keyObj.id)) return;
+    keyClaimLockRef.current.add(keyObj.id);
+
     // 1. Mark all as processing
-    setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { 
+    setItems(prev => prev.map(p => validBatch.find(b => b.id === p.id) ? { 
       ...p, 
       status: 'processing', 
       assignedKeyId: keyObj.id 
@@ -990,6 +1021,9 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
         });
       });
       setStatusMsg(cooldownTime > 0 ? `Rate limit hit. Cooling down...` : `Batch failed. Rotating keys...`);
+    } finally {
+        keyClaimLockRef.current.delete(keyObj.id);
+        for (const item of validBatch) taskClaimLockRef.current.delete(item.id);
     }
   };
 
@@ -1155,6 +1189,14 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
   useEffect(() => {
     if (!isProcessing) return;
 
+    if (schedulerRunningRef.current) {
+        scheduleAgainRef.current = true;
+        return;
+    }
+    schedulerRunningRef.current = true;
+    scheduleAgainRef.current = false;
+    
+    try {
     if (userData && !userData.unlimited && userData.credits <= 0) {
         setIsProcessing(false);
         setStatusMsg('Processing stopped. Insufficient credits.');
@@ -1375,7 +1417,13 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             setStatusMsg(`Generating Categories for ${activeCat} items...`);
         }
     }
-
+    } finally {
+        schedulerRunningRef.current = false;
+        if (scheduleAgainRef.current) {
+            scheduleAgainRef.current = false;
+            setTimeout(() => setTick(t => t + 1), 0);
+        }
+    }
   }, [items, keys, isProcessing, config.concurrency, config.batchSize, tick]);
 
   // Auto retry failed items every 20 seconds while batch is running
