@@ -186,15 +186,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { docs: [] };
     })))
       .then((results) => {
-        const dismissedGlobal: string[] = JSON.parse(localStorage.getItem(`dismissedGlobalNotifs_${userData.uid}`) || '[]');
+        const dismissedNotifs: string[] = [
+          ...JSON.parse(localStorage.getItem(`dismissedNotifs_${userData.uid}`) || '[]'),
+          ...JSON.parse(localStorage.getItem(`dismissedGlobalNotifs_${userData.uid}`) || '[]')
+        ];
         
         let allFetched: AppNotification[] = [];
         results.forEach(snap => {
             snap.docs.forEach(d => {
                 const data = d.data();
                 const notifId = data.id || d.id;
-                // Exclude if it's a global notification that user already dismissed
-                if (data.targetUid === 'all' && dismissedGlobal.includes(notifId)) return;
+                // Exclude if it's a notification that user/admin already dismissed locally
+                if (dismissedNotifs.includes(notifId)) return;
                 
                 allFetched.push({
                     id: notifId,
@@ -240,17 +243,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const deletingNotifIdsRef = useRef<Set<string>>(new Set());
 
-  const deleteNotification = async (id: string, globalDelete: boolean = false) => {
+  const deleteNotification = async (id: string, serverDelete: boolean = false) => {
     if (!id) return;
-    // If it's a global delete, we bypass the ref check because it might have been dismissed locally first
-    if (!globalDelete && deletingNotifIdsRef.current.has(id)) return;
-    if (!globalDelete) deletingNotifIdsRef.current.add(id);
+    if (!serverDelete && deletingNotifIdsRef.current.has(id)) return;
+    if (!serverDelete) deletingNotifIdsRef.current.add(id);
 
-    // Get the targetUid of the notification being deleted to know how to handle it
-    const targetNotif = notificationsRef.current.find(n => n.id === id);
-    const isGlobal = targetNotif ? targetNotif.targetUid === 'all' : id.startsWith('global_');
-
-    // 1. Immediately remove from React state & local caches
+    // 1. Immediately remove from React state & local caches for current user
     setNotifications(prev => {
       const updated = prev.filter(n => n.id !== id);
       try {
@@ -274,27 +272,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch {}
 
-    // 3. For regular (non-admin) users OR non-global-delete actions:
-    // Dismiss ONLY locally for this user, NEVER delete from Firestore!
-    if (userData?.role !== 'admin' || (isGlobal && !globalDelete)) {
-      if (userData?.uid) {
-        try {
-          const key = `dismissedGlobalNotifs_${userData.uid}`;
-          const dismissed: string[] = JSON.parse(localStorage.getItem(key) || '[]');
-          if (!dismissed.includes(id)) {
-            dismissed.push(id);
-            localStorage.setItem(key, JSON.stringify(dismissed));
-          }
-        } catch {}
-      }
-      return; // Regular users NEVER delete from Firestore!
+    // 3. Mark as dismissed locally for this user (both users and admins)
+    if (userData?.uid) {
+      try {
+        const key1 = `dismissedNotifs_${userData.uid}`;
+        const dismissed1: string[] = JSON.parse(localStorage.getItem(key1) || '[]');
+        if (!dismissed1.includes(id)) {
+          dismissed1.push(id);
+          localStorage.setItem(key1, JSON.stringify(dismissed1));
+        }
+
+        const key2 = `dismissedGlobalNotifs_${userData.uid}`;
+        const dismissed2: string[] = JSON.parse(localStorage.getItem(key2) || '[]');
+        if (!dismissed2.includes(id)) {
+          dismissed2.push(id);
+          localStorage.setItem(key2, JSON.stringify(dismissed2));
+        }
+      } catch {}
     }
 
-    // 4. Single explicit deleteDoc() operation in Firestore for admin/globally-deleted ones
+    // 4. If this is NOT an explicit server deletion, STOP HERE!
+    // Viewing a notification (by any user or admin) MUST NEVER delete it from the server!
+    if (!serverDelete) {
+      return;
+    }
+
+    // 5. Only when serverDelete is explicitly TRUE and current user is Admin:
+    // Execute single deleteDoc() operation on Firestore to remove from server
     if (db && userData?.role === 'admin') {
       try {
         await deleteDoc(doc(db, 'notifications', id));
-        console.log(`[Notification] Admin explicitly deleted notification from Firestore: notifications/${id}`);
+        console.log(`[Notification] Admin explicitly deleted notification from server: notifications/${id}`);
       } catch (err: any) {
         console.error(`[Notification] Failed to delete notification notifications/${id} from Firestore:`, err);
         deletingNotifIdsRef.current.delete(id);

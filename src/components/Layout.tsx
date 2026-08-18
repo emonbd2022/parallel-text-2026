@@ -331,21 +331,21 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <div className="text-[11px] text-slate-400 text-center">
               {viewingNotification.targetUid === 'all' 
                 ? (userData?.role === 'admin' ? 'Global announcement • Active on server' : 'Marked as viewed and removed from your notification panel.') 
-                : 'New user registration alert • Viewed'}
+                : (userData?.role === 'admin' ? 'New user registration alert • Active on server' : 'Notification viewed and removed from your panel.')}
             </div>
             
             <div className="flex justify-end pt-1">
               <div className="w-full flex gap-2">
-                {userData?.role === 'admin' && viewingNotification.targetUid === 'all' && (
+                {userData?.role === 'admin' && (
                   <button
                     onClick={async () => {
                       await deleteNotification(viewingNotification.id, true);
                       setViewingNotification(null);
                     }}
-                    className="py-2.5 px-4 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-red-900/30 shrink-0"
-                    title="Delete permanently from Firestore for all users"
+                    className="py-2.5 px-4 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-rose-900/30 shrink-0"
+                    title="Delete permanently from Firestore server"
                   >
-                    Delete Globally
+                    Delete from Server
                   </button>
                 )}
                 <button
