@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Layers } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Layers, Flame, Zap, ChevronDown, Check, Sparkles, Cpu, Activity, Gauge } from 'lucide-react';
 import { ApiKey, ProcessingConfig, ProcessingItem, HistoryRecord } from '../types';
 import { ApiKeyManager } from './ApiKeyManager';
 
@@ -37,6 +37,20 @@ export const Sidebar: React.FC<Props> = ({
    onResetAll
 }) => {
   
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close model dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+        setIsModelDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   // Custom handlers for Adobe-style sliders
   const handleBatchMouseDown = (e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
@@ -92,71 +106,171 @@ export const Sidebar: React.FC<Props> = ({
                 
                 {/* Model Selector */}
                 <div>
-                <label className="block text-[10px] uppercase font-bold text-slate-500 mb-2 pl-1">AI Model</label>
-                <div className="relative">
-                    <select 
-                    value={config.model}
-                    onChange={(e) => setConfig(prev => ({ ...prev, model: e.target.value }))}
-                    className="w-full appearance-none bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-200 focus:border-purple-500 outline-none"
+                  <label className="block text-[10px] uppercase font-bold text-slate-500 mb-2 pl-1">AI Model</label>
+
+                  <div className="relative" ref={modelDropdownRef}>
+                    {/* Trigger Button */}
+                    <button
+                      type="button"
+                      onClick={() => setIsModelDropdownOpen(prev => !prev)}
+                      className={`w-full flex items-center justify-between rounded-xl px-3.5 py-2.5 text-left transition-all outline-none border text-sm ${
+                        config.model === 'turbo'
+                          ? 'bg-slate-900 border-amber-500/40 text-slate-100 hover:border-amber-400/70'
+                          : 'bg-slate-900 border-slate-700 hover:border-slate-600 text-slate-200'
+                      }`}
                     >
-                    {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                    </select>
-                    <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
-                    </div>
-                </div>
-                
-                {/* Performance Ratings */}
-                <div className="mt-3">
-                    <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
-                            <span className="text-[10px] uppercase font-bold text-slate-500">Model Health</span>
-                            <div className="flex gap-2 text-[8px] font-mono uppercase text-slate-500" title="Color coding based on latency (<4s, <8s) and success rate (>95%, >80%)">
-                                <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Optimal</span>
-                                <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Fair</span>
-                                <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-red-500" /> Poor</span>
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {config.model === 'turbo' ? (
+                          <div className="w-6 h-6 rounded-lg bg-amber-500/15 text-amber-400 flex items-center justify-center shrink-0">
+                            <Zap className="w-3.5 h-3.5 fill-amber-400" />
+                          </div>
+                        ) : (
+                          <div className="w-6 h-6 rounded-lg bg-slate-800 text-slate-400 flex items-center justify-center shrink-0">
+                            <Cpu className="w-3.5 h-3.5" />
+                          </div>
+                        )}
+
+                        <span className="font-semibold text-slate-100 truncate">
+                          {config.model === 'turbo' ? 'Turbo' : (models.find(m => m.id === config.model)?.name.split(' (')[0] || config.model)}
+                        </span>
+
+                        {config.model === 'turbo' ? (
+                          <span className="text-[10px] font-mono font-medium text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                            ⚡ Blazing Fast
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-mono text-slate-500">
+                            {models.find(m => m.id === config.model)?.name.match(/\((.*?)\)/)?.[1]}
+                          </span>
+                        )}
+                      </div>
+
+                      <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-150 shrink-0 ${isModelDropdownOpen ? 'rotate-180 text-amber-400' : ''}`} />
+                    </button>
+
+                    {/* Dropdown Menu Popup */}
+                    {isModelDropdownOpen && (
+                      <div className="absolute top-full left-0 right-0 mt-1.5 bg-slate-900/98 backdrop-blur-xl border border-slate-700/90 rounded-xl shadow-2xl p-1.5 z-50 max-h-80 overflow-y-auto custom-scrollbar animate-in fade-in zoom-in-95 duration-100">
+                        
+                        {/* 1. Turbo Mode (First Place / Focus) */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConfig(prev => ({ ...prev, model: 'turbo' }));
+                            setIsModelDropdownOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-left transition-all text-sm ${
+                            config.model === 'turbo'
+                              ? 'bg-amber-500/15 text-amber-200 font-semibold'
+                              : 'hover:bg-slate-800/80 text-slate-200'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                              <Zap className="w-3.5 h-3.5 fill-amber-400" />
                             </div>
-                        </div>
-                        <div className="space-y-1.5">
-                        {models.filter(m => m.id !== 'turbo').map(m => {
-                            const stat = modelStats[m.id];
-                            const avgTime = stat && stat.count > 0 ? stat.totalTimeMs / stat.count : 0;
-                            const totalAttempts = stat ? (stat.count + stat.fails) : 0;
-                            const successRate = totalAttempts > 0 ? (stat.count / totalAttempts) * 100 : 0;
-                            const isUnrated = !stat || stat.count === 0;
-                            
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-semibold text-slate-100">Turbo</span>
+                              <span className="text-[10px] font-mono font-medium text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                                ⚡ Blazing Fast
+                              </span>
+                            </div>
+                          </div>
+                          {config.model === 'turbo' && <Check className="w-4 h-4 text-amber-400 shrink-0 ml-2" />}
+                        </button>
+
+                        <div className="my-1 border-t border-slate-800" />
+
+                        {/* 2. Standard Gemini Models */}
+                        <div className="space-y-0.5">
+                          {models.filter(m => m.id !== 'turbo').map(m => {
+                            const isSelected = config.model === m.id;
+                            const cleanName = m.name.split(' (')[0];
+                            const rpd = m.name.match(/\((.*?)\)/)?.[1];
+
                             return (
-                                <div key={m.id} className="flex flex-col py-1">
-                                    <div className="flex items-center justify-between mb-1.5">
-                                        <span className="text-slate-400 truncate pr-2 font-medium" title={m.name}>{m.name.split(' (')[0]}</span>
-                                        {isUnrated ? (
-                                            <span className="text-slate-600 font-mono text-[9px] uppercase tracking-wider">Unrated</span>
-                                        ) : (
-                                            <div className="flex items-center gap-2 text-[10px] font-mono">
-                                                <span className="text-slate-400" title="Average Latency">
-                                                    {(avgTime/1000).toFixed(1)}s
-                                                </span>
-                                                <span className={successRate >= 95 ? 'text-emerald-400' : successRate >= 80 ? 'text-amber-400' : 'text-red-400'} title="Success Rate">
-                                                    {successRate.toFixed(0)}%
-                                                </span>
-                                            </div>
-                                        )}
-                                    </div>
-                                    {!isUnrated && (
-                                        <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden flex items-center">
-                                            <div 
-                                                className={`h-full rounded-full transition-all duration-500 ${avgTime < 4000 ? 'bg-emerald-500' : avgTime < 8000 ? 'bg-amber-500' : 'bg-red-500'}`}
-                                                style={{ width: `${Math.max(5, Math.min(100, (avgTime / 15000) * 100))}%` }}
-                                                title={`Avg latency: ${(avgTime/1000).toFixed(1)}s`}
-                                            />
-                                        </div>
-                                    )}
+                              <button
+                                key={m.id}
+                                type="button"
+                                onClick={() => {
+                                  setConfig(prev => ({ ...prev, model: m.id }));
+                                  setIsModelDropdownOpen(false);
+                                }}
+                                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-left transition-all text-xs ${
+                                  isSelected
+                                    ? 'bg-purple-500/15 text-purple-200 font-medium'
+                                    : 'hover:bg-slate-800/60 text-slate-300'
+                                }`}
+                              >
+                                <span className="truncate pr-2">{cleanName}</span>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  {rpd && (
+                                    <span className="text-[9px] font-mono text-slate-500">
+                                      {rpd}
+                                    </span>
+                                  )}
+                                  {isSelected && <Check className="w-3.5 h-3.5 text-purple-400" />}
                                 </div>
+                              </button>
                             );
-                        })}
+                          })}
                         </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Performance Ratings */}
+                  <div className="mt-3">
+                    <div className="bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
+                        <span className="text-[10px] uppercase font-bold text-slate-500">Model Health</span>
+                        <div className="flex gap-2 text-[8px] font-mono uppercase text-slate-500">
+                          <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Optimal</span>
+                          <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Fair</span>
+                          <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-red-500" /> Poor</span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        {models.filter(m => m.id !== 'turbo').map(m => {
+                          const stat = modelStats[m.id];
+                          const avgTime = stat && stat.count > 0 ? stat.totalTimeMs / stat.count : 0;
+                          const totalAttempts = stat ? (stat.count + stat.fails) : 0;
+                          const successRate = totalAttempts > 0 ? (stat.count / totalAttempts) * 100 : 0;
+                          const isUnrated = !stat || stat.count === 0;
+                          
+                          return (
+                            <div key={m.id} className="flex flex-col py-1">
+                              <div className="flex items-center justify-between mb-1.5">
+                                <span className="text-slate-400 truncate pr-2 font-medium" title={m.name}>{m.name.split(' (')[0]}</span>
+                                {isUnrated ? (
+                                  <span className="text-slate-600 font-mono text-[9px] uppercase tracking-wider">Unrated</span>
+                                ) : (
+                                  <div className="flex items-center gap-2 text-[10px] font-mono">
+                                    <span className="text-slate-400" title="Average Latency">
+                                      {(avgTime/1000).toFixed(1)}s
+                                    </span>
+                                    <span className={successRate >= 95 ? 'text-emerald-400' : successRate >= 80 ? 'text-amber-400' : 'text-red-400'} title="Success Rate">
+                                      {successRate.toFixed(0)}%
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                              {!isUnrated && (
+                                <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden flex items-center">
+                                  <div 
+                                    className={`h-full rounded-full transition-all duration-500 ${avgTime < 4000 ? 'bg-emerald-500' : avgTime < 8000 ? 'bg-amber-500' : 'bg-red-500'}`}
+                                    style={{ width: `${Math.max(5, Math.min(100, (avgTime / 15000) * 100))}%` }}
+                                    title={`Avg latency: ${(avgTime/1000).toFixed(1)}s`}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                </div>
+                  </div>
                 </div>
 
                 {/* Counts */}
