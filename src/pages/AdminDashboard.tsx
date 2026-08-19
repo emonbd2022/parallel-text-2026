@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon } from 'lucide-react';
 
 type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active';
 
@@ -44,6 +44,8 @@ export const AdminDashboard: React.FC = () => {
   const [isFetchingAllUsers, setIsFetchingAllUsers] = useState(false);
   const [allUsersModalOpen, setAllUsersModalOpen] = useState(false);
   const [allUsersError, setAllUsersError] = useState<string | null>(null);
+  const [totalProcessedImagesGlobal, setTotalProcessedImagesGlobal] = useState<number | null>(null);
+  const [isCalculatingTotal, setIsCalculatingTotal] = useState(false);
   
   // User Deletion State
   const [userToDelete, setUserToDelete] = useState<UserData | null>(null);
@@ -441,6 +443,31 @@ export const AdminDashboard: React.FC = () => {
     });
   };
 
+  const handleCalculateTotalImages = async () => {
+    setIsCalculatingTotal(true);
+    setTotalProcessedImagesGlobal(null);
+    try {
+      let candidateUsers = allUsers;
+      if (!candidateUsers || candidateUsers.length === 0) {
+        const snap = await getDocs(collection(db, 'users'));
+        const list: UserData[] = [];
+        snap.forEach(d => list.push(d.data() as UserData));
+        candidateUsers = list;
+        setAllUsers(list);
+        try {
+          sessionStorage.setItem('adminCachedAllUsers', JSON.stringify(list));
+        } catch {}
+      }
+      
+      const total = candidateUsers.reduce((acc, user) => acc + (user.totalProcessedImages || 0), 0);
+      setTotalProcessedImagesGlobal(total);
+    } catch (e) {
+      console.error("Failed to calculate total images:", e);
+    } finally {
+      setIsCalculatingTotal(false);
+    }
+  };
+
   /**
    * CLEAN USER DATA:
    * Replaces every user document in Firestore with ONLY strictly allowlisted fields.
@@ -605,6 +632,23 @@ export const AdminDashboard: React.FC = () => {
           </h1>
           
           <div className="flex flex-wrap items-center gap-4">
+            <button
+              onClick={handleCalculateTotalImages}
+              disabled={isCalculatingTotal}
+              className="flex items-center gap-2 bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-800/80 rounded-xl px-4 py-2 text-sm font-bold text-emerald-300 transition-colors shadow-lg disabled:opacity-50"
+              title="Count total on-site processed images across all users"
+            >
+              {isCalculatingTotal ? (
+                <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
+              ) : (
+                <ImageIcon className="w-4 h-4 text-emerald-400" />
+              )}
+              {totalProcessedImagesGlobal !== null 
+                ? `Total Images: ${totalProcessedImagesGlobal.toLocaleString()}`
+                : 'Count Total Processed Images'
+              }
+            </button>
+
             <button
               onClick={() => setGlobalNotifModalOpen(true)}
               className="flex items-center gap-2 bg-purple-950/40 hover:bg-purple-900/60 border border-purple-800/80 rounded-xl px-4 py-2 text-sm font-bold text-purple-300 transition-colors shadow-lg"
