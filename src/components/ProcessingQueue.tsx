@@ -1,5 +1,5 @@
-import { Cat } from 'lucide-react';
-import React, { useState } from 'react';
+import { Cat, Maximize, Minimize } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
 import { ProcessingItem } from '../types';
 
 interface Props {
@@ -15,6 +15,27 @@ interface Props {
 export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, onRegenerate, onCopy, itemRefs, forceTransparency }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [fieldCopied, setFieldCopied] = useState<string | null>(null);
+  const [fullscreenItemId, setFullscreenItemId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+      
+      if (e.key === 'Escape' || (e.key.toLowerCase() === 'f' && !isInput)) {
+        setFullscreenItemId(null);
+      }
+    };
+    if (fullscreenItemId) {
+      window.addEventListener('keydown', handleKeyDown);
+      // Prevent body scrolling when in fullscreen
+      document.body.style.overflow = 'hidden';
+      return () => {
+        window.removeEventListener('keydown', handleKeyDown);
+        document.body.style.overflow = '';
+      };
+    }
+  }, [fullscreenItemId]);
 
   const handleCopyRow = (item: ProcessingItem) => {
     onCopy(item);
@@ -90,6 +111,14 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                       className="px-2.5 py-1 bg-black/70 hover:bg-black/90 text-white rounded-lg text-xs font-bold border border-white/10 backdrop-blur-md opacity-0 group-hover:opacity-100 transition-all transform translate-y-1 group-hover:translate-y-0 shadow-md"
                     >
                       {copiedId === item.id ? 'Copied' : 'Copy Data'}
+                    </button>
+
+                    <button 
+                        onClick={() => setFullscreenItemId(item.id)}
+                        className="p-1.5 bg-black/60 hover:bg-black/80 text-white rounded-lg backdrop-blur-md transition-colors shadow-lg border border-white/10 opacity-0 group-hover:opacity-100"
+                        title="Fullscreen (F)"
+                    >
+                        <Maximize className="w-3.5 h-3.5" />
                     </button>
 
                     <button 
@@ -265,6 +294,33 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
           </div>
         )
       })}
+      
+      {/* Fullscreen Image Overlay */}
+      {fullscreenItemId && (
+        <div 
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => setFullscreenItemId(null)}
+        >
+          {items.find(i => i.id === fullscreenItemId)?.thumb ? (
+            <img 
+              src={items.find(i => i.id === fullscreenItemId)?.thumb} 
+              alt="Fullscreen" 
+              className={`max-w-full max-h-full object-contain ${forceTransparency ? 'bg-transparency-grid' : ''}`}
+              onClick={(e) => e.stopPropagation()} 
+            />
+          ) : (
+            <div className="text-slate-400">No image available</div>
+          )}
+          
+          <button
+            onClick={() => setFullscreenItemId(null)}
+            className="absolute top-6 right-6 p-3 bg-black/50 hover:bg-black text-white rounded-xl backdrop-blur-md transition-all shadow-2xl border border-white/10"
+            title="Exit Fullscreen (Esc or F)"
+          >
+            <Minimize className="w-6 h-6" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

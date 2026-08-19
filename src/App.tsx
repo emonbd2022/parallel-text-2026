@@ -7,7 +7,7 @@ import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
 import { generateCategoriesBatch } from './services/geminiCategoryService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
-import { Clock, Key, Hourglass, Cat, Layers, Upload } from 'lucide-react';
+import { Clock, Key, Hourglass, Cat, Layers, Upload, Maximize, Minimize } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
@@ -204,13 +204,7 @@ export default function App() {
   const [statusMsg, setStatusMsg] = useState<string>('Ready');
   const [tick, setTick] = useState(0); 
   const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
-  const [elapsedMs, setElapsedMs] = useState<number>(() => {
-    const s = localStorage.getItem('elapsedMs');
-    return s ? parseInt(s, 10) : 0;
-  });
-  useEffect(() => {
-    localStorage.setItem('elapsedMs', elapsedMs.toString());
-  }, [elapsedMs]);
+  const [elapsedMs, setElapsedMs] = useState<number>(0);
   
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
@@ -225,6 +219,38 @@ export default function App() {
   }, [isProcessing]);
   const [showStats, setShowStats] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isFullscreenBatchView, setIsFullscreenBatchView] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Toggle batch fullscreen with Shift + F, but ignore if typing in an input
+      if (e.shiftKey && e.key.toLowerCase() === 'f') {
+        const target = e.target as HTMLElement;
+        if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.isContentEditable) {
+          e.preventDefault();
+          setIsFullscreenBatchView(prev => !prev);
+        }
+      }
+      
+      // Close with Escape
+      if (isFullscreenBatchView && e.key === 'Escape') {
+        setIsFullscreenBatchView(false);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    
+    if (isFullscreenBatchView) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = '';
+    };
+  }, [isFullscreenBatchView]);
   
   const [config, setConfig] = useState<ProcessingConfig>(() => {
     try {
@@ -1945,48 +1971,60 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
              )}
 
                 {items.length > 0 && (
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
-                      <div className="flex gap-2 flex-wrap">
-                          <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All</button>
-                          <button onClick={() => setFilter('ongoing')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'ongoing' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>On going</button>
-                          <button onClick={() => setFilter('uncompleted')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'uncompleted' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Uncompleted</button>
-                          <button onClick={() => setFilter('completed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'completed' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Completed</button>
-                          <button onClick={() => setFilter('failed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'failed' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Failed</button>
-                      </div>
-                      <div className="flex items-center gap-3">
-                          <button
-                            onClick={() => document.getElementById('fileInput')?.click()}
-                            className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 active:scale-95"
-                          >
-                            <Upload className="w-3.5 h-3.5" />
-                            <span>Add Images</span>
-                          </button>
-                          <div className="flex items-center gap-2 text-xs text-slate-300 px-2 font-semibold border-l border-slate-800 pl-3">
-                              <span>Total Images in Queue: <strong className="text-purple-400 font-bold text-sm">{items.length}</strong></span>
-                          </div>
-                      </div>
+                  <div className={isFullscreenBatchView ? "fixed inset-0 z-[100] bg-slate-950 overflow-y-auto custom-scrollbar p-4 sm:p-8 space-y-6 flex flex-col animate-in fade-in duration-200" : "space-y-8"}>
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-900/50 p-3 rounded-2xl border border-slate-800 shrink-0">
+                        <div className="flex gap-2 flex-wrap">
+                            <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All</button>
+                            <button onClick={() => setFilter('ongoing')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'ongoing' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>On going</button>
+                            <button onClick={() => setFilter('uncompleted')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'uncompleted' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Uncompleted</button>
+                            <button onClick={() => setFilter('completed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'completed' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Completed</button>
+                            <button onClick={() => setFilter('failed')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'failed' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>Failed</button>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <button
+                              onClick={() => setIsFullscreenBatchView(!isFullscreenBatchView)}
+                              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 border border-slate-700"
+                              title={isFullscreenBatchView ? "Exit Fullscreen (Esc)" : "Fullscreen Batch View (Esc to exit)"}
+                            >
+                              {isFullscreenBatchView ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+                              <span className="hidden sm:inline">{isFullscreenBatchView ? 'Exit Fullscreen' : 'Fullscreen'}</span>
+                            </button>
+                            <button
+                              onClick={() => document.getElementById('fileInput')?.click()}
+                              className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 active:scale-95"
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>Add Images</span>
+                            </button>
+                            <div className="flex items-center gap-2 text-xs text-slate-300 px-2 font-semibold border-l border-slate-800 pl-3">
+                                <span>Total Images in Queue: <strong className="text-purple-400 font-bold text-sm">{items.length}</strong></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className={isFullscreenBatchView ? "flex-1" : ""}>
+                      <ProcessingQueue 
+                        items={
+                          filter === 'failed' 
+                            ? items.filter(i => i.status === 'error') 
+                            : filter === 'uncompleted' 
+                            ? items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()) 
+                            : filter === 'completed'
+                            ? items.filter(i => i.status === 'done' || (i.status !== 'error' && i.status !== 'processing' && i.status !== 'compressing' && Boolean(i.title?.trim()) && Boolean(i.keywords?.trim()) && Boolean(i.category?.trim())))
+                            : filter === 'ongoing' 
+                            ? items.filter(i => i.status === 'processing' || i.status === 'compressing') 
+                            : items
+                        } 
+                        itemRefs={itemRefs}
+                        onRemove={removeItem}
+                        onUpdate={updateItem}
+                        onRegenerate={handleRegenerate}
+                        onCopy={handleCopy}
+                        forceTransparency={config.forceTransparency || false}
+                      />
+                    </div>
                   </div>
                 )}
-
-                <ProcessingQueue 
-                  items={
-                    filter === 'failed' 
-                      ? items.filter(i => i.status === 'error') 
-                      : filter === 'uncompleted' 
-                      ? items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()) 
-                      : filter === 'completed'
-                      ? items.filter(i => i.status === 'done' || (i.status !== 'error' && i.status !== 'processing' && i.status !== 'compressing' && Boolean(i.title?.trim()) && Boolean(i.keywords?.trim()) && Boolean(i.category?.trim())))
-                      : filter === 'ongoing' 
-                      ? items.filter(i => i.status === 'processing' || i.status === 'compressing') 
-                      : items
-                  } 
-                  itemRefs={itemRefs}
-                  onRemove={removeItem}
-                  onUpdate={updateItem}
-                  onRegenerate={handleRegenerate}
-                  onCopy={handleCopy}
-                  forceTransparency={config.forceTransparency || false}
-                />
         </div>
 
         <div className="text-center py-4 text-xs text-slate-500 border-t border-white/5 bg-slate-950/50 backdrop-blur-md shrink-0">
