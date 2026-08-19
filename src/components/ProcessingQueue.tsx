@@ -1,6 +1,7 @@
 import { Cat, Maximize, Minimize } from 'lucide-react';
 import React, { useState, useEffect } from 'react';
 import { ProcessingItem } from '../types';
+import { motion, AnimatePresence } from 'motion/react';
 
 interface Props {
   items: ProcessingItem[];
@@ -81,7 +82,7 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-6 pb-32">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-6 pb-32">
       {items.map((item) => {
         const showTransparentView = forceTransparency;
 
@@ -296,31 +297,41 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
       })}
       
       {/* Fullscreen Image Overlay */}
-      {fullscreenItemId && (
-        <div 
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm animate-in fade-in duration-200"
-          onClick={() => setFullscreenItemId(null)}
-        >
-          {items.find(i => i.id === fullscreenItemId)?.thumb ? (
-            <img 
-              src={items.find(i => i.id === fullscreenItemId)?.thumb} 
-              alt="Fullscreen" 
-              className={`max-w-full max-h-full object-contain ${forceTransparency ? 'bg-transparency-grid' : ''}`}
-              onClick={(e) => e.stopPropagation()} 
-            />
-          ) : (
-            <div className="text-slate-400">No image available</div>
-          )}
-          
-          <button
+      <AnimatePresence>
+        {fullscreenItemId && (
+          <motion.div 
+            initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+            animate={{ opacity: 1, backdropFilter: 'blur(12px)' }}
+            exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+            transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90"
             onClick={() => setFullscreenItemId(null)}
-            className="absolute top-6 right-6 p-3 bg-black/50 hover:bg-black text-white rounded-xl backdrop-blur-md transition-all shadow-2xl border border-white/10"
-            title="Exit Fullscreen (Esc or F)"
           >
-            <Minimize className="w-6 h-6" />
-          </button>
-        </div>
-      )}
+            {items.find(i => i.id === fullscreenItemId)?.thumb ? (
+              <motion.img 
+                initial={{ scale: 0.95, opacity: 0, y: 10 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.95, opacity: 0, y: 10 }}
+                transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                src={items.find(i => i.id === fullscreenItemId)?.thumb} 
+                alt="Fullscreen" 
+                className={`max-w-full max-h-full object-contain drop-shadow-2xl ${forceTransparency ? 'bg-transparency-grid' : ''}`}
+                onClick={(e) => e.stopPropagation()} 
+              />
+            ) : (
+              <div className="text-slate-400">No image available</div>
+            )}
+            
+            <button
+              onClick={() => setFullscreenItemId(null)}
+              className="absolute top-6 right-6 p-3 bg-black/50 hover:bg-black text-white rounded-xl backdrop-blur-md transition-all shadow-2xl border border-white/10"
+              title="Exit Fullscreen (Esc or F)"
+            >
+              <Minimize className="w-6 h-6" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

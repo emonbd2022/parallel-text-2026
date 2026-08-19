@@ -7,7 +7,7 @@ import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
 import { generateCategoriesBatch } from './services/geminiCategoryService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
-import { Clock, Key, Hourglass, Cat, Layers, Upload, Maximize, Minimize } from 'lucide-react';
+import { Clock, Key, Hourglass, Cat, Layers, Upload, Maximize, Minimize, ArrowUp, Activity } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
@@ -205,6 +205,22 @@ export default function App() {
   const [tick, setTick] = useState(0); 
   const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number>(0);
+  const [showToTop, setShowToTop] = useState(false);
+  
+  const fullScreenScrollRef = useRef<HTMLDivElement>(null);
+  
+  const scrollToTop = () => {
+    scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    fullScreenScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (e.currentTarget.scrollTop > 300) {
+      setShowToTop(true);
+    } else {
+      setShowToTop(false);
+    }
+  };
   
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
@@ -1155,37 +1171,20 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     } else {
         setStatusMsg(`Exported partial CSV with ${completedItems.length} items.`);
     }
-    const totalRequests = sessionRequestCountRef.current;
+    const totalRequests = completedItems.length * 2;
     sessionRequestCountRef.current = 0; // Reset for next session
     localStorage.setItem('sessionReqCount', '0');
     
     let timeStr = '0s';
-    let timeSavedStr = '0s';
-    const manualSecondsPerImage = 120;
     
     {
       const elapsedSecs = Math.floor(elapsedMs / 1000);
       const m = Math.floor(elapsedSecs / 60);
       const s = elapsedSecs % 60;
       timeStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
-      
-      const totalManualSeconds = completedItems.length * manualSecondsPerImage;
-      const savedSecs = Math.max(0, totalManualSeconds - elapsedSecs);
-      
-      const savedH = Math.floor(savedSecs / 3600);
-      const savedM = Math.floor((savedSecs % 3600) / 60);
-      const savedS = savedSecs % 60;
-      
-      if (savedH > 0) {
-        timeSavedStr = `${savedH}h ${savedM}m`;
-      } else if (savedM > 0) {
-        timeSavedStr = `${savedM}m ${savedS}s`;
-      } else {
-        timeSavedStr = `${savedS}s`;
-      }
     }
     
-    setExportStats({ count: completedItems.length, path: exportFileName, elapsedTime: timeStr, requestCount: totalRequests, timeSaved: timeSavedStr });
+    setExportStats({ count: completedItems.length, path: exportFileName, elapsedTime: timeStr, requestCount: totalRequests, timeSaved: '' });
     setShowExportModal(true);
   };
 
@@ -1901,10 +1900,26 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
              </div>
           </div>
         )}
+        
+        <AnimatePresence>
+          {showToTop && (
+            <motion.button
+              initial={{ opacity: 0, y: -20, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.9 }}
+              onClick={scrollToTop}
+              className="absolute top-28 left-1/2 -translate-x-1/2 z-[110] px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/50 shadow-2xl rounded-full text-xs font-semibold flex items-center gap-2 transition-colors backdrop-blur-md"
+            >
+              <ArrowUp className="w-3.5 h-3.5" />
+              To Top
+            </motion.button>
+          )}
+        </AnimatePresence>
+
         <div 
           ref={scrollContainerRef}
           className="flex-1 overflow-y-auto p-8 custom-scrollbar scroll-smooth space-y-8 relative"
-
+          onScroll={handleScroll}
           id="main-scroll-area"
           onWheel={() => lastUserScrollRef.current = Date.now()}
           onTouchMove={() => lastUserScrollRef.current = Date.now()}
@@ -1971,7 +1986,48 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
              )}
 
                 {items.length > 0 && (
-                  <div className={isFullscreenBatchView ? "fixed inset-0 z-[100] bg-slate-950 overflow-y-auto custom-scrollbar p-4 sm:p-8 space-y-6 flex flex-col animate-in fade-in duration-200" : "space-y-8"}>
+                  <motion.div 
+                    layout
+                    transition={{ layout: { duration: 0.6, ease: [0.16, 1, 0.3, 1] } }}
+                    className={isFullscreenBatchView ? "fixed inset-0 z-[100] bg-slate-950 overflow-y-auto custom-scrollbar p-6 sm:p-10 space-y-6 flex flex-col" : "space-y-8"}
+                    ref={isFullscreenBatchView ? fullScreenScrollRef : undefined}
+                    onScroll={isFullscreenBatchView ? handleScroll : undefined}
+                  >
+                    {isFullscreenBatchView && (
+                        <div className="fixed top-0 left-0 right-0 h-1.5 bg-slate-900 w-full shrink-0 z-[110] flex items-center">
+                           <div 
+                               style={{ 
+                                   width: `${items.length ? (
+                                      ((items.filter(i => i.title && i.keywords).length * 0.5) + 
+                                        (items.filter(i => i.category && i.status === 'done').length * 0.5)) / items.length
+                                  ) * 100 : 0}%` 
+                                }}
+                               className="h-full bg-gradient-to-r from-purple-500 via-fuchsia-500 to-emerald-500 transition-all duration-300 ease-out shadow-[0_0_15px_rgba(168,85,247,0.5)]"
+                           />
+                           {items.length > 0 && (
+                             <div 
+                               className="absolute transition-all duration-300 ease-out flex flex-col items-center justify-center -translate-x-1/2"
+                               style={{ 
+                                   left: `${items.length ? (
+                                      ((items.filter(i => i.title && i.keywords).length * 0.5) + 
+                                        (items.filter(i => i.category && i.status === 'done').length * 0.5)) / items.length
+                                  ) * 100 : 0}%` 
+                                }}
+                             >
+                               <div className="bg-slate-950 rounded-full p-0.5">
+                                 <Cat 
+                                   className={`w-6 h-6 ${isProcessing ? 'animate-bounce' : ''}`} 
+                                   style={{ 
+                                     color: `hsl(${Math.round((items.filter(i => i.status === 'done').length / items.length) * 120)}, 80%, 60%)`,
+                                     filter: `drop-shadow(0 0 8px hsl(${Math.round((items.filter(i => i.status === 'done').length / items.length) * 120)}, 80%, 60%))`,
+                                     fill: '#020617' // Extra mask for internal transparency
+                                   }}
+                                 />
+                               </div>
+                             </div>
+                           )}
+                        </div>
+                    )}
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-900/50 p-3 rounded-2xl border border-slate-800 shrink-0">
                         <div className="flex gap-2 flex-wrap">
                             <button onClick={() => setFilter('all')} className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${filter === 'all' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'}`}>All</button>
@@ -2023,7 +2079,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                         forceTransparency={config.forceTransparency || false}
                       />
                     </div>
-                  </div>
+                  </motion.div>
                 )}
         </div>
 
@@ -2049,10 +2105,6 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400">Total Elapsed Time:</span>
                 <span className="text-purple-400 font-bold">{exportStats.elapsedTime || 'N/A'}</span>
-              </div>
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-slate-400">Est. Time Saved:</span>
-                <span className="text-amber-400 font-bold">{exportStats.timeSaved}</span>
               </div>
               <div className="flex justify-between items-center text-sm">
                 <span className="text-slate-400">File Downloaded:</span>

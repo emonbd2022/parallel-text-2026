@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Layers, Flame, Zap, ChevronDown, Check, Sparkles, Cpu, Activity, Gauge } from 'lucide-react';
+import { Layers, Flame, Zap, ChevronDown, Check, Sparkles, Cpu, Activity, Gauge, ChevronLeft, ChevronRight } from 'lucide-react';
 import { ApiKey, ProcessingConfig, ProcessingItem, HistoryRecord } from '../types';
 import { ApiKeyManager } from './ApiKeyManager';
 
@@ -39,6 +39,14 @@ export const Sidebar: React.FC<Props> = ({
   
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
+
+  const [isCollapsed, setIsCollapsed] = useState(() => {
+    return localStorage.getItem('sidebarCollapsed') === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('sidebarCollapsed', isCollapsed.toString());
+  }, [isCollapsed]);
 
   // Close model dropdown on click outside
   useEffect(() => {
@@ -83,10 +91,18 @@ export const Sidebar: React.FC<Props> = ({
   };
 
   return (
-    <aside className="w-1/3 min-w-[360px] max-w-[600px] border-r border-white/5 bg-slate-900/20 flex flex-col h-full z-20">
-         
-         
-         <div className="flex-1 overflow-y-auto px-8 pt-24 pb-8 custom-scrollbar space-y-6">
+    <aside 
+      className={`relative h-full z-20 shrink-0 transition-all duration-300 ease-in-out flex bg-slate-900/20 border-white/5 ${
+        isCollapsed ? "w-0 min-w-0 border-r-0" : "w-1/3 min-w-[360px] max-w-[600px] border-r"
+      }`}
+    >
+      <div 
+        className={`absolute inset-0 overflow-hidden w-full h-full transition-opacity duration-300 ease-in-out ${
+          isCollapsed ? "opacity-0 pointer-events-none" : "opacity-100"
+        }`}
+      >
+        <div className="w-[100vw] sm:w-[33.333vw] min-w-[360px] max-w-[600px] h-full flex flex-col">
+          <div className="flex-1 overflow-y-auto px-8 pt-24 pb-8 custom-scrollbar space-y-6">
             <ApiKeyManager 
                 keys={keys}
                 onAdd={(l, k) => setKeys(prev => [...prev, { 
@@ -473,7 +489,18 @@ export const Sidebar: React.FC<Props> = ({
                     </div>
                 )}
             </div>
-         </div>
+          </div>
+        </div>
+      </div>
+
+      <button
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          className="absolute -right-6 top-1/2 -translate-y-1/2 w-6 h-12 bg-slate-800 border border-slate-700/50 rounded-r-md flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-slate-700 hover:text-purple-400 shadow-[2px_0_10px_rgba(0,0,0,0.5)] z-[60] transition-colors focus:outline-none group border-l-0"
+          aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {isCollapsed ? <ChevronRight className="w-4 h-4 group-hover:scale-110 transition-transform" /> : <ChevronLeft className="w-4 h-4 group-hover:scale-110 transition-transform" />}
+        </button>
     </aside>
   );
 };
