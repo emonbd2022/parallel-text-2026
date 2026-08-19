@@ -206,12 +206,17 @@ export default function App() {
   const [etaEndTime, setEtaEndTime] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number>(0);
   const [showToTop, setShowToTop] = useState(false);
+  const [isFullscreenBatchView, setIsFullscreenBatchView] = useState(false);
   
   const fullScreenScrollRef = useRef<HTMLDivElement>(null);
   
   const scrollToTop = () => {
-    scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-    fullScreenScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    if (isFullscreenBatchView && fullScreenScrollRef.current) {
+      fullScreenScrollRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
   
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -221,6 +226,10 @@ export default function App() {
       setShowToTop(false);
     }
   };
+
+  useEffect(() => {
+    setShowToTop(false);
+  }, [isFullscreenBatchView]);
   
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
@@ -235,7 +244,6 @@ export default function App() {
   }, [isProcessing]);
   const [showStats, setShowStats] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [isFullscreenBatchView, setIsFullscreenBatchView] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1902,13 +1910,13 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
         )}
         
         <AnimatePresence>
-          {showToTop && (
+          {showToTop && !isFullscreenBatchView && (
             <motion.button
               initial={{ opacity: 0, y: -20, scale: 0.9 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -20, scale: 0.9 }}
               onClick={scrollToTop}
-              className="absolute top-28 left-1/2 -translate-x-1/2 z-[110] px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/50 shadow-2xl rounded-full text-xs font-semibold flex items-center gap-2 transition-colors backdrop-blur-md"
+              className="absolute top-28 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/50 shadow-2xl rounded-full text-xs font-semibold flex items-center gap-2 transition-colors backdrop-blur-md cursor-pointer"
             >
               <ArrowUp className="w-3.5 h-3.5" />
               To Top
@@ -1986,14 +1994,13 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
              )}
 
                 {items.length > 0 && (
-                  <motion.div 
-                    layout
-                    transition={{ layout: { duration: 0.6, ease: [0.16, 1, 0.3, 1] } }}
-                    className={isFullscreenBatchView ? "fixed inset-0 z-[100] bg-slate-950 overflow-y-auto custom-scrollbar p-6 sm:p-10 space-y-6 flex flex-col" : "space-y-8"}
+                  <div 
+                    className={isFullscreenBatchView ? "fixed inset-0 z-[100] bg-slate-950 overflow-y-auto custom-scrollbar p-6 sm:p-10 space-y-6 flex flex-col animate-in fade-in duration-200" : "space-y-8"}
                     ref={isFullscreenBatchView ? fullScreenScrollRef : undefined}
                     onScroll={isFullscreenBatchView ? handleScroll : undefined}
                   >
                     {isFullscreenBatchView && (
+                      <>
                         <div className="fixed top-0 left-0 right-0 h-1.5 bg-slate-900 w-full shrink-0 z-[110] flex items-center">
                            <div 
                                style={{ 
@@ -2027,6 +2034,22 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                              </div>
                            )}
                         </div>
+
+                        <AnimatePresence>
+                          {showToTop && (
+                            <motion.button
+                              initial={{ opacity: 0, y: -20, scale: 0.9 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: -20, scale: 0.9 }}
+                              onClick={scrollToTop}
+                              className="fixed top-8 left-1/2 -translate-x-1/2 z-[130] px-4 py-2 bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700/50 shadow-2xl rounded-full text-xs font-semibold flex items-center gap-2 transition-colors backdrop-blur-md cursor-pointer pointer-events-auto"
+                            >
+                              <ArrowUp className="w-3.5 h-3.5" />
+                              To Top
+                            </motion.button>
+                          )}
+                        </AnimatePresence>
+                      </>
                     )}
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-slate-900/50 p-3 rounded-2xl border border-slate-800 shrink-0">
                         <div className="flex gap-2 flex-wrap">
@@ -2079,7 +2102,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                         forceTransparency={config.forceTransparency || false}
                       />
                     </div>
-                  </motion.div>
+                  </div>
                 )}
         </div>
 
