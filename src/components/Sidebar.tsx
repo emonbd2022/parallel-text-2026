@@ -18,6 +18,7 @@ interface Props {
   onViewStats: () => void;
   onResetUsage: (id: string) => void;
   onResetAll?: () => void;
+  onShowToast?: (title: string, message: string) => void;
 }
 
 export const Sidebar: React.FC<Props> = ({ 
@@ -34,7 +35,8 @@ export const Sidebar: React.FC<Props> = ({
   onClearHistory,
   onViewStats,
   onResetUsage,
-   onResetAll
+  onResetAll,
+  onShowToast
 }) => {
   
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
@@ -110,11 +112,34 @@ export const Sidebar: React.FC<Props> = ({
                   label: l, 
                   key: k, 
                   errorCount: 0,
-                  usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0 }
+                  usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
                 }])}
+                onAddMultiple={(imported) => {
+                  const currentSession = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' });
+                  const newKeyObjects: ApiKey[] = imported.map((item, idx) => ({
+                    id: Math.random().toString(36).substring(2, 9) + Date.now().toString(36) + idx,
+                    label: item.label,
+                    key: item.key,
+                    errorCount: 0,
+                    usage: { 
+                      date: currentSession, 
+                      flash: 0, 
+                      lite: 0, 
+                      pro: 0, 
+                      flash_3: 0, 
+                      flash_3_1_lite: 0,
+                      flash_3_5: 0,
+                      flash_3_5_lite: 0,
+                      flash_3_6: 0,
+                      flash_3_7: 0
+                    }
+                  }));
+                  setKeys(prev => [...prev, ...newKeyObjects]);
+                }}
                 onRemove={(id) => setKeys(prev => prev.filter(k => k.id !== id))}
                 onResetUsage={onResetUsage}
                 onResetAll={onResetAll}
+                onShowToast={onShowToast}
             />
 
             <div className="glass-panel p-6 rounded-2xl space-y-6">

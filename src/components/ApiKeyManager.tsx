@@ -1,22 +1,41 @@
-import React, { useState, useEffect } from 'react';
-import { Key } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Key, Upload, AlertCircle, X } from 'lucide-react';
 import { ApiKey } from '../types';
+import { parseApiKeysCsv, CsvParseResult } from '../utils/csvKeyParser';
+import { ImportCsvModal } from './ImportCsvModal';
 
 interface Props {
   keys: ApiKey[];
   onAdd: (label: string, key: string) => void;
+  onAddMultiple?: (importedKeys: { label: string; key: string }[]) => void;
   onRemove: (id: string) => void;
   onResetUsage: (id: string) => void;
   onResetAll?: () => void;
+  onShowToast?: (title: string, message: string) => void;
 }
 
-export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetUsage, onResetAll }) => {
+export const ApiKeyManager: React.FC<Props> = ({ 
+  keys, 
+  onAdd, 
+  onAddMultiple,
+  onRemove, 
+  onResetUsage, 
+  onResetAll,
+  onShowToast 
+}) => {
   const [label, setLabel] = useState('');
   const [keyVal, setKeyVal] = useState('');
   const [showInput, setShowInput] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
   const [now, setNow] = useState(Date.now());
   const [activeTab, setActiveTab] = useState<'keys' | 'health' | 'routing'>('keys');
+
+  // CSV Import State
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isCsvModalOpen, setIsCsvModalOpen] = useState(false);
+  const [csvParseResult, setCsvParseResult] = useState<CsvParseResult | null>(null);
+  const [csvFileName, setCsvFileName] = useState('');
+  const [csvErrorMsg, setCsvErrorMsg] = useState<string | null>(null);
 
   // Update time for cooldown countdowns
   useEffect(() => {
@@ -31,6 +50,86 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
     setLabel('');
     setKeyVal('');
     setShowInput(false);
+  };
+
+  const handleOpenCsvPicker = () => {
+    setCsvErrorMsg(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleCsvFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.csv') && file.type && !file.type.includes('csv') && !file.type.includes('text')) {
+      const errorMsg = 'Please select a valid .csv file.';
+      setCsvErrorMsg(errorMsg);
+      if (onShowToast) onShowToast('Invalid File Type', errorMsg);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const text = (event.target?.result as string) || '';
+        const result = parseApiKeysCsv(text, keys);
+
+        if (!result.success) {
+          setCsvErrorMsg(result.errorMessage || 'Failed to parse CSV.');
+          if (onShowToast) onShowToast('CSV Import Error', result.errorMessage || 'Failed to parse CSV.');
+          return;
+        }
+
+        setCsvFileName(file.name);
+        setCsvParseResult(result);
+        setIsCsvModalOpen(true);
+        setCsvErrorMsg(null);
+      } catch (err: any) {
+        const errorMsg = err?.message || 'Failed to read CSV file.';
+        setCsvErrorMsg(errorMsg);
+        if (onShowToast) onShowToast('CSV Read Error', errorMsg);
+      }
+    };
+
+    reader.onerror = () => {
+      const errorMsg = 'An error occurred while reading the file.';
+      setCsvErrorMsg(errorMsg);
+      if (onShowToast) onShowToast('File Read Error', errorMsg);
+    };
+
+    reader.readAsText(file);
+  };
+
+  const handleConfirmCsvImport = (validKeys: { label: string; key: string }[]) => {
+    if (validKeys.length === 0) return;
+
+    if (onAddMultiple) {
+      onAddMultiple(validKeys);
+    } else {
+      validKeys.forEach(k => onAdd(k.label, k.key));
+    }
+
+    const dupes = csvParseResult?.duplicateCount || 0;
+    const invalids = csvParseResult?.invalidCount || 0;
+
+    let feedback = `${validKeys.length} API ${validKeys.length === 1 ? 'key' : 'keys'} imported successfully.`;
+    if (dupes > 0 || invalids > 0) {
+      const parts = [`${validKeys.length} imported`];
+      if (dupes > 0) parts.push(`${dupes} ${dupes === 1 ? 'duplicate' : 'duplicates'} skipped`);
+      if (invalids > 0) parts.push(`${invalids} ${invalids === 1 ? 'invalid row' : 'invalid rows'} skipped`);
+      feedback = parts.join(', ') + '.';
+    }
+
+    if (onShowToast) {
+      onShowToast('API Keys Imported', feedback);
+    }
+
+    setIsCsvModalOpen(false);
+    setCsvParseResult(null);
+    setCsvFileName('');
   };
 
   const toggleVisibility = (id: string) => {
@@ -68,14 +167,14 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
             {onResetAll && keys.length > 0 && (
               <button 
                 onClick={onResetAll}
-                className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-red-600/20 text-red-400 hover:bg-red-600 hover:text-white border border-red-500/30 hover:border-red-500 shadow-sm"
+                className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-red-600/20 text-red-400 hover:bg-red-600 hover:text-white border border-red-500/30 hover:border-red-500 shadow-sm cursor-pointer"
               >
                 Reset All
               </button>
             )}
             <button 
               onClick={() => setShowInput(!showInput)}
-              className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all ${
+              className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all cursor-pointer ${
                 showInput 
                   ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
                   : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
@@ -83,9 +182,54 @@ export const ApiKeyManager: React.FC<Props> = ({ keys, onAdd, onRemove, onResetU
             >
               {showInput ? 'Cancel' : '+ Add Key'}
             </button>
+            <button 
+              type="button"
+              onClick={handleOpenCsvPicker}
+              title="Import multiple API keys from a CSV file"
+              className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 hover:border-slate-600 shadow-sm flex items-center gap-1.5 cursor-pointer active:scale-95"
+            >
+              <Upload className="w-3.5 h-3.5 text-purple-400" />
+              Import CSV
+            </button>
+            <input 
+              type="file"
+              ref={fileInputRef}
+              onChange={handleCsvFileChange}
+              accept=".csv,text/csv"
+              className="hidden"
+            />
           </div>
         )}
       </div>
+
+      {csvErrorMsg && (
+        <div className="mb-4 p-3 bg-rose-950/40 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center justify-between animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{csvErrorMsg}</span>
+          </div>
+          <button 
+            type="button" 
+            onClick={() => setCsvErrorMsg(null)}
+            className="text-rose-400 hover:text-rose-200 p-1 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* CSV Import Preview Modal */}
+      <ImportCsvModal 
+        isOpen={isCsvModalOpen}
+        onClose={() => {
+          setIsCsvModalOpen(false);
+          setCsvParseResult(null);
+          setCsvFileName('');
+        }}
+        parseResult={csvParseResult}
+        fileName={csvFileName}
+        onConfirmImport={handleConfirmCsvImport}
+      />
 
       {activeTab === 'keys' && showInput && (
         <form onSubmit={handleSubmit} className="mb-6 bg-slate-800/50 p-4 rounded-xl border border-white/5 animate-in fade-in slide-in-from-top-2">

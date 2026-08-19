@@ -1746,6 +1746,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
          onClearHistory={handleClearHistory}
          onResetUsage={handleResetUsage}
          onResetAll={handleResetAllUsage}
+         onShowToast={showNotification}
       />
 
       <main 
