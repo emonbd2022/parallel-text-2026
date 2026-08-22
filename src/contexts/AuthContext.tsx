@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 
 export interface UserData {
@@ -18,6 +18,7 @@ export interface UserData {
   plan?: 'free' | 'starter' | 'pro' | 'elite' | 'unlimited';
   planStartDate?: string;
   planEndDate?: string;
+  deviceIds?: string[];
 }
 
 export interface AppNotification {
@@ -372,6 +373,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             
             if (docSnap.exists()) {
               const d = docSnap.data();
+
+              // Device ID Policy Enforcement
+              let deviceId = localStorage.getItem('deviceId');
+              if (!deviceId) {
+                deviceId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+                localStorage.setItem('deviceId', deviceId);
+              }
+
+              let dbDeviceIds = Array.isArray(d.deviceIds) ? [...d.deviceIds] : [];
+              let shouldUpdateDoc = false;
+              let isBlocked = !!d.blocked;
+
+              if (d.role !== 'admin' && !dbDeviceIds.includes(deviceId)) {
+                if (dbDeviceIds.length < 2) {
+                  dbDeviceIds.push(deviceId);
+                  shouldUpdateDoc = true;
+                } else {
+                  isBlocked = true;
+                  shouldUpdateDoc = true;
+                }
+              }
+
+              if (shouldUpdateDoc) {
+                try {
+                  const updates: any = { deviceIds: dbDeviceIds };
+                  if (isBlocked && !d.blocked) {
+                    updates.blocked = true;
+                  }
+                  await updateDoc(userRef, updates);
+                } catch (e) {
+                  console.error('Failed to update device limits', e);
+                }
+              }
+
               const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
               const serverData: UserData = {
                 uid: currentUser.uid,
@@ -383,11 +418,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 unlimited: !!d.unlimited,
                 totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
                 joinDate: d.joinDate || new Date().toISOString(),
-                blocked: !!d.blocked,
+                blocked: isBlocked,
                 role: d.role === 'admin' ? 'admin' : (isFirstUser ? 'admin' : 'user'),
                 plan: d.plan || 'free',
                 planStartDate: d.planStartDate,
                 planEndDate: d.planEndDate,
+                deviceIds: dbDeviceIds,
               };
 
               // Update state & cache if data is changed or freshly fetched
@@ -415,6 +451,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const userEmail = currentUser.email || '';
               const nowISO = new Date().toISOString();
 
+              let deviceId = localStorage.getItem('deviceId');
+              if (!deviceId) {
+                deviceId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+                localStorage.setItem('deviceId', deviceId);
+              }
+
               const newUserData: UserData = {
                 uid: currentUser.uid,
                 email: userEmail,
@@ -428,6 +470,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 blocked: false,
                 role: isFirstUser ? 'admin' : 'user',
                 plan: 'free',
+                deviceIds: [deviceId],
               };
 
               const notifId = `signup_${currentUser.uid}`;

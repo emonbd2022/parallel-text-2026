@@ -68,6 +68,10 @@ export const Pricing: React.FC = () => {
                 </li>
                 <li className="flex items-center gap-3 text-slate-300">
                   <Check className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <span>Max 2 Devices</span>
+                </li>
+                <li className="flex items-center gap-3 text-slate-300">
+                  <Check className="w-5 h-5 text-emerald-400 shrink-0" />
                   <span>CSV Export</span>
                 </li>
               </ul>

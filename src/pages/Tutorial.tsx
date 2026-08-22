@@ -72,6 +72,22 @@ export const Tutorial: React.FC = () => {
                 <li><strong>Credits:</strong> Processing images requires credits. You can check your remaining credits in the top right corner.</li>
                 <li><strong>Local Storage:</strong> Your active workspace is automatically saved to your browser. If you accidentally close the tab, your pending and completed items will remain intact when you return!</li>
               </ul>
+              
+              <div className="bg-orange-950/30 border border-orange-500/30 rounded-xl p-5 mt-6">
+                <h3 className="text-lg font-bold text-orange-400 mb-2 flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5" />
+                  Terms & Conditions: Device Limits
+                </h3>
+                <p className="text-sm text-slate-300 leading-relaxed mb-3">
+                  To prevent account sharing and piracy, <strong>each account is strictly limited to a maximum of 2 unique devices/browsers</strong>. 
+                </p>
+                <ul className="text-sm text-slate-400 list-disc pl-5 space-y-1">
+                  <li>When you log in, your device is securely registered.</li>
+                  <li>Normal usage (refreshing, restarting the browser, passive sessions) on a registered device will not count as a new device.</li>
+                  <li>Attempting to log in from a 3rd distinct device will automatically block your account.</li>
+                  <li>Once an account is blocked, you must contact support to appeal. Device registrations cannot be manually removed by users.</li>
+                </ul>
+              </div>
             </div>
           </Section>
 
