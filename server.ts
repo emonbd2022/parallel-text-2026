@@ -75,7 +75,7 @@ function saveStoredKeys(keys: StoredKey[]) {
 /**
  * Fetches central keys from Firestore collection via REST API
  */
-async function fetchKeysFromFirestore(): Promise<StoredKey[]> {
+async function fetchKeysFromFirestore(): Promise<StoredKey[] | null> {
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
     const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
     const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
@@ -89,7 +89,7 @@ async function fetchKeysFromFirestore(): Promise<StoredKey[]> {
         const resp = await fetch(url);
         if (!resp.ok) {
             console.warn(`[Server] Firestore REST fetch status ${resp.status}`);
-            return [];
+            return null;
         }
         const data = (await resp.json()) as any;
         if (!data.documents || !Array.isArray(data.documents)) {
@@ -136,7 +136,7 @@ async function fetchKeysFromFirestore(): Promise<StoredKey[]> {
         return items;
     } catch (err) {
         console.warn("[Server] Notice fetching Firestore central_keys:", err);
-        return [];
+        return null;
     }
 }
 
@@ -162,6 +162,15 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
             // 1. Fetch from Firestore (ONE query)
             const firestoreKeys = await fetchKeysFromFirestore();
 
+            // Handle failure
+            if (firestoreKeys === null) {
+                console.warn("[Server] Central API cache refresh failed. Using fallback.");
+                lastCentralKeysFetchTime = Date.now(); // Prevent tight retry loop
+                if (centralKeys.length > 0) {
+                    return centralKeys;
+                }
+            }
+
             // 2. Fetch from local file storage
             const fileKeys = loadStoredKeys();
 
@@ -170,8 +179,10 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
             for (const fk of fileKeys) {
                 keyMap.set(fk.keyHash || fk.id, fk);
             }
-            for (const fsk of firestoreKeys) {
-                keyMap.set(fsk.keyHash || fsk.id, fsk);
+            if (firestoreKeys !== null) {
+                for (const fsk of firestoreKeys) {
+                    keyMap.set(fsk.keyHash || fsk.id, fsk);
+                }
             }
 
             const allStored = Array.from(keyMap.values());
@@ -206,10 +217,10 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
     return await centralKeyRefreshPromise;
 }
 
-// Background sync every 10 minutes
-setInterval(() => {
-    syncCentralKeys(false).catch(() => {});
-}, CACHE_TTL_MS);
+function invalidateCentralCache() {
+    lastCentralKeysFetchTime = 0;
+    console.log('[Server] Central API registry cache invalidated (event-driven).');
+}
 
 async function startServer() {
     await syncCentralKeys(); // Initial sync
@@ -221,7 +232,8 @@ async function startServer() {
     app.use(express.json({ limit: '50mb' }));
 
     // Helper to map a virtual key ID like 'central-5' to a real key
-    function getRealKey(virtualKeyId: string): string {
+    async function getRealKey(virtualKeyId: string): Promise<string> {
+        await syncCentralKeys();
         if (centralKeys.length > 0) {
             let index = 0;
             if (virtualKeyId && virtualKeyId.startsWith('central-')) {
@@ -299,7 +311,7 @@ async function startServer() {
                 throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
             }
 
-            const apiKey = getRealKey(virtualKeyId);
+            const apiKey = await getRealKey(virtualKeyId);
             const ai = new GoogleGenAI({ apiKey });
             
             const promptParts: any[] = [];
@@ -414,7 +426,7 @@ Return a strictly valid JSON array where each object contains:
                 throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
             }
 
-            const apiKey = getRealKey(virtualKeyId);
+            const apiKey = await getRealKey(virtualKeyId);
             const ai = new GoogleGenAI({ apiKey });
             
             const systemInstruction = `# Adobe Stock Category Generation — Master Instructions
@@ -561,7 +573,7 @@ Return a strictly valid JSON array where each object contains:
             }
             if (added > 0) {
                 saveStoredKeys(storedKeys);
-                await syncCentralKeys();
+                invalidateCentralCache();
             }
             res.json({ success: true, added, total: centralKeys.length });
         } catch (e: any) {
@@ -596,7 +608,7 @@ Return a strictly valid JSON array where each object contains:
             storedKeys.push(newKey);
             saveStoredKeys(storedKeys);
             
-            await syncCentralKeys();
+            invalidateCentralCache();
             res.json({ id: newKey.id, label: newKey.label, enabled: true });
         } catch (e: any) {
             res.status(500).send(e.message);
@@ -605,7 +617,8 @@ Return a strictly valid JSON array where each object contains:
 
     app.post("/api/admin/keys/refresh", async (req, res) => {
         try {
-            await syncCentralKeys(true);
+            invalidateCentralCache();
+            await syncCentralKeys(false);
             const storedKeys = loadStoredKeys();
             storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
             
@@ -638,7 +651,8 @@ Return a strictly valid JSON array where each object contains:
         try {
             const force = req.query.refresh === 'true';
             if (force) {
-                await syncCentralKeys(true);
+                invalidateCentralCache();
+                await syncCentralKeys(false);
             }
             const storedKeys = loadStoredKeys();
             // Sort by createdAt descending
@@ -675,7 +689,7 @@ Return a strictly valid JSON array where each object contains:
             storedKeys = storedKeys.filter(k => k.id !== req.params.id);
             saveStoredKeys(storedKeys);
             
-            await syncCentralKeys(true);
+            invalidateCentralCache();
             res.json({ success: true });
         } catch (e: any) {
             res.status(500).send(e.message);
@@ -690,7 +704,7 @@ Return a strictly valid JSON array where each object contains:
             if (key) {
                 key.enabled = enabled;
                 saveStoredKeys(storedKeys);
-                await syncCentralKeys(true);
+                invalidateCentralCache();
             }
             res.json({ success: true });
         } catch (e: any) {

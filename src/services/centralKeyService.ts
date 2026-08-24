@@ -220,33 +220,7 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
       console.warn('[Central Key Service] Server pool endpoint notice:', e);
     }
 
-    // 2. Client fallback (e.g. offline or standalone preview)
-    try {
-      if (db) {
-        const snap = await getDocs(collection(db, 'central_keys'));
-        recordFirestoreRead('central_keys', snap.docs.length || 1, 'fetchCentralKeysFromFirestore');
-
-        if (!snap.empty) {
-          const records = snap.docs.map(d => ({
-            ...d.data(),
-            id: d.id
-          } as CentralKeyRecord));
-
-          records.sort((a, b) => {
-            const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-            const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-            return timeB - timeA;
-          });
-
-          cachedCentralKeys = records;
-          lastCentralKeysFetchTime = Date.now();
-          return records;
-        }
-      }
-    } catch (e) {
-      console.warn('[Central Key Service] Firestore fallback notice:', e);
-    }
-
+    // Removed client fallback as per NO CLIENT-SIDE CENTRAL COLLECTION FETCH requirement
     return cachedCentralKeys || [];
   })();
 
