@@ -28,16 +28,26 @@ export const generateCategoriesBatch = async (
   apiKey: string,
   items: { id: string; title: string }[],
   model: string,
-  onProgress?: (progressMsg: string) => void
+  onProgress?: (progressMsg: string) => void,
+  localKeys?: string[],
+  isAdmin?: boolean,
+  hasExplicitAdminGrant?: boolean
 ): Promise<Record<string, { category: string }>> => {
   if (apiKey.startsWith('central-')) {
     if (onProgress) onProgress("Getting categories (Central)...");
     const res = await fetch('/api/central-category', {
        method: 'POST',
        headers: { 'Content-Type': 'application/json' },
-       body: JSON.stringify({ items, model, virtualKeyId: apiKey })
+       body: JSON.stringify({ items, model, virtualKeyId: apiKey, localKeys, isAdmin, hasExplicitAdminGrant })
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+        let errMsg = await res.text();
+        try {
+            const errObj = JSON.parse(errMsg);
+            if (errObj.error) errMsg = errObj.error;
+        } catch {}
+        throw new Error(errMsg);
+    }
     return await res.json();
   }
 

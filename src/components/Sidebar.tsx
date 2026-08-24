@@ -5,6 +5,8 @@ import { ApiKeyManager } from './ApiKeyManager';
 
 interface Props {
   keys: ApiKey[];
+  localKeys?: ApiKey[];
+  setLocalKeys?: React.Dispatch<React.SetStateAction<ApiKey[]>>;
   setKeys: React.Dispatch<React.SetStateAction<ApiKey[]>>;
   config: ProcessingConfig;
   setConfig: React.Dispatch<React.SetStateAction<ProcessingConfig>>;
@@ -23,6 +25,8 @@ interface Props {
 
 export const Sidebar: React.FC<Props> = ({ 
   keys, 
+  localKeys,
+  setLocalKeys,
   setKeys, 
   config, 
   setConfig, 
@@ -109,13 +113,20 @@ export const Sidebar: React.FC<Props> = ({
                 apiMode={config.apiMode || 'local'}
                 onChangeApiMode={(mode) => setConfig(prev => ({ ...prev, apiMode: mode }))}
                 keys={keys}
-                onAdd={(l, k) => setKeys(prev => [...prev, { 
-                  id: Math.random().toString(36), 
-                  label: l, 
-                  key: k, 
-                  errorCount: 0,
-                  usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
-                }])}
+                localKeys={localKeys}
+                onAdd={(l, k) => {
+                  const newKey: ApiKey = { 
+                    id: Math.random().toString(36), 
+                    label: l, 
+                    key: k, 
+                    errorCount: 0,
+                    usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+                  };
+                  setKeys(prev => [...prev, newKey]);
+                  if (setLocalKeys) {
+                    setLocalKeys(prev => [...prev, newKey]);
+                  }
+                }}
                 onAddMultiple={(imported) => {
                   const currentSession = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' });
                   const newKeyObjects: ApiKey[] = imported.map((item, idx) => ({
@@ -129,16 +140,24 @@ export const Sidebar: React.FC<Props> = ({
                       lite: 0, 
                       pro: 0, 
                       flash_3: 0, 
-                      flash_3_1_lite: 0,
-                      flash_3_5: 0,
-                      flash_3_5_lite: 0,
-                      flash_3_6: 0,
-                      flash_3_7: 0
+                      flash_3_1_lite: 0, 
+                      flash_3_5: 0, 
+                      flash_3_5_lite: 0, 
+                      flash_3_6: 0, 
+                      flash_3_7: 0 
                     }
                   }));
                   setKeys(prev => [...prev, ...newKeyObjects]);
+                  if (setLocalKeys) {
+                    setLocalKeys(prev => [...prev, ...newKeyObjects]);
+                  }
                 }}
-                onRemove={(id) => setKeys(prev => prev.filter(k => k.id !== id))}
+                onRemove={(id) => {
+                  setKeys(prev => prev.filter(k => k.id !== id));
+                  if (setLocalKeys) {
+                    setLocalKeys(prev => prev.filter(k => k.id !== id));
+                  }
+                }}
                 onResetUsage={onResetUsage}
                 onResetAll={onResetAll}
                 onShowToast={onShowToast}

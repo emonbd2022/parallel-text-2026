@@ -19,16 +19,26 @@ export const generateMetadataBatch = async (
     negativeKeywords?: string;
     forceTransparency?: boolean;
   },
-  onProgress?: (progressMsg: string) => void
+  onProgress?: (progressMsg: string) => void,
+  localKeys?: string[],
+  isAdmin?: boolean,
+  hasExplicitAdminGrant?: boolean
 ): Promise<Record<string, GeminiResponse>> => {
   if (apiKey.startsWith('central-')) {
     if (onProgress) onProgress("Creating titles & keywords (Central)...");
     const res = await fetch('/api/central-generate', {
        method: 'POST',
        headers: { 'Content-Type': 'application/json' },
-       body: JSON.stringify({ items, config, virtualKeyId: apiKey })
+       body: JSON.stringify({ items, config, virtualKeyId: apiKey, localKeys, isAdmin, hasExplicitAdminGrant })
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+        let errMsg = await res.text();
+        try {
+            const errObj = JSON.parse(errMsg);
+            if (errObj.error) errMsg = errObj.error;
+        } catch {}
+        throw new Error(errMsg);
+    }
     return await res.json();
   }
 

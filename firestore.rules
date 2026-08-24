@@ -170,10 +170,12 @@ service cloud.firestore {
     // =========================================================
     // CENTRAL API KEYS COLLECTION
     // Centralized crowdsourced & admin-provided API keys in Firestore
+    // Protected: Direct collection read restricted to Admin only.
+    // Client users retrieve anonymous virtual nodes via server-side cached registry.
     // =========================================================
     match /central_keys/{keyDocId} {
-      // Read: Public/authenticated users can fetch the active keys pool for generation
-      allow read: if true;
+      // Read: Admin only (prevents multi-user document read spikes on Firestore)
+      allow read: if isAdmin();
 
       // Create: Authenticated users contributing keys or Admins
       allow create: if isAuthenticated() &&

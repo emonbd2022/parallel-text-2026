@@ -11,6 +11,7 @@ interface Props {
   apiMode: 'local' | 'central';
   onChangeApiMode: (mode: 'local' | 'central') => void;
   keys: ApiKey[];
+  localKeys?: ApiKey[];
   onAdd: (label: string, key: string) => void;
   onAddMultiple?: (importedKeys: { label: string; key: string }[]) => void;
   onRemove: (id: string) => void;
@@ -23,6 +24,7 @@ export const ApiKeyManager: React.FC<Props> = ({
   apiMode,
   onChangeApiMode,
   keys, 
+  localKeys,
   onAdd, 
   onAddMultiple,
   onRemove, 
@@ -47,9 +49,24 @@ export const ApiKeyManager: React.FC<Props> = ({
   const [csvFileName, setCsvFileName] = useState('');
   const [csvErrorMsg, setCsvErrorMsg] = useState<string | null>(null);
 
-  // Requirement: user must be logged in AND have >= 5 valid local keys
-  const validLocalKeysCount = keys.filter(k => !k.key.startsWith('central-') && k.key.trim().length > 15).length;
-  const isEligibleForCentral = Boolean((user || userData) && validLocalKeysCount >= 5);
+  // Derive unique local API keys via fingerprint / unique key set (0 Firestore reads/writes)
+  const sourceLocalKeys = localKeys && localKeys.length > 0 ? localKeys : keys;
+  const uniqueLocalKeySet = new Set(
+    sourceLocalKeys
+      .filter(k => k.key && !k.key.startsWith('central-') && k.key.trim().length > 10)
+      .map(k => k.key.trim())
+  );
+  const uniqueLocalKeysCount = uniqueLocalKeySet.size;
+  const localKeysCount = sourceLocalKeys.filter(k => !k.key.startsWith('central-')).length;
+
+  // Central API eligibility:
+  // 1. Admin users retain access regardless of key count.
+  // 2. Admin-granted accounts (userData?.centralApiAccess === true) retain access.
+  // 3. Any logged-in user with >= 8 UNIQUE local keys is automatically unlocked (0 admin approval needed).
+  const isAdmin = userData?.role === 'admin';
+  const hasExplicitAdminGrant = userData?.centralApiAccess === true;
+  const hasEightKeysUnlocked = Boolean((user || userData) && uniqueLocalKeysCount >= 8);
+  const isEligibleForCentral = Boolean(isAdmin || hasExplicitAdminGrant || hasEightKeysUnlocked);
 
   // Update time for cooldown countdowns
   useEffect(() => {
@@ -72,11 +89,11 @@ export const ApiKeyManager: React.FC<Props> = ({
         setIsAuthModalOpen(true);
         return;
       }
-      if (validLocalKeysCount < 5) {
+      if (!isEligibleForCentral) {
         if (onShowToast) {
           onShowToast(
-            'Central Pool Locked', 
-            `You must have at least 5 valid API keys added locally to access Central API. (Currently: ${validLocalKeysCount}/5)`
+            'Central API Locked', 
+            `You must have at least 8 unique API keys added locally to unlock Central API mode. (Currently: ${uniqueLocalKeysCount}/8 unique keys)`
           );
         }
         return;
@@ -213,7 +230,7 @@ export const ApiKeyManager: React.FC<Props> = ({
           onClick={() => handleModeChange('local')}
           className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${apiMode === 'local' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-300'}`}
         >
-          Local API ({validLocalKeysCount})
+          Local API ({localKeysCount})
         </button>
         <button
           onClick={() => handleModeChange('central')}
@@ -225,38 +242,76 @@ export const ApiKeyManager: React.FC<Props> = ({
                 : 'text-slate-500 opacity-80 hover:text-slate-400'
           }`}
         >
-          <Zap className="w-4 h-4 text-purple-400" /> Central API — Blazing Fast
-          {!isEligibleForCentral && (
-            <Lock className="w-3.5 h-3.5 text-amber-400 ml-0.5" />
+          {isEligibleForCentral ? (
+            <>
+              <Zap className="w-4 h-4 text-purple-400 shrink-0" />
+              <span>Central API — Blazing Fast</span>
+            </>
+          ) : (
+            <>
+              <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Requires 8 keys ({uniqueLocalKeysCount}/8)</span>
+            </>
           )}
         </button>
       </div>
 
-      {/* Central Requirements Info / Notice */}
+      {/* Central Unlock Progress / Notice */}
       {!isEligibleForCentral && apiMode !== 'central' && (
-        <div className="mb-6 p-4 bg-gradient-to-r from-amber-950/40 to-slate-900 border border-amber-500/30 rounded-xl text-xs space-y-2">
-          <div className="flex items-center gap-2 font-bold text-amber-400 text-sm">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-            Central API Access Requirements
+        <div className="mb-6 p-4 bg-gradient-to-r from-purple-950/30 via-slate-900 to-slate-900 border border-purple-500/30 rounded-xl text-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 font-bold text-purple-300 text-sm">
+              <Zap className="w-4 h-4 text-purple-400 shrink-0" />
+              Central API Auto-Unlock
+            </div>
+            <span className="text-[11px] font-mono font-bold bg-purple-500/20 text-purple-300 px-2.5 py-0.5 rounded-full border border-purple-500/30">
+              {uniqueLocalKeysCount} / 8 Unique Keys
+            </span>
           </div>
+
           <p className="text-slate-300 text-xs leading-relaxed">
-            Central API access requires an account and at least <strong>5 valid, working API keys</strong> in your local pool. Fake/demo placeholders (e.g. <code>abc</code>, <code>xyz</code>) are rejected with live verification.
+            Add at least <strong>8 unique, valid Gemini API keys</strong> to your local pool to automatically unlock the shared, high-speed Central API pool. No admin approval required.
           </p>
-          <div className="flex items-center justify-between pt-1 border-t border-amber-500/20 text-xs">
-            <span className="text-slate-400">
-              Valid Keys: <strong className="text-amber-300">{validLocalKeysCount} / 5</strong>
+
+          {/* Visual Progress Bar */}
+          <div className="space-y-1.5">
+            <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-700/50">
+              <div 
+                className="h-full bg-gradient-to-r from-amber-500 via-purple-500 to-emerald-500 transition-all duration-500 ease-out"
+                style={{ width: `${Math.min(100, (uniqueLocalKeysCount / 8) * 100)}%` }}
+              />
+            </div>
+            <div className="flex justify-between items-center text-[11px] text-slate-400">
+              <span>
+                {uniqueLocalKeysCount >= 8 
+                  ? 'Goal reached! Central API unlocked.' 
+                  : `${8 - uniqueLocalKeysCount} more unique key${8 - uniqueLocalKeysCount === 1 ? '' : 's'} needed`}
+              </span>
+              <span>Goal: 8 Keys</span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-xs">
+            <span className="text-slate-400 flex items-center gap-1.5">
+              Account Status: {!user && !userData ? (
+                <strong className="text-slate-500">Not Logged In</strong>
+              ) : (
+                <strong className="text-purple-300">
+                  {userData?.email || user?.email || 'Logged In'}
+                </strong>
+              )}
             </span>
             {!user && !userData ? (
               <button
                 type="button"
                 onClick={() => setIsAuthModalOpen(true)}
-                className="text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 underline"
+                className="text-purple-400 hover:text-purple-300 font-semibold flex items-center gap-1 underline cursor-pointer"
               >
                 <LogIn className="w-3.5 h-3.5" /> Login Required
               </button>
             ) : (
-              <span className="text-emerald-400 flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Logged In
+              <span className="text-amber-400 flex items-center gap-1 text-[11px]">
+                <Lock className="w-3 h-3" /> Unlocks at 8 keys
               </span>
             )}
           </div>

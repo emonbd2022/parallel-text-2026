@@ -3,9 +3,9 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap } from 'lucide-react';
 import { 
-  fetchCentralKeysFromFirestore, 
+  fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
   toggleCentralKeyStatus, 
   deleteCentralKeyFromFirestore,
@@ -101,7 +101,7 @@ export const AdminDashboard: React.FC = () => {
   const fetchCentralKeys = async (forceRefresh = false) => {
     setLoadingKeys(true);
     try {
-      const data = await fetchCentralKeysFromFirestore(forceRefresh);
+      const data = await fetchAdminCentralKeys(forceRefresh);
       if (Array.isArray(data)) {
         setCentralKeys(data);
       }
@@ -603,6 +603,7 @@ export const AdminDashboard: React.FC = () => {
           planEndDate: raw.planEndDate || null,
           unlimited: Boolean(raw.unlimited),
           blocked: Boolean(raw.blocked),
+          centralApiAccess: Boolean(raw.centralApiAccess),
           role: raw.role || 'user',
           joinDate: raw.joinDate || raw.createdAt || new Date().toISOString(),
           createdAt: raw.createdAt || raw.joinDate || new Date().toISOString(),
@@ -932,6 +933,7 @@ export const AdminDashboard: React.FC = () => {
                       <th className="pb-3 font-semibold">Nickname</th>
                       <th className="pb-3 font-semibold">Credits</th>
                       <th className="pb-3 font-semibold">Plan & Validity</th>
+                      <th className="pb-3 font-semibold">Central API</th>
                       <th className="pb-3 font-semibold">Processed</th>
                       <th className="pb-3 font-semibold">Avg/Day</th>
                       <th className="pb-3 font-semibold">Status</th>
@@ -941,7 +943,7 @@ export const AdminDashboard: React.FC = () => {
                   <tbody className="divide-y divide-slate-800">
                     {(loading || isFetchingAllUsers) ? (
                       <tr>
-                        <td colSpan={9} className="py-12 text-center text-slate-400">
+                        <td colSpan={10} className="py-12 text-center text-slate-400">
                           <div className="flex flex-col items-center justify-center gap-3">
                             <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
                             <span className="text-sm font-medium">
@@ -951,7 +953,7 @@ export const AdminDashboard: React.FC = () => {
                         </td>
                       </tr>
                     ) : filteredUsers.length === 0 ? (
-                      <tr><td colSpan={9} className="py-8 text-center text-slate-500">No users found.</td></tr>
+                      <tr><td colSpan={10} className="py-8 text-center text-slate-500">No users found.</td></tr>
                     ) : (
                       filteredUsers.map((user, index) => {
                             const rank = viewMode === 'all' ? index + 1 : (currentPage - 1) * 5 + index + 1;
@@ -1029,6 +1031,38 @@ export const AdminDashboard: React.FC = () => {
                                </div>
                             </td>
                             
+                            <td className="py-4">
+                               <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                 <input 
+                                   type="checkbox" 
+                                   checked={user.role === 'admin' || user.centralApiAccess === true}
+                                   onChange={(e) => {
+                                     const val = e.target.checked;
+                                     if (viewMode === 'all') {
+                                       setAllUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, centralApiAccess: val } : u));
+                                     } else {
+                                       setUsersByPage(prev => ({
+                                         ...prev, 
+                                         [currentPage]: (prev[currentPage] || []).map(u => u.uid === user.uid ? { ...u, centralApiAccess: val } : u)
+                                       }));
+                                     }
+                                     handleUpdateUser(user.uid, { centralApiAccess: val });
+                                   }}
+                                   disabled={user.role === 'admin'}
+                                   className="w-4 h-4 accent-purple-600 cursor-pointer disabled:opacity-75 disabled:cursor-not-allowed"
+                                 />
+                                 <span className="text-xs">
+                                   {user.role === 'admin' || user.centralApiAccess ? (
+                                     <span className="text-purple-400 font-semibold flex items-center gap-1">
+                                       <Zap className="w-3 h-3 text-purple-400 shrink-0" /> Granted
+                                     </span>
+                                   ) : (
+                                     <span className="text-slate-500 font-medium">Locked</span>
+                                   )}
+                                 </span>
+                               </label>
+                            </td>
+
                             <td className="py-4 font-bold text-white">
                               {(user.totalProcessedImages || 0).toLocaleString()}
                             </td>

@@ -20,6 +20,7 @@ export interface UserData {
   planStartDate?: string;
   planEndDate?: string;
   deviceIds?: string[];
+  centralApiAccess?: boolean;
 }
 
 export interface AppNotification {
@@ -432,6 +433,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 planStartDate: d.planStartDate,
                 planEndDate: d.planEndDate,
                 deviceIds: dbDeviceIds,
+                centralApiAccess: d.role === 'admin' || isFirstUser ? true : Boolean(d.centralApiAccess),
               };
 
               // Update state & cache if data is changed or freshly fetched
@@ -444,7 +446,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   prev.blocked !== serverData.blocked ||
                   prev.nickname !== serverData.nickname ||
                   prev.role !== serverData.role ||
-                  prev.unlimited !== serverData.unlimited;
+                  prev.unlimited !== serverData.unlimited ||
+                  prev.centralApiAccess !== serverData.centralApiAccess;
 
                 if (isDifferent) {
                   saveUserDataToCache(serverData);
@@ -479,6 +482,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 role: isFirstUser ? 'admin' : 'user',
                 plan: 'free',
                 deviceIds: [deviceId],
+                centralApiAccess: isFirstUser ? true : false,
               };
 
               const notifId = `signup_${currentUser.uid}`;

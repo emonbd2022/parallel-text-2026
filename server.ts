@@ -45,7 +45,10 @@ interface StoredKey {
     createdAt: string;
 }
 
-let centralKeys: { id: string, key: string }[] = [];
+let centralKeys: { id: string; key: string }[] = [];
+let lastCentralKeysFetchTime = 0;
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes TTL
+let centralKeyRefreshPromise: Promise<{ id: string; key: string }[]> | null = null;
 
 function loadStoredKeys(): StoredKey[] {
     try {
@@ -67,26 +70,140 @@ function saveStoredKeys(keys: StoredKey[]) {
     }
 }
 
-async function syncCentralKeys() {
+/**
+ * Fetches central keys from Firestore collection via REST API
+ */
+async function fetchKeysFromFirestore(): Promise<StoredKey[]> {
+    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+    const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+    const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
+
+    if (!projectId) {
+        return [];
+    }
+
     try {
-        const storedKeys = loadStoredKeys();
-        centralKeys = storedKeys.filter(k => k.enabled).map(data => {
-            let decryptedKey = '';
-            try {
-                decryptedKey = decrypt(data.encryptedKey);
-            } catch (e) {
-                console.error(`Failed to decrypt key ${data.id}`);
+        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys?pageSize=1000${apiKey ? `&key=${apiKey}` : ''}`;
+        const resp = await fetch(url);
+        if (!resp.ok) {
+            console.warn(`[Server] Firestore REST fetch status ${resp.status}`);
+            return [];
+        }
+        const data = (await resp.json()) as any;
+        if (!data.documents || !Array.isArray(data.documents)) {
+            return [];
+        }
+
+        const items: StoredKey[] = [];
+        for (const doc of data.documents) {
+            const fields = doc.fields || {};
+            const docPath = doc.name || '';
+            const docId = docPath.split('/').pop() || '';
+
+            const rawKey = fields.key?.stringValue || '';
+            let encryptedKey = fields.encryptedKey?.stringValue || '';
+            const label = fields.label?.stringValue || 'Central Key';
+            const enabled = fields.enabled?.booleanValue !== false;
+            const createdAt = fields.createdAt?.stringValue || new Date().toISOString();
+            const keyHash = fields.keyHash?.stringValue || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex');
+
+            // Encrypt plaintext keys on the server
+            if (!encryptedKey && rawKey) {
+                if (rawKey.includes(':') && rawKey.length > 40) {
+                    encryptedKey = rawKey;
+                } else {
+                    encryptedKey = encrypt(rawKey);
+                }
             }
-            return { id: data.id, key: decryptedKey };
-        }).filter(k => k.key.length > 0);
-        console.log(`Synced ${centralKeys.length} central keys`);
-    } catch (error) {
-        console.error("Error syncing central keys:", error);
+
+            if (encryptedKey || rawKey) {
+                items.push({
+                    id: fields.id?.stringValue || docId,
+                    label,
+                    encryptedKey: encryptedKey || encrypt(rawKey),
+                    keyHash,
+                    enabled,
+                    createdAt
+                });
+            }
+        }
+        return items;
+    } catch (err) {
+        console.warn("[Server] Notice fetching Firestore central_keys:", err);
+        return [];
     }
 }
 
-// Sync keys every minute
-setInterval(syncCentralKeys, 60000);
+/**
+ * Server-side centralized key registry synchronizer with concurrency lock
+ */
+async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key: string }[]> {
+    const now = Date.now();
+    // Return warm cache if valid
+    if (!forceRefresh && centralKeys.length > 0 && (now - lastCentralKeysFetchTime < CACHE_TTL_MS)) {
+        return centralKeys;
+    }
+
+    // In-flight refresh lock: concurrent requests await the exact same promise
+    if (centralKeyRefreshPromise) {
+        return await centralKeyRefreshPromise;
+    }
+
+    centralKeyRefreshPromise = (async () => {
+        try {
+            console.log(`[Server] Performing controlled Central API registry sync (forceRefresh=${forceRefresh})...`);
+            
+            // 1. Fetch from Firestore (ONE query)
+            const firestoreKeys = await fetchKeysFromFirestore();
+
+            // 2. Fetch from local file storage
+            const fileKeys = loadStoredKeys();
+
+            // Merge unique by keyHash
+            const keyMap = new Map<string, StoredKey>();
+            for (const fk of fileKeys) {
+                keyMap.set(fk.keyHash || fk.id, fk);
+            }
+            for (const fsk of firestoreKeys) {
+                keyMap.set(fsk.keyHash || fsk.id, fsk);
+            }
+
+            const allStored = Array.from(keyMap.values());
+            if (allStored.length > 0) {
+                saveStoredKeys(allStored);
+            }
+
+            const active = allStored.filter(k => k.enabled).map(data => {
+                let decryptedKey = '';
+                try {
+                    decryptedKey = decrypt(data.encryptedKey);
+                } catch (e) {
+                    if (data.encryptedKey && data.encryptedKey.startsWith('AIza')) {
+                        decryptedKey = data.encryptedKey;
+                    }
+                }
+                return { id: data.id, key: decryptedKey };
+            }).filter(k => k.key.length > 0);
+
+            centralKeys = active;
+            lastCentralKeysFetchTime = Date.now();
+            console.log(`[Server] Central API key registry active count: ${centralKeys.length} nodes`);
+            return centralKeys;
+        } catch (error) {
+            console.error("[Server] Error in syncCentralKeys:", error);
+            return centralKeys;
+        } finally {
+            centralKeyRefreshPromise = null;
+        }
+    })();
+
+    return await centralKeyRefreshPromise;
+}
+
+// Background sync every 10 minutes
+setInterval(() => {
+    syncCentralKeys(false).catch(() => {});
+}, CACHE_TTL_MS);
 
 async function startServer() {
     await syncCentralKeys(); // Initial sync
@@ -126,25 +243,24 @@ async function startServer() {
         });
     });
 
-    // 1-Read Central API Keys Pool for Runtime Client Processing
+    // 1-Read Central API Keys Pool for Runtime Client Processing (Safe Virtual Node Handles Only)
     app.get("/api/central-keys-pool", async (req, res) => {
         try {
-            if (centralKeys.length === 0) {
-                await syncCentralKeys();
-            }
+            await syncCentralKeys(false);
 
             let poolKeys: { id: string; label: string; key: string }[] = [];
             if (centralKeys.length > 0) {
-                poolKeys = centralKeys.map((k, index) => ({
+                // Return ANONYMOUS VIRTUAL HANDLES. Real decrypted keys NEVER touch the browser.
+                poolKeys = centralKeys.map((_, index) => ({
                     id: `central-${index}`,
                     label: `Central Pool Node ${index + 1}`,
-                    key: k.key
+                    key: `central-${index}`
                 }));
             } else if (process.env.GEMINI_API_KEY) {
                 poolKeys = [{
                     id: 'central-0',
                     label: 'Central Pool Primary Node',
-                    key: process.env.GEMINI_API_KEY
+                    key: 'central-0'
                 }];
             }
 
@@ -161,7 +277,22 @@ async function startServer() {
 
     app.post("/api/central-generate", async (req, res) => {
         try {
-            const { items, config, virtualKeyId } = req.body;
+            const { items, config, virtualKeyId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            
+            // Central API Eligibility Check
+            let isEligible = false;
+            if (isAdmin || hasExplicitAdminGrant) {
+                isEligible = true;
+            } else if (Array.isArray(localKeys)) {
+                const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
+                if (uniqueKeys.size >= 8) {
+                    isEligible = true;
+                }
+            }
+            if (!isEligible) {
+                throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
+            }
+
             const apiKey = getRealKey(virtualKeyId);
             const ai = new GoogleGenAI({ apiKey });
             
@@ -261,7 +392,22 @@ Return a strictly valid JSON array where each object contains:
 
     app.post("/api/central-category", async (req, res) => {
         try {
-            const { items, model, virtualKeyId } = req.body;
+            const { items, model, virtualKeyId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            
+            // Central API Eligibility Check
+            let isEligible = false;
+            if (isAdmin || hasExplicitAdminGrant) {
+                isEligible = true;
+            } else if (Array.isArray(localKeys)) {
+                const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
+                if (uniqueKeys.size >= 8) {
+                    isEligible = true;
+                }
+            }
+            if (!isEligible) {
+                throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
+            }
+
             const apiKey = getRealKey(virtualKeyId);
             const ai = new GoogleGenAI({ apiKey });
             
@@ -451,8 +597,41 @@ Return a strictly valid JSON array where each object contains:
         }
     });
 
+    app.post("/api/admin/keys/refresh", async (req, res) => {
+        try {
+            await syncCentralKeys(true);
+            const storedKeys = loadStoredKeys();
+            storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            
+            const keys = storedKeys.map(data => {
+                let maskedKey = '••••••••';
+                try {
+                    const decrypted = decrypt(data.encryptedKey);
+                    if (decrypted && decrypted.length >= 8) {
+                        maskedKey = `${decrypted.substring(0, 6)}••••••••${decrypted.substring(decrypted.length - 4)}`;
+                    }
+                } catch (e) {}
+
+                return {
+                    id: data.id,
+                    label: data.label,
+                    maskedKey,
+                    enabled: data.enabled,
+                    createdAt: data.createdAt
+                };
+            });
+            res.json({ success: true, keys, count: keys.length });
+        } catch (e: any) {
+            res.status(500).send(e.message);
+        }
+    });
+
     app.get("/api/admin/keys", async (req, res) => {
         try {
+            const force = req.query.refresh === 'true';
+            if (force) {
+                await syncCentralKeys(true);
+            }
             const storedKeys = loadStoredKeys();
             // Sort by createdAt descending
             storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -486,7 +665,7 @@ Return a strictly valid JSON array where each object contains:
             storedKeys = storedKeys.filter(k => k.id !== req.params.id);
             saveStoredKeys(storedKeys);
             
-            await syncCentralKeys();
+            await syncCentralKeys(true);
             res.json({ success: true });
         } catch (e: any) {
             res.status(500).send(e.message);
@@ -501,7 +680,7 @@ Return a strictly valid JSON array where each object contains:
             if (key) {
                 key.enabled = enabled;
                 saveStoredKeys(storedKeys);
-                await syncCentralKeys();
+                await syncCentralKeys(true);
             }
             res.json({ success: true });
         } catch (e: any) {

@@ -785,7 +785,10 @@ export default function App() {
               usedModel,
               (msg) => {
                 setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
-              }
+              },
+              localKeys.map(k => k.key),
+              userData?.role === 'admin',
+              userData?.centralApiAccess === true
             );
             const elapsed = Date.now() - startTime;
             if (!turboCategoryStatsRef.current[usedModel]) {
@@ -808,7 +811,10 @@ export default function App() {
             config.model,
             (msg) => {
               setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
-            }
+            },
+            localKeys.map(k => k.key),
+            userData?.role === 'admin',
+            userData?.centralApiAccess === true
         );
       }
 
@@ -974,7 +980,10 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               { ...config, model: usedModel },
               (msg) => {
                 setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
-              }
+              },
+              localKeys.map(k => k.key),
+              userData?.role === 'admin',
+              userData?.centralApiAccess === true
             );
             const elapsed = Date.now() - startTime;
             if (!turboTitleStatsRef.current[usedModel]) {
@@ -998,7 +1007,10 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             config,
             (msg) => {
               setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
-            }
+            },
+            localKeys.map(k => k.key),
+            userData?.role === 'admin',
+            userData?.centralApiAccess === true
         );
         
       }
@@ -1851,6 +1863,8 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       
       <Sidebar 
          keys={keys}
+         localKeys={localKeys}
+         setLocalKeys={setLocalKeys}
          setKeys={setKeys}
          config={config}
          setConfig={setConfig}
