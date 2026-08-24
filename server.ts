@@ -159,27 +159,18 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
         try {
             console.log(`[Server] Performing controlled Central API registry sync (forceRefresh=${forceRefresh})...`);
             
-            // 1. Fetch from Firestore (ONE query)
-            const firestoreKeys = await fetchKeysFromFirestore();
-
-            // Handle failure
-            if (firestoreKeys === null) {
-                console.warn("[Server] Central API cache refresh failed. Using fallback.");
-                lastCentralKeysFetchTime = Date.now(); // Prevent tight retry loop
-                if (centralKeys.length > 0) {
-                    return centralKeys;
-                }
-            }
-
-            // 2. Fetch from local file storage
+            // 1. Fetch from local file storage
             const fileKeys = loadStoredKeys();
+
+            // 2. Try fetching from Firestore (if configured & allowed)
+            const firestoreKeys = await fetchKeysFromFirestore();
 
             // Merge unique by keyHash
             const keyMap = new Map<string, StoredKey>();
             for (const fk of fileKeys) {
                 keyMap.set(fk.keyHash || fk.id, fk);
             }
-            if (firestoreKeys !== null) {
+            if (firestoreKeys !== null && Array.isArray(firestoreKeys)) {
                 for (const fsk of firestoreKeys) {
                     keyMap.set(fsk.keyHash || fsk.id, fsk);
                 }
