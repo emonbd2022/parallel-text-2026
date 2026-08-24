@@ -21,6 +21,7 @@ export interface UserData {
   planEndDate?: string;
   deviceIds?: string[];
   centralApiAccess?: boolean;
+  deviceLimitReached?: boolean;
 }
 
 export interface AppNotification {
@@ -391,32 +392,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
               let dbDeviceIds = Array.isArray(d.deviceIds) ? [...d.deviceIds] : [];
               let shouldUpdateDoc = false;
+              const isFirstAdmin = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+              let role = d.role || (isFirstAdmin ? 'admin' : 'user');
               let isBlocked = !!d.blocked;
+              let deviceLimitReached = false;
 
-              if (d.role !== 'admin' && !dbDeviceIds.includes(deviceId)) {
+              // Auto-unblock hardcoded admins affected by the previous device limit bug
+              if (isFirstAdmin && isBlocked) {
+                isBlocked = false;
+                shouldUpdateDoc = true;
+              }
+
+              if (isFirstAdmin && d.role !== 'admin') {
+                role = 'admin';
+                shouldUpdateDoc = true;
+              }
+
+              if (role !== 'admin' && !dbDeviceIds.includes(deviceId)) {
                 if (dbDeviceIds.length < 2) {
                   dbDeviceIds.push(deviceId);
                   shouldUpdateDoc = true;
                 } else {
+                  // Do NOT permanently block the account in Firestore.
+                  // Just block this specific session/device.
                   isBlocked = true;
-                  shouldUpdateDoc = true;
+                  deviceLimitReached = true;
                 }
               }
 
               if (shouldUpdateDoc) {
                 try {
                   const updates: any = { deviceIds: dbDeviceIds };
-                  if (isBlocked && !d.blocked) {
-                    updates.blocked = true;
+                  if (isFirstAdmin && d.role !== 'admin') {
+                    updates.role = 'admin';
                   }
+                  if (isFirstAdmin && d.blocked) {
+                    updates.blocked = false;
+                  }
+                  // We removed updates.blocked = true here to prevent permanent lockouts
+                  // due to device limits. Admins can still manually block users.
                   await updateDoc(userRef, updates);
-                  recordFirestoreWrite('users', 1, 'AuthContext:updateDeviceIds');
+                  recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
                 } catch (e) {
-                  console.error('Failed to update device limits', e);
+                  console.error('Failed to update user doc', e);
                 }
               }
 
-              const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+              const isFirstUser = isFirstAdmin;
               const serverData: UserData = {
                 uid: currentUser.uid,
                 email: d.email || currentUser.email || '',
@@ -434,6 +456,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 planEndDate: d.planEndDate,
                 deviceIds: dbDeviceIds,
                 centralApiAccess: d.role === 'admin' || isFirstUser ? true : Boolean(d.centralApiAccess),
+                deviceLimitReached,
               };
 
               // Update state & cache if data is changed or freshly fetched
@@ -447,7 +470,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   prev.nickname !== serverData.nickname ||
                   prev.role !== serverData.role ||
                   prev.unlimited !== serverData.unlimited ||
-                  prev.centralApiAccess !== serverData.centralApiAccess;
+                  prev.centralApiAccess !== serverData.centralApiAccess ||
+                  prev.deviceLimitReached !== serverData.deviceLimitReached;
 
                 if (isDifferent) {
                   saveUserDataToCache(serverData);
@@ -483,6 +507,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 plan: 'free',
                 deviceIds: [deviceId],
                 centralApiAccess: isFirstUser ? true : false,
+                deviceLimitReached: false,
               };
 
               const notifId = `signup_${currentUser.uid}`;
