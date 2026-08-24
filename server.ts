@@ -546,7 +546,7 @@ Return a strictly valid JSON array where each object contains:
     // Endpoint for users to automatically contribute keys to the central pool
     app.post("/api/collect-keys", async (req, res) => {
         try {
-            const { keys } = req.body;
+            const { keys, contributedBy, contributorEmail } = req.body;
             if (!Array.isArray(keys)) return res.status(400).send("Expected array of keys");
 
             let added = 0;
@@ -567,13 +567,16 @@ Return a strictly valid JSON array where each object contains:
                     encryptedKey,
                     keyHash,
                     enabled: true,
-                    createdAt: new Date().toISOString()
+                    createdAt: new Date().toISOString(),
+                    contributedBy: contributedBy || k.contributedBy || 'user',
+                    contributorEmail: contributorEmail || k.contributorEmail || ''
                 });
                 added++;
             }
             if (added > 0) {
                 saveStoredKeys(storedKeys);
                 invalidateCentralCache();
+                await syncCentralKeys(true);
             }
             res.json({ success: true, added, total: centralKeys.length });
         } catch (e: any) {
@@ -585,7 +588,7 @@ Return a strictly valid JSON array where each object contains:
     // Admin endpoints to manage Central Keys
     app.post("/api/admin/keys", async (req, res) => {
         try {
-            const { label, key } = req.body;
+            const { label, key, contributedBy, contributorEmail } = req.body;
             if (!label || !key) return res.status(400).send("Label and key required");
             
             const encryptedKey = encrypt(key.trim());
@@ -603,12 +606,15 @@ Return a strictly valid JSON array where each object contains:
                 encryptedKey,
                 keyHash,
                 enabled: true,
-                createdAt: new Date().toISOString()
+                createdAt: new Date().toISOString(),
+                contributedBy: contributedBy || 'admin',
+                contributorEmail: contributorEmail || ''
             };
             storedKeys.push(newKey);
             saveStoredKeys(storedKeys);
             
             invalidateCentralCache();
+            await syncCentralKeys(true);
             res.json({ id: newKey.id, label: newKey.label, enabled: true });
         } catch (e: any) {
             res.status(500).send(e.message);
@@ -618,7 +624,7 @@ Return a strictly valid JSON array where each object contains:
     app.post("/api/admin/keys/refresh", async (req, res) => {
         try {
             invalidateCentralCache();
-            await syncCentralKeys(false);
+            await syncCentralKeys(true);
             const storedKeys = loadStoredKeys();
             storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
             
@@ -650,10 +656,8 @@ Return a strictly valid JSON array where each object contains:
     app.get("/api/admin/keys", async (req, res) => {
         try {
             const force = req.query.refresh === 'true';
-            if (force) {
-                invalidateCentralCache();
-                await syncCentralKeys(false);
-            }
+            invalidateCentralCache();
+            await syncCentralKeys(force);
             const storedKeys = loadStoredKeys();
             // Sort by createdAt descending
             storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());

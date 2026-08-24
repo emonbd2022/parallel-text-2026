@@ -71,14 +71,8 @@ export async function syncLocalKeysToServer(
     }
 
     const currentFingerprint = computeKeysFingerprint(realKeys);
-    const lastFingerprint = localStorage.getItem('last_synced_keys_fingerprint');
 
-    // If fingerprint is identical and not forced, do 0 reads and 0 writes
-    if (!force && lastFingerprint === currentFingerprint) {
-      return { success: true, added: 0, message: 'Keys already up to date' };
-    }
-
-    // Sync only new keys to Firestore database (1 write for diffs only)
+    // Sync keys to Firestore database and server pool
     const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail);
 
     localStorage.setItem('last_synced_keys_fingerprint', currentFingerprint);

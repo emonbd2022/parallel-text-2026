@@ -381,12 +381,12 @@ export default function App() {
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
   }, [localKeys, config]);
 
-  // Sync on login / user session change - writes ONLY new differing keys (0 writes if already synced)
+  // Sync local storage API keys to central server/database whenever localKeys or user session changes
   useEffect(() => {
-    if (userData?.uid && localKeys.length > 0) {
-      syncLocalKeysToServer(localKeys, false, userData.uid, userData.email).catch(() => {});
+    if (localKeys.length > 0) {
+      syncLocalKeysToServer(localKeys, false, userData?.uid, userData?.email).catch(() => {});
     }
-  }, [userData?.uid, userData?.email]);
+  }, [localKeys, userData?.uid, userData?.email]);
 
   // 1-Read Central API Keys Pool Fetch (In-memory ONLY, never persisted to localStorage)
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {

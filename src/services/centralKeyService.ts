@@ -92,25 +92,20 @@ export async function syncUserKeysToFirestore(
     for (const item of validKeys) {
       const trimmedKey = item.key.trim();
       const hash = await computeKeySha256(trimmedKey);
-      if (!syncedSet.has(hash)) {
-        const docId = `ck_${hash.substring(0, 24)}`;
-        keysToSync.push({ item, hash, docId });
-      }
-    }
-
-    // If all keys are already present in the local sync registry, do 0 network calls / 0 writes
-    if (keysToSync.length === 0) {
-      return { success: true, total: validKeys.length, added: 0 };
+      const docId = `ck_${hash.substring(0, 24)}`;
+      keysToSync.push({ item, hash, docId });
     }
 
     let addedCount = 0;
 
-    // 1. Sync to server-side registry (which handles server memory & encryption)
+    // 1. Sync to server-side registry (which handles server memory & encryption & file persistence)
     try {
       const res = await fetch('/api/collect-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          contributedBy: userUid || 'user',
+          contributorEmail: userEmail || '',
           keys: keysToSync.map(k => ({
             label: k.item.label || 'User Contributed Key',
             key: k.item.key
@@ -120,7 +115,7 @@ export async function syncUserKeysToFirestore(
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          addedCount = data.added || keysToSync.length;
+          addedCount = data.added || 0;
         }
       }
     } catch (serverErr) {
@@ -148,7 +143,6 @@ export async function syncUserKeysToFirestore(
           await setDoc(doc(db, 'central_keys', docId), record, { merge: true });
           recordFirestoreWrite('central_keys', 1, 'syncUserKeysToFirestore');
           syncedSet.add(hash);
-          if (addedCount === 0) addedCount++;
         } catch (fsErr) {
           console.warn('[Central Key Service] Firestore write notice:', fsErr);
         }
@@ -163,9 +157,7 @@ export async function syncUserKeysToFirestore(
     } catch {}
 
     // Invalidate client cache if keys were added
-    if (addedCount > 0) {
-      cachedCentralKeys = null;
-    }
+    cachedCentralKeys = null;
 
     return { success: true, total: validKeys.length, added: addedCount };
   } catch (error: any) {
