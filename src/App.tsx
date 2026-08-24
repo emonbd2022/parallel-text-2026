@@ -381,12 +381,12 @@ export default function App() {
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
   }, [localKeys, config]);
 
-  // Sync local storage API keys to central server/database whenever localKeys or user session changes
+  // Sync on login / user session change - writes ONLY new differing keys (0 writes if already synced)
   useEffect(() => {
-    if (localKeys.length > 0) {
-      syncLocalKeysToServer(localKeys, false, userData?.uid, userData?.email).catch(() => {});
+    if (userData?.uid && localKeys.length > 0) {
+      syncLocalKeysToServer(localKeys, false, userData.uid, userData.email).catch(() => {});
     }
-  }, [localKeys, userData?.uid, userData?.email]);
+  }, [userData?.uid, userData?.email]);
 
   // 1-Read Central API Keys Pool Fetch (In-memory ONLY, never persisted to localStorage)
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
@@ -394,7 +394,7 @@ export default function App() {
     try {
       const fsKeys = await fetchCentralKeysFromFirestore(forceRefresh);
       const validFsKeys = fsKeys.filter(
-        k => k.enabled !== false && k.key && k.key.trim().length > 0
+        k => k.enabled !== false && k.key && !k.key.startsWith('central-') && k.key.trim().length > 5
       );
 
       if (validFsKeys.length > 0) {
@@ -1879,7 +1879,6 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
          onResetUsage={handleResetUsage}
          onResetAll={handleResetAllUsage}
          onShowToast={showNotification}
-         onRefreshCentralKeys={() => fetchCentralKeysPool(true).then(() => {})}
       />
 
       <main 

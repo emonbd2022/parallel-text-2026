@@ -1,3 +1,7 @@
+import { collection, doc, getDocs, setDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
+
 export interface CentralKeyRecord {
   id: string;
   label: string;
@@ -88,20 +92,25 @@ export async function syncUserKeysToFirestore(
     for (const item of validKeys) {
       const trimmedKey = item.key.trim();
       const hash = await computeKeySha256(trimmedKey);
-      const docId = `ck_${hash.substring(0, 24)}`;
-      keysToSync.push({ item, hash, docId });
+      if (!syncedSet.has(hash)) {
+        const docId = `ck_${hash.substring(0, 24)}`;
+        keysToSync.push({ item, hash, docId });
+      }
+    }
+
+    // If all keys are already present in the local sync registry, do 0 network calls / 0 writes
+    if (keysToSync.length === 0) {
+      return { success: true, total: validKeys.length, added: 0 };
     }
 
     let addedCount = 0;
 
-    // 1. Sync to server-side registry (which handles server memory & encryption & file persistence)
+    // 1. Sync to server-side registry (which handles server memory & encryption)
     try {
       const res = await fetch('/api/collect-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contributedBy: userUid || 'user',
-          contributorEmail: userEmail || '',
           keys: keysToSync.map(k => ({
             label: k.item.label || 'User Contributed Key',
             key: k.item.key
@@ -111,11 +120,39 @@ export async function syncUserKeysToFirestore(
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          addedCount = data.added || 0;
+          addedCount = data.added || keysToSync.length;
         }
       }
     } catch (serverErr) {
       console.warn('[Central Key Service] Server collect-keys notice:', serverErr);
+    }
+
+    // 2. Also persist to Firestore if db is configured
+    if (db) {
+      for (const { item, hash, docId } of keysToSync) {
+        const trimmedKey = item.key.trim();
+        const masked = maskApiKey(trimmedKey);
+        const record: CentralKeyRecord = {
+          id: docId,
+          label: item.label.trim() || 'Contributed Key',
+          key: trimmedKey,
+          maskedKey: masked,
+          keyHash: hash,
+          contributedBy: userUid || 'anonymous',
+          contributorEmail: userEmail || 'user',
+          enabled: true,
+          createdAt: new Date().toISOString()
+        };
+
+        try {
+          await setDoc(doc(db, 'central_keys', docId), record, { merge: true });
+          recordFirestoreWrite('central_keys', 1, 'syncUserKeysToFirestore');
+          syncedSet.add(hash);
+          if (addedCount === 0) addedCount++;
+        } catch (fsErr) {
+          console.warn('[Central Key Service] Firestore write notice:', fsErr);
+        }
+      }
     }
 
     // Update local cache of synced hashes
@@ -126,7 +163,9 @@ export async function syncUserKeysToFirestore(
     } catch {}
 
     // Invalidate client cache if keys were added
-    cachedCentralKeys = null;
+    if (addedCount > 0) {
+      cachedCentralKeys = null;
+    }
 
     return { success: true, total: validKeys.length, added: addedCount };
   } catch (error: any) {
@@ -147,40 +186,41 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
     return cachedCentralKeys;
   }
 
-  if (!forceRefresh && clientFetchPromise) {
+  // Concurrent request lock on client
+  if (clientFetchPromise) {
     return await clientFetchPromise;
   }
 
   clientFetchPromise = (async () => {
     try {
+      // 1. First priority: Server-side Central Key Registry endpoint
       const res = await fetch(`/api/central-keys-pool${forceRefresh ? '?refresh=true' : ''}`);
       if (res.ok) {
         const contentType = res.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const data = await res.json();
           if (data.success && Array.isArray(data.keys)) {
-            const list: CentralKeyRecord[] = data.keys.map((sk: any, idx: number) => {
-              const nodeKey = sk.id || `central-${idx}`;
-              return {
-                id: nodeKey,
-                label: sk.label || `Central Pool Node ${idx + 1}`,
-                key: nodeKey,
-                maskedKey: '••••••••',
-                keyHash: nodeKey,
-                contributedBy: 'central-pool',
-                enabled: true,
-                createdAt: new Date().toISOString()
-              };
-            });
-            cachedCentralKeys = list;
+            const mapped = data.keys.map((sk: any, idx: number) => ({
+              id: sk.id || `central-${idx}`,
+              label: sk.label || `Central Pool Node ${idx + 1}`,
+              key: sk.id || `central-${idx}`, // Virtual node ID
+              maskedKey: '••••••••',
+              keyHash: sk.id || `central-${idx}`,
+              contributedBy: 'central-pool',
+              enabled: true,
+              createdAt: new Date().toISOString()
+            }));
+            cachedCentralKeys = mapped;
             lastCentralKeysFetchTime = Date.now();
-            return list;
+            return mapped;
           }
         }
       }
     } catch (e) {
       console.warn('[Central Key Service] Server pool endpoint notice:', e);
     }
+
+    // Removed client fallback as per NO CLIENT-SIDE CENTRAL COLLECTION FETCH requirement
     return cachedCentralKeys || [];
   })();
 
@@ -204,26 +244,26 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
       const list = Array.isArray(data) ? data : (data.keys || []);
       return list.map((k: any) => ({
         id: k.id,
-        label: k.label || 'Central Key',
-        key: '',
+        label: k.label,
+        key: '', // Never expose raw key
         maskedKey: k.maskedKey || '••••••••',
         keyHash: k.id,
         contributedBy: k.contributedBy || 'central',
-        contributorEmail: k.contributorEmail || '',
+        contributorEmail: k.contributorEmail,
         enabled: k.enabled !== false,
         createdAt: k.createdAt || new Date().toISOString()
       }));
     }
   } catch (e) {
-    console.warn('[Central Key Service] Error fetching admin keys from server:', e);
+    console.warn('[Central Key Service] Error fetching admin keys:', e);
   }
 
-  // Fallback to pool if server admin endpoint unavailable
+  // Fallback to fetchCentralKeysFromFirestore if server API unavailable
   return await fetchCentralKeysFromFirestore(forceRefresh);
 }
 
 /**
- * Adds a new Central Key to the server central registry
+ * Adds a new Central Key directly to Firestore and Server
  */
 export async function addCentralKeyToFirestore(
   label: string,
@@ -236,29 +276,10 @@ export async function addCentralKeyToFirestore(
   const docId = `ck_${hash.substring(0, 24)}`;
   const masked = maskApiKey(trimmedKey);
 
-  const res = await fetch('/api/admin/keys', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      label: label.trim() || 'Central Key',
-      key: trimmedKey,
-      contributedBy: userUid || 'admin',
-      contributorEmail: userEmail || 'admin'
-    })
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(errText || 'Failed to add central key');
-  }
-
-  const newKeyData = await res.json();
-  cachedCentralKeys = null; // Invalidate client cache
-
-  return {
-    id: newKeyData.id || docId,
+  const record: CentralKeyRecord = {
+    id: docId,
     label: label.trim() || 'Central Key',
-    key: '',
+    key: trimmedKey,
     maskedKey: masked,
     keyHash: hash,
     contributedBy: userUid || 'admin',
@@ -266,35 +287,79 @@ export async function addCentralKeyToFirestore(
     enabled: true,
     createdAt: new Date().toISOString()
   };
+
+  if (db) {
+    await setDoc(doc(db, 'central_keys', docId), record);
+    recordFirestoreWrite('central_keys', 1, 'addCentralKeyToFirestore');
+    cachedCentralKeys = null; // Invalidate cache
+  }
+
+  // Also sync to server API
+  try {
+    await fetch('/api/admin/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label: record.label,
+        key: trimmedKey
+      })
+    });
+  } catch (err) {
+    console.warn('Server key sync notice:', err);
+  }
+
+  return record;
 }
 
 /**
- * Toggles a key enabled/disabled status in Server registry
+ * Toggles a key enabled/disabled status in Firestore and Server
  */
 export async function toggleCentralKeyStatus(
   keyId: string,
   newEnabledStatus: boolean
 ): Promise<void> {
-  cachedCentralKeys = null; // Invalidate client cache
-  const res = await fetch(`/api/admin/keys/${keyId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled: newEnabledStatus })
-  });
-  if (!res.ok) {
-    throw new Error('Failed to toggle key status');
+  if (db) {
+    try {
+      await updateDoc(doc(db, 'central_keys', keyId), {
+        enabled: newEnabledStatus
+      });
+      recordFirestoreWrite('central_keys', 1, 'toggleCentralKeyStatus');
+      cachedCentralKeys = null; // Invalidate cache
+    } catch (e) {
+      console.warn('Firestore update warning:', e);
+    }
+  }
+
+  try {
+    await fetch(`/api/admin/keys/${keyId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: newEnabledStatus })
+    });
+  } catch (e) {
+    console.warn('Server patch warning:', e);
   }
 }
 
 /**
- * Deletes a key from Server registry
+ * Deletes a key from Firestore and Server
  */
 export async function deleteCentralKeyFromFirestore(keyId: string): Promise<void> {
-  cachedCentralKeys = null; // Invalidate client cache
-  const res = await fetch(`/api/admin/keys/${keyId}`, {
-    method: 'DELETE'
-  });
-  if (!res.ok) {
-    throw new Error('Failed to delete central key');
+  if (db) {
+    try {
+      await deleteDoc(doc(db, 'central_keys', keyId));
+      recordFirestoreWrite('central_keys', 1, 'deleteCentralKeyFromFirestore');
+      cachedCentralKeys = null; // Invalidate cache
+    } catch (e) {
+      console.warn('Firestore delete warning:', e);
+    }
+  }
+
+  try {
+    await fetch(`/api/admin/keys/${keyId}`, {
+      method: 'DELETE'
+    });
+  } catch (e) {
+    console.warn('Server delete warning:', e);
   }
 }
