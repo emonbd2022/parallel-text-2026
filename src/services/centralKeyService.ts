@@ -178,33 +178,34 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
     return cachedCentralKeys;
   }
 
-  // Concurrent request lock on client
   if (clientFetchPromise) {
     return await clientFetchPromise;
   }
 
   clientFetchPromise = (async () => {
+    const keyMap = new Map<string, CentralKeyRecord>();
+
+    // 1. Query Server-side Central Key Registry endpoint
     try {
-      // 1. First priority: Server-side Central Key Registry endpoint
       const res = await fetch(`/api/central-keys-pool${forceRefresh ? '?refresh=true' : ''}`);
       if (res.ok) {
         const contentType = res.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const data = await res.json();
           if (data.success && Array.isArray(data.keys)) {
-            const mapped = data.keys.map((sk: any, idx: number) => ({
-              id: sk.id || `central-${idx}`,
-              label: sk.label || `Central Pool Node ${idx + 1}`,
-              key: sk.id || `central-${idx}`, // Virtual node ID
-              maskedKey: '••••••••',
-              keyHash: sk.id || `central-${idx}`,
-              contributedBy: 'central-pool',
-              enabled: true,
-              createdAt: new Date().toISOString()
-            }));
-            cachedCentralKeys = mapped;
-            lastCentralKeysFetchTime = Date.now();
-            return mapped;
+            data.keys.forEach((sk: any, idx: number) => {
+              const nodeKey = sk.id || `central-${idx}`;
+              keyMap.set(nodeKey, {
+                id: nodeKey,
+                label: sk.label || `Central Pool Node ${idx + 1}`,
+                key: nodeKey,
+                maskedKey: '••••••••',
+                keyHash: nodeKey,
+                contributedBy: 'central-pool',
+                enabled: true,
+                createdAt: new Date().toISOString()
+              });
+            });
           }
         }
       }
@@ -212,8 +213,39 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
       console.warn('[Central Key Service] Server pool endpoint notice:', e);
     }
 
-    // Removed client fallback as per NO CLIENT-SIDE CENTRAL COLLECTION FETCH requirement
-    return cachedCentralKeys || [];
+    // 2. Also query Firestore directly if available
+    if (db) {
+      try {
+        const querySnapshot = await getDocs(collection(db, 'central_keys'));
+        recordFirestoreRead('central_keys', querySnapshot.size, 'fetchCentralKeysFromFirestore');
+        querySnapshot.forEach(docSnap => {
+          const data = docSnap.data() as any;
+          if (data.enabled !== false && data.key) {
+            const docId = docSnap.id || data.id;
+            keyMap.set(docId, {
+              id: docId,
+              label: data.label || 'Central Key',
+              key: data.key,
+              maskedKey: data.maskedKey || maskApiKey(data.key),
+              keyHash: data.keyHash || docId,
+              contributedBy: data.contributedBy || 'user',
+              contributorEmail: data.contributorEmail || '',
+              enabled: true,
+              createdAt: data.createdAt || new Date().toISOString()
+            });
+          }
+        });
+      } catch (fsErr) {
+        console.warn('[Central Key Service] Firestore query notice:', fsErr);
+      }
+    }
+
+    const result = Array.from(keyMap.values());
+    if (result.length > 0) {
+      cachedCentralKeys = result;
+      lastCentralKeysFetchTime = Date.now();
+    }
+    return result;
   })();
 
   try {
@@ -227,6 +259,9 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
  * Fetches admin-level Central Key metadata list (masked credentials only)
  */
 export async function fetchAdminCentralKeys(forceRefresh = false): Promise<CentralKeyRecord[]> {
+  const recordsMap = new Map<string, CentralKeyRecord>();
+
+  // 1. Fetch from server admin endpoints
   try {
     const url = forceRefresh ? '/api/admin/keys/refresh' : '/api/admin/keys';
     const method = forceRefresh ? 'POST' : 'GET';
@@ -234,24 +269,60 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
     if (res.ok) {
       const data = await res.json();
       const list = Array.isArray(data) ? data : (data.keys || []);
-      return list.map((k: any) => ({
-        id: k.id,
-        label: k.label,
-        key: '', // Never expose raw key
-        maskedKey: k.maskedKey || '••••••••',
-        keyHash: k.id,
-        contributedBy: k.contributedBy || 'central',
-        contributorEmail: k.contributorEmail,
-        enabled: k.enabled !== false,
-        createdAt: k.createdAt || new Date().toISOString()
-      }));
+      for (const k of list) {
+        if (k && k.id) {
+          recordsMap.set(k.id, {
+            id: k.id,
+            label: k.label || 'Central Key',
+            key: '',
+            maskedKey: k.maskedKey || '••••••••',
+            keyHash: k.id,
+            contributedBy: k.contributedBy || 'central',
+            contributorEmail: k.contributorEmail || '',
+            enabled: k.enabled !== false,
+            createdAt: k.createdAt || new Date().toISOString()
+          });
+        }
+      }
     }
   } catch (e) {
-    console.warn('[Central Key Service] Error fetching admin keys:', e);
+    console.warn('[Central Key Service] Error fetching admin keys from server:', e);
   }
 
-  // Fallback to fetchCentralKeysFromFirestore if server API unavailable
-  return await fetchCentralKeysFromFirestore(forceRefresh);
+  // 2. Also fetch directly from Firestore if available
+  if (db) {
+    try {
+      const querySnapshot = await getDocs(collection(db, 'central_keys'));
+      recordFirestoreRead('central_keys', querySnapshot.size, 'fetchAdminCentralKeys');
+      querySnapshot.forEach(docSnap => {
+        const data = docSnap.data() as any;
+        const id = docSnap.id || data.id;
+        if (id && !recordsMap.has(id)) {
+          recordsMap.set(id, {
+            id,
+            label: data.label || 'Central Key',
+            key: '',
+            maskedKey: data.maskedKey || (data.key ? maskApiKey(data.key) : '••••••••'),
+            keyHash: data.keyHash || id,
+            contributedBy: data.contributedBy || 'user',
+            contributorEmail: data.contributorEmail || '',
+            enabled: data.enabled !== false,
+            createdAt: data.createdAt || new Date().toISOString()
+          });
+        }
+      });
+    } catch (fsErr) {
+      console.warn('[Central Key Service] Firestore admin keys read notice:', fsErr);
+    }
+  }
+
+  // If both server and direct firestore returned nothing, fallback to pool
+  if (recordsMap.size === 0) {
+    const fallbackPool = await fetchCentralKeysFromFirestore(forceRefresh);
+    return fallbackPool;
+  }
+
+  return Array.from(recordsMap.values());
 }
 
 /**
