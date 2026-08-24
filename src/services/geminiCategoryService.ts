@@ -30,6 +30,17 @@ export const generateCategoriesBatch = async (
   model: string,
   onProgress?: (progressMsg: string) => void
 ): Promise<Record<string, { category: string }>> => {
+  if (apiKey.startsWith('central-')) {
+    if (onProgress) onProgress("Getting categories (Central)...");
+    const res = await fetch('/api/central-category', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ items, model, virtualKeyId: apiKey })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return await res.json();
+  }
+
   const ai = new GoogleGenAI({ apiKey });
   
   if (onProgress) onProgress("Getting categories...");

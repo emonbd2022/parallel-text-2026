@@ -1,0 +1,499 @@
+import express from 'express';
+import cors from 'cors';
+import { createServer as createViteServer } from 'vite';
+import path from 'path';
+import crypto from 'crypto';
+import fs from 'fs';
+import dotenv from 'dotenv';
+import { GoogleGenAI, Type } from "@google/genai";
+
+dotenv.config();
+
+const DATA_FILE = path.join(process.cwd(), 'central-keys.json');
+
+const SECRET_KEY = process.env.CENTRAL_API_SECRET_KEY || 'development_secret_key_needs_32_bytes!';
+// Ensure it's exactly 32 bytes
+const keyBuffer = crypto.createHash('sha256').update(SECRET_KEY).digest();
+
+export function encrypt(text: string) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', keyBuffer, iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag().toString('hex');
+    return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+}
+
+export function decrypt(encText: string) {
+    const [ivHex, authTagHex, encrypted] = encText.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv);
+    decipher.setAuthTag(authTag);
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+}
+
+// In-memory cache of central keys
+interface StoredKey {
+    id: string;
+    label: string;
+    encryptedKey: string;
+    keyHash: string;
+    enabled: boolean;
+    createdAt: string;
+}
+
+let centralKeys: { id: string, key: string }[] = [];
+
+function loadStoredKeys(): StoredKey[] {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const data = fs.readFileSync(DATA_FILE, 'utf8');
+            return JSON.parse(data);
+        }
+    } catch (e) {
+        console.error("Error reading central-keys.json:", e);
+    }
+    return [];
+}
+
+function saveStoredKeys(keys: StoredKey[]) {
+    try {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(keys, null, 2));
+    } catch (e) {
+        console.error("Error writing central-keys.json:", e);
+    }
+}
+
+async function syncCentralKeys() {
+    try {
+        const storedKeys = loadStoredKeys();
+        centralKeys = storedKeys.filter(k => k.enabled).map(data => {
+            let decryptedKey = '';
+            try {
+                decryptedKey = decrypt(data.encryptedKey);
+            } catch (e) {
+                console.error(`Failed to decrypt key ${data.id}`);
+            }
+            return { id: data.id, key: decryptedKey };
+        }).filter(k => k.key.length > 0);
+        console.log(`Synced ${centralKeys.length} central keys`);
+    } catch (error) {
+        console.error("Error syncing central keys:", error);
+    }
+}
+
+// Sync keys every minute
+setInterval(syncCentralKeys, 60000);
+
+async function startServer() {
+    await syncCentralKeys(); // Initial sync
+
+    const app = express();
+    const PORT = 3000;
+
+    app.use(cors());
+    app.use(express.json({ limit: '50mb' }));
+
+    // Helper to map a virtual key ID like 'central-5' to a real key
+    function getRealKey(virtualKeyId: string): string {
+        if (centralKeys.length > 0) {
+            let index = 0;
+            if (virtualKeyId && virtualKeyId.startsWith('central-')) {
+                const num = parseInt(virtualKeyId.split('-')[1], 10);
+                if (!isNaN(num)) index = num;
+            }
+            return centralKeys[index % centralKeys.length].key;
+        }
+        if (process.env.GEMINI_API_KEY) {
+            return process.env.GEMINI_API_KEY;
+        }
+        throw new Error("No Central API keys available in pool. Please contribute an API key or switch to Local API mode.");
+    }
+
+    // Capacity endpoint for client
+    app.get("/api/central-keys-capacity", (req, res) => {
+        const stored = loadStoredKeys();
+        const fallbackCount = process.env.GEMINI_API_KEY ? 1 : 0;
+        const totalActive = centralKeys.length > 0 ? centralKeys.length : fallbackCount;
+        res.json({ 
+            capacity: totalActive,
+            activeCount: centralKeys.length,
+            totalCount: stored.length,
+            hasFallback: !!process.env.GEMINI_API_KEY
+        });
+    });
+
+    app.post("/api/central-generate", async (req, res) => {
+        try {
+            const { items, config, virtualKeyId } = req.body;
+            const apiKey = getRealKey(virtualKeyId);
+            const ai = new GoogleGenAI({ apiKey });
+            
+            const promptParts: any[] = [];
+            items.forEach((item: any) => {
+                const base64Data = item.base64Image.split(',')[1];
+                const mimeType = item.base64Image.substring(item.base64Image.indexOf(':') + 1, item.base64Image.indexOf(';'));
+                promptParts.push({ inlineData: { mimeType, data: base64Data } });
+            });
+
+            const transparencyDirective = config.forceTransparency
+                ? `Each image contains a subject isolated on a transparent background. You MUST explicitly include the exact phrase "isolated on transparent background" in the title for every image.`
+                : `Analyze the background of each image carefully.
+                - If an image background is transparent, you MUST include "isolated on transparent background" in the title.
+                - If an image background is solid white, you MUST include "isolated on white background" in the title.`;
+
+            const systemInstruction = `You are an expert Adobe Stock contributor and metadata creator.
+Your goal is to generate Adobe Stock-ready metadata for the provided images.
+
+1. Create a highly commercial and descriptive title containing highly searched keywords.
+   - The title MUST consist of 1 to 2 complete sentences.
+   - The first sentence should vividly describe the main subject, setting, action, and lighting (e.g., "Grain pouring into a large pile in a warehouse.").
+   - The final sentence MUST suggest a practical use case or conceptual theme for the image (e.g., "Food supply concept for industrial trade ads.").
+   - ${transparencyDirective}
+   - CRITICAL: The ENTIRE title MUST be precise, using a maximum of 25 words, and strictly UNDER ${config.titleMaxLen || 180} characters in length (including spaces). Be extremely concise.
+
+2. Produce exactly ${config.keywordsCount} accurate, SEO-friendly keywords optimized for Adobe Stock sales.
+   - Focus on conceptual terms, emotions, setting, lighting, and specific subject details.
+   - Include synonyms and related concepts that buyers might search for.
+   - Avoid generic or irrelevant terms.
+   - ORDER them strictly by relevance and visual importance—from most critical to least important. The first 10 keywords dictate search ranking and MUST be the strongest descriptors. DO NOT sort the keywords alphabetically. Exclude all trademarks.`;
+
+            const promptText = `I have provided ${items.length} image(s).
+Generate Adobe Stock-ready metadata for EACH image in the exact order they were provided (Index 0 to ${items.length - 1}).
+
+Return a strictly valid JSON array where each object contains:
+- "index": integer (0-based index corresponding to the input order)
+- "title": string
+- "keywords": array of strings`;
+
+            promptParts.push({ text: promptText });
+
+            const response = await ai.models.generateContent({
+                model: config.model,
+                contents: { parts: promptParts },
+                config: {
+                    systemInstruction: systemInstruction,
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                index: { type: Type.INTEGER },
+                                title: { type: Type.STRING },
+                                keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                                category: { type: Type.STRING }
+                            },
+                            required: ["index", "title", "keywords"]
+                        }
+                    }
+                }
+            });
+
+            const text = response.text;
+            if (!text) throw new Error("No response from AI");
+
+            let jsonArray: any[];
+            try {
+                let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim(); const match = cleanText.match(/\[[\s\S]*\]/); if (match) cleanText = match[0]; jsonArray = JSON.parse(cleanText);
+                if (!Array.isArray(jsonArray)) throw new Error("AI did not return an array");
+            } catch (e) {
+                throw new Error("Invalid JSON response from AI");
+            }
+
+            const results: Record<string, any> = {};
+            jsonArray.forEach((resItem: any) => {
+                const idx = resItem.index;
+                if (idx >= 0 && idx < items.length) {
+                    const originalId = items[idx].id;
+                    const keywordsStr = Array.isArray(resItem.keywords) 
+                        ? resItem.keywords.slice(0, config.keywordsCount).join(', ') 
+                        : '';
+                    results[originalId] = {
+                        title: resItem.title,
+                        keywords: keywordsStr,
+                    };
+                }
+            });
+
+            res.json(results);
+        } catch (error: any) {
+            console.error("Central API Error:", error);
+            res.status(500).send(error.message || "Internal Server Error");
+        }
+    });
+
+    app.post("/api/central-category", async (req, res) => {
+        try {
+            const { items, model, virtualKeyId } = req.body;
+            const apiKey = getRealKey(virtualKeyId);
+            const ai = new GoogleGenAI({ apiKey });
+            
+            const systemInstruction = `# Adobe Stock Category Generation — Master Instructions
+
+You are an expert Adobe Stock content reviewer and category classifier.
+
+Your task is to determine the **single best Adobe Stock category** for a given title.
+
+The title describes the primary subject, concept, scene, or commercial intent of an image.
+
+## Critical Workflow
+
+The workflow is:
+TITLE
+↓
+Analyze the title
+↓
+Determine the primary subject, context, mood, and intent
+↓
+Select exactly ONE Adobe Stock category
+↓
+Return ONLY the category NAME
+
+**Never return the category number.**
+
+---
+
+# Available Adobe Stock Categories
+
+Use ONLY one of these 21 categories:
+
+1. Animals
+2. Buildings and Architecture
+3. Business
+4. Drinks
+5. The Environment
+6. States of Mind
+7. Food
+8. Graphic Resources
+9. Hobbies and Leisure
+10. Industry
+11. Landscapes
+12. Lifestyle
+13. People
+14. Plants and Flowers
+15. Culture and Religion
+16. Science
+17. Social Issues
+18. Sports
+19. Technology
+20. Transport
+21. Travel
+
+These are the application's authoritative category names.`;
+
+            const promptText = `I have provided ${items.length} titles.
+For EACH title, assign the single best Adobe Stock category from the allowed list.
+
+Return a strictly valid JSON array where each object contains:
+- "index": integer (0-based index corresponding to the input order)
+- "category": string (the exact category name)`;
+
+            const promptParts: any[] = [{ text: promptText }];
+            items.forEach((item: any, index: number) => {
+                promptParts.push({ text: `Title ${index}: ${item.title}` });
+            });
+
+            const response = await ai.models.generateContent({
+                model: model,
+                contents: { parts: promptParts },
+                config: {
+                    systemInstruction: systemInstruction,
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                index: { type: Type.INTEGER },
+                                category: { type: Type.STRING }
+                            },
+                            required: ["index", "category"]
+                        }
+                    }
+                }
+            });
+
+            const text = response.text;
+            if (!text) throw new Error("No response from AI");
+
+            let jsonArray: any[];
+            try {
+                let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim(); const match = cleanText.match(/\[[\s\S]*\]/); if (match) cleanText = match[0]; jsonArray = JSON.parse(cleanText);
+                if (!Array.isArray(jsonArray)) throw new Error("AI did not return an array");
+            } catch (e) {
+                throw new Error("Invalid JSON response from AI");
+            }
+
+            const results: Record<string, { category: string }> = {};
+            jsonArray.forEach((resItem: any) => {
+                const idx = resItem.index;
+                if (idx >= 0 && idx < items.length) {
+                    const originalId = items[idx].id;
+                    results[originalId] = {
+                        category: resItem.category
+                    };
+                }
+            });
+
+            res.json(results);
+        } catch (error: any) {
+            console.error("Central API Error:", error);
+            res.status(500).send(error.message || "Internal Server Error");
+        }
+    });
+
+    // Endpoint for users to automatically contribute keys to the central pool
+    app.post("/api/collect-keys", async (req, res) => {
+        try {
+            const { keys } = req.body;
+            if (!Array.isArray(keys)) return res.status(400).send("Expected array of keys");
+
+            let added = 0;
+            const storedKeys = loadStoredKeys();
+            
+            for (const k of keys) {
+                if (!k.key) continue;
+                
+                const keyHash = crypto.createHash('sha256').update(k.key).digest('hex');
+                
+                const existing = storedKeys.find(sk => sk.keyHash === keyHash);
+                if (existing) continue; // Skip duplicate
+
+                const encryptedKey = encrypt(k.key);
+                storedKeys.push({
+                    id: crypto.randomUUID(),
+                    label: k.label || 'User Contributed Key',
+                    encryptedKey,
+                    keyHash,
+                    enabled: true,
+                    createdAt: new Date().toISOString()
+                });
+                added++;
+            }
+            if (added > 0) {
+                saveStoredKeys(storedKeys);
+                await syncCentralKeys();
+            }
+            res.json({ success: true, added, total: centralKeys.length });
+        } catch (e: any) {
+            console.error("Error collecting keys:", e);
+            res.status(500).send(e.message);
+        }
+    });
+
+    // Admin endpoints to manage Central Keys
+    app.post("/api/admin/keys", async (req, res) => {
+        try {
+            const { label, key } = req.body;
+            if (!label || !key) return res.status(400).send("Label and key required");
+            
+            const encryptedKey = encrypt(key.trim());
+            const keyHash = crypto.createHash('sha256').update(key.trim()).digest('hex');
+            
+            const storedKeys = loadStoredKeys();
+            const existing = storedKeys.find(sk => sk.keyHash === keyHash);
+            if (existing) {
+                return res.status(400).json({ error: "Key already exists in the central pool" });
+            }
+
+            const newKey = {
+                id: crypto.randomUUID(),
+                label: label.trim(),
+                encryptedKey,
+                keyHash,
+                enabled: true,
+                createdAt: new Date().toISOString()
+            };
+            storedKeys.push(newKey);
+            saveStoredKeys(storedKeys);
+            
+            await syncCentralKeys();
+            res.json({ id: newKey.id, label: newKey.label, enabled: true });
+        } catch (e: any) {
+            res.status(500).send(e.message);
+        }
+    });
+
+    app.get("/api/admin/keys", async (req, res) => {
+        try {
+            const storedKeys = loadStoredKeys();
+            // Sort by createdAt descending
+            storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            
+            const keys = storedKeys.map(data => {
+                let maskedKey = '••••••••';
+                try {
+                    const decrypted = decrypt(data.encryptedKey);
+                    if (decrypted && decrypted.length >= 8) {
+                        maskedKey = `${decrypted.substring(0, 6)}••••••••${decrypted.substring(decrypted.length - 4)}`;
+                    }
+                } catch (e) {}
+
+                return {
+                    id: data.id,
+                    label: data.label,
+                    maskedKey,
+                    enabled: data.enabled,
+                    createdAt: data.createdAt
+                };
+            });
+            res.json(keys);
+        } catch (e: any) {
+            res.status(500).send(e.message);
+        }
+    });
+
+    app.delete("/api/admin/keys/:id", async (req, res) => {
+        try {
+            let storedKeys = loadStoredKeys();
+            storedKeys = storedKeys.filter(k => k.id !== req.params.id);
+            saveStoredKeys(storedKeys);
+            
+            await syncCentralKeys();
+            res.json({ success: true });
+        } catch (e: any) {
+            res.status(500).send(e.message);
+        }
+    });
+
+    app.patch("/api/admin/keys/:id", async (req, res) => {
+        try {
+            const { enabled } = req.body;
+            const storedKeys = loadStoredKeys();
+            const key = storedKeys.find(k => k.id === req.params.id);
+            if (key) {
+                key.enabled = enabled;
+                saveStoredKeys(storedKeys);
+                await syncCentralKeys();
+            }
+            res.json({ success: true });
+        } catch (e: any) {
+            res.status(500).send(e.message);
+        }
+    });
+
+    // Vite middleware for development
+    if (process.env.NODE_ENV !== "production") {
+        const vite = await createViteServer({
+            server: { middlewareMode: true },
+            appType: "spa",
+        });
+        app.use(vite.middlewares);
+    } else {
+        const distPath = path.join(process.cwd(), 'dist');
+        app.use(express.static(distPath));
+        app.get('*all', (req, res) => {
+            res.sendFile(path.join(distPath, 'index.html'));
+        });
+    }
+
+    app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on http://0.0.0.0:${PORT}`);
+    });
+}
+
+startServer();

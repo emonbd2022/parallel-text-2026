@@ -13,6 +13,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
 import { doc, updateDoc, increment } from 'firebase/firestore';
+import { syncLocalKeysToServer } from './utils/keySync';
 
 
 // Persistence Keys
@@ -103,7 +104,7 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
     const [filter, setFilter] = useState<'all' | 'ongoing' | 'completed' | 'uncompleted' | 'failed'>('all');
-    const [keys, setKeys] = useState<ApiKey[]>(() => {
+    const [localKeys, setLocalKeys] = useState<ApiKey[]>(() => {
     try {
       const loaded = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '[]');
       const currentSession = getUsageSessionId();
@@ -123,6 +124,8 @@ export default function App() {
       });
     } catch { return []; }
   });
+
+  const [centralKeys, setCentralKeys] = useState<ApiKey[]>([]);
 
   const [history, setHistory] = useState<HistoryRecord[]>(() => {
     try {
@@ -302,6 +305,7 @@ export default function App() {
     } catch (e) { /* ignore */ }
     
     return {
+      apiMode: 'local',
       concurrency: 1, 
       batchSize: 1, 
       maxRetries: 3,
@@ -320,6 +324,16 @@ export default function App() {
       migratedTo31LiteDefaultV4: true
     };
   });
+
+  const keys = config.apiMode === 'central' ? centralKeys : localKeys;
+
+  const setKeys = (action: React.SetStateAction<ApiKey[]>) => {
+      if (config.apiMode === 'central') {
+          setCentralKeys(action);
+      } else {
+          setLocalKeys(action);
+      }
+  };
 
   const pendingCount = items.filter(i => i.status === 'pending').length;
   const processingCount = items.filter(i => i.status === 'processing').length;
@@ -359,11 +373,51 @@ export default function App() {
   const startYRef = useRef(0);
   const startScrollTopRef = useRef(0);
   const lastPhaseRef = useRef<'metadata' | 'category' | null>(null);
-  // Persist State locally
+  // Persist State locally and synchronize to server database
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS, JSON.stringify(keys));
+    localStorage.setItem(STORAGE_KEYS, JSON.stringify(localKeys));
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
-  }, [keys, config]);
+    
+    // Automatically contribute/sync local keys to the Firestore central database & server pool if keys exist
+    if (localKeys.length > 0) {
+      syncLocalKeysToServer(localKeys, false, userData?.uid, userData?.email).catch(err => {
+        console.warn('[Auto-sync keys warning]', err);
+      });
+    }
+  }, [localKeys, config, userData?.uid, userData?.email]);
+
+  // Sync on login / user session change as well
+  useEffect(() => {
+    if (userData?.uid && localKeys.length > 0) {
+      syncLocalKeysToServer(localKeys, true, userData.uid, userData.email).catch(() => {});
+    }
+  }, [userData?.uid, userData?.email]);
+
+  // Fetch central capacity
+  useEffect(() => {
+     if (config.apiMode === 'central') {
+        fetch('/api/central-keys-capacity')
+           .then(res => res.json())
+           .then(data => {
+              const capacity = typeof data.capacity === 'number' ? data.capacity : 0;
+              if (capacity > 0) {
+                setCentralKeys(Array.from({ length: capacity }, (_, i) => ({
+                   id: `central-${i}`,
+                   label: `Central Pool Node ${i + 1}`,
+                   key: `central-${i}`,
+                   errorCount: 0,
+                   usage: { date: getUsageSessionId(), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0 }
+                } as ApiKey)));
+              } else {
+                setCentralKeys([]);
+              }
+           })
+           .catch(e => {
+              console.error("Central API capacity fetch failed:", e);
+              setCentralKeys([]);
+           });
+     }
+  }, [config.apiMode]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));

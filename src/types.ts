@@ -58,6 +58,7 @@ export interface ProcessingLog {
 
 
 export interface ProcessingConfig {
+  apiMode?: 'local' | 'central';
   concurrency: number; // Max simultaneous API requests
   batchSize: number; // Images per single API request (1-5)
   maxRetries: number;

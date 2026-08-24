@@ -106,6 +106,8 @@ export const Sidebar: React.FC<Props> = ({
         <div className="w-[100vw] sm:w-[33.333vw] min-w-[360px] max-w-[600px] h-full flex flex-col">
           <div className="flex-1 overflow-y-auto px-8 pt-24 pb-8 custom-scrollbar space-y-6">
             <ApiKeyManager 
+                apiMode={config.apiMode || 'local'}
+                onChangeApiMode={(mode) => setConfig(prev => ({ ...prev, apiMode: mode }))}
                 keys={keys}
                 onAdd={(l, k) => setKeys(prev => [...prev, { 
                   id: Math.random().toString(36), 

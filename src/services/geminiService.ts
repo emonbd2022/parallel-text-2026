@@ -21,6 +21,17 @@ export const generateMetadataBatch = async (
   },
   onProgress?: (progressMsg: string) => void
 ): Promise<Record<string, GeminiResponse>> => {
+  if (apiKey.startsWith('central-')) {
+    if (onProgress) onProgress("Creating titles & keywords (Central)...");
+    const res = await fetch('/api/central-generate', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ items, config, virtualKeyId: apiKey })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return await res.json();
+  }
+
   const ai = new GoogleGenAI({ apiKey });
   
   if (onProgress) onProgress("Creating titles & keywords...");

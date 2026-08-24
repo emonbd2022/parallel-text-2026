@@ -3,7 +3,14 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check } from 'lucide-react';
+import { 
+  fetchCentralKeysFromFirestore, 
+  addCentralKeyToFirestore, 
+  toggleCentralKeyStatus, 
+  deleteCentralKeyFromFirestore,
+  CentralKeyRecord 
+} from '../services/centralKeyService';
 
 type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active';
 
@@ -11,7 +18,7 @@ export const AdminDashboard: React.FC = () => {
   const { userData: currentAdmin, maintenanceMode, setMaintenanceMode, notifications, setNotifications, deleteNotification } = useAuth();
   
   // Dashboard Tabs: 'users' | 'notifications'
-  const [activeTab, setActiveTab] = useState<'users' | 'notifications'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'notifications' | 'keys'>('users');
   const [sortBy, setSortBy] = useState<SortOption>('recent_active');
   const [viewMode, setViewMode] = useState<'paginated' | 'all'>('paginated');
 
@@ -78,6 +85,87 @@ export const AdminDashboard: React.FC = () => {
   const [notifFilter, setNotifFilter] = useState<'all' | 'global' | 'signups'>('all');
   const [deletingNotifId, setDeletingNotifId] = useState<string | null>(null);
   const [viewingAdminNotif, setViewingAdminNotif] = useState<AppNotification | null>(null);
+
+  // API Keys state
+  const [centralKeys, setCentralKeys] = useState<CentralKeyRecord[]>([]);
+  const [loadingKeys, setLoadingKeys] = useState(false);
+  const [showAddKeyForm, setShowAddKeyForm] = useState(false);
+  const [newKeyLabel, setNewKeyLabel] = useState('');
+  const [newKeyValue, setNewKeyValue] = useState('');
+  const [isAddingKey, setIsAddingKey] = useState(false);
+  const [addKeyError, setAddKeyError] = useState<string | null>(null);
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
+  const [keySearchTerm, setKeySearchTerm] = useState('');
+
+  const fetchCentralKeys = async () => {
+    setLoadingKeys(true);
+    try {
+      const data = await fetchCentralKeysFromFirestore();
+      if (Array.isArray(data)) {
+        setCentralKeys(data);
+      }
+    } catch (e) {
+      console.error('[Admin Dashboard] Error fetching central keys:', e);
+    }
+    setLoadingKeys(false);
+  };
+
+  useEffect(() => {
+    if (activeTab === 'keys') {
+      fetchCentralKeys();
+    }
+  }, [activeTab]);
+
+  const handleAddCentralKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newKeyValue.trim()) {
+      setAddKeyError('API key string is required');
+      return;
+    }
+    setIsAddingKey(true);
+    setAddKeyError(null);
+    try {
+      await addCentralKeyToFirestore(
+        newKeyLabel.trim() || `Central Key ${centralKeys.length + 1}`,
+        newKeyValue.trim(),
+        currentAdmin?.uid,
+        currentAdmin?.email
+      );
+      setNewKeyLabel('');
+      setNewKeyValue('');
+      setShowAddKeyForm(false);
+      await fetchCentralKeys();
+    } catch (err: any) {
+      setAddKeyError(err.message || 'Failed to add API key');
+    } finally {
+      setIsAddingKey(false);
+    }
+  };
+
+  const copyKeyIdentifier = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKeyId(id);
+    setTimeout(() => setCopiedKeyId(null), 2000);
+  };
+
+  const toggleKeyStatus = async (id: string, currentStatus: boolean) => {
+    try {
+      await toggleCentralKeyStatus(id, !currentStatus);
+      setCentralKeys(prev => prev.map(k => k.id === id ? { ...k, enabled: !currentStatus } : k));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const deleteKey = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this Central API key from Firestore database?")) return;
+    try {
+      await deleteCentralKeyFromFirestore(id);
+      setCentralKeys(prev => prev.filter(k => k.id !== id));
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   // Fetch all active notifications directly from server for the Admin Notification Center
   const fetchServerNotifications = async () => {
@@ -716,6 +804,23 @@ export const AdminDashboard: React.FC = () => {
                 {serverNotifications.length}
               </span>
             )}
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('keys');
+              if (centralKeys.length === 0) {
+                fetchCentralKeys();
+              }
+            }}
+            className={`flex items-center gap-2.5 pb-3 px-1 font-bold text-sm transition-all border-b-2 whitespace-nowrap ${
+              activeTab === 'keys'
+                ? 'border-purple-500 text-purple-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Key className="w-4 h-4" />
+            <span>Central API Keys</span>
           </button>
         </div>
 
@@ -1431,6 +1536,283 @@ export const AdminDashboard: React.FC = () => {
                   </>
                 )}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: CENTRAL API KEYS */}
+      {activeTab === 'keys' && (
+        <div className="space-y-6 animate-in fade-in duration-200">
+          {/* KPI Summary Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl relative overflow-hidden">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Database Keys</p>
+                  <p className="text-2xl font-bold text-white mt-1">{centralKeys.length}</p>
+                </div>
+                <div className="w-12 h-12 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
+                  <Key className="w-6 h-6" />
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-3">All API keys stored in server database</p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl relative overflow-hidden">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">Active Pool Capacity</p>
+                  <p className="text-2xl font-bold text-emerald-300 mt-1">
+                    {centralKeys.filter(k => k.enabled).length}
+                  </p>
+                </div>
+                <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                  <CheckCircle2 className="w-6 h-6" />
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-3">Currently used for Central API parallel load balancing</p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl relative overflow-hidden">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Disabled Keys</p>
+                  <p className="text-2xl font-bold text-slate-300 mt-1">
+                    {centralKeys.filter(k => !k.enabled).length}
+                  </p>
+                </div>
+                <div className="w-12 h-12 rounded-xl bg-slate-800/60 border border-slate-700/50 flex items-center justify-center text-slate-400">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-3">Paused keys excluded from concurrent dispatch</p>
+            </div>
+          </div>
+
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <Key className="w-5 h-5 text-purple-400" />
+                  Central API Keys Database
+                </h3>
+                <p className="text-sm text-slate-400 mt-1">
+                  Crowdsourced & system API keys stored in server database for multi-node generation.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={() => setShowAddKeyForm(prev => !prev)}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-purple-600/20 active:scale-95 cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>{showAddKeyForm ? 'Cancel' : 'Add API Key'}</span>
+                </button>
+
+                <button 
+                  onClick={fetchCentralKeys}
+                  disabled={loadingKeys}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 disabled:opacity-50 cursor-pointer"
+                >
+                  {loadingKeys ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4 text-purple-400" />}
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Manual Add Key Form */}
+            {showAddKeyForm && (
+              <form onSubmit={handleAddCentralKey} className="p-5 bg-slate-950/70 border border-purple-500/30 rounded-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                    <Plus className="w-4 h-4 text-purple-400" />
+                    Add New Key to Central Database
+                  </h4>
+                  <span className="text-[11px] text-slate-400">Encrypted with AES-256-GCM on server</span>
+                </div>
+
+                {addKeyError && (
+                  <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                    <span>{addKeyError}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-300">Key Label / Owner (Optional)</label>
+                    <input
+                      type="text"
+                      placeholder="e.g., Primary Admin Node or User Batch"
+                      value={newKeyLabel}
+                      onChange={(e) => setNewKeyLabel(e.target.value)}
+                      className="w-full px-3.5 py-2 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-200 outline-none focus:border-purple-500 transition-colors"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-300">Gemini API Key (AIzaSy...)</label>
+                    <input
+                      type="password"
+                      placeholder="AIzaSy..."
+                      value={newKeyValue}
+                      onChange={(e) => setNewKeyValue(e.target.value)}
+                      required
+                      className="w-full px-3.5 py-2 bg-slate-900 border border-slate-800 rounded-xl text-sm font-mono text-slate-200 outline-none focus:border-purple-500 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddKeyForm(false)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isAddingKey || !newKeyValue.trim()}
+                    className="px-5 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-purple-600/20 flex items-center gap-2"
+                  >
+                    {isAddingKey ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                    <span>Save Key to Database</span>
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Search and Table */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800 max-w-md">
+                <Search className="w-4 h-4 text-slate-500 ml-2 shrink-0" />
+                <input 
+                  type="text" 
+                  placeholder="Filter keys by label or masked identifier..." 
+                  value={keySearchTerm}
+                  onChange={(e) => setKeySearchTerm(e.target.value)}
+                  className="bg-transparent border-none outline-none text-slate-200 w-full py-1 text-sm placeholder:text-slate-500"
+                />
+                {keySearchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setKeySearchTerm('')}
+                    className="text-xs text-slate-400 hover:text-slate-200 px-2 py-0.5"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {centralKeys.length === 0 && !loadingKeys ? (
+                <div className="text-center py-12 bg-slate-950/50 rounded-xl border border-slate-800 border-dashed space-y-2">
+                  <Key className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+                  <p className="text-slate-300 font-semibold text-sm">No Central API Keys in Database</p>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    Keys are automatically contributed when users add or import keys locally, or you can add keys directly using the button above.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-900/80 text-slate-400 text-xs uppercase tracking-wider">
+                        <th className="p-4 font-semibold">Label / Origin</th>
+                        <th className="p-4 font-semibold">Masked API Key</th>
+                        <th className="p-4 font-semibold">Contributor</th>
+                        <th className="p-4 font-semibold">Added On</th>
+                        <th className="p-4 font-semibold">Status</th>
+                        <th className="p-4 font-semibold text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-sm text-slate-300 divide-y divide-slate-800/50">
+                      {centralKeys
+                        .filter(k => {
+                          if (!keySearchTerm) return true;
+                          const q = keySearchTerm.toLowerCase();
+                          return (
+                            (k.label && k.label.toLowerCase().includes(q)) ||
+                            (k.maskedKey && k.maskedKey.toLowerCase().includes(q)) ||
+                            (k.contributorEmail && k.contributorEmail.toLowerCase().includes(q)) ||
+                            k.id.toLowerCase().includes(q)
+                          );
+                        })
+                        .map((key, idx) => (
+                          <tr key={key.id} className="hover:bg-slate-800/20 transition-colors group">
+                            <td className="p-4 font-medium text-slate-200">
+                              <div className="flex items-center gap-2">
+                                <div className="w-7 h-7 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 text-xs font-bold shrink-0">
+                                  #{idx + 1}
+                                </div>
+                                <div className="min-w-0">
+                                  <span className="truncate block font-semibold text-slate-100">{key.label || 'User Contributed Key'}</span>
+                                  <span className="text-[10px] text-slate-500 font-mono">ID: {key.id.slice(0, 8)}...</span>
+                                </div>
+                              </div>
+                            </td>
+
+                            <td className="p-4">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-xs text-slate-300 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
+                                  {key.maskedKey || '••••••••'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => copyKeyIdentifier(key.id, key.maskedKey || key.id)}
+                                  className="p-1 hover:bg-slate-800 text-slate-500 hover:text-slate-300 rounded transition-colors"
+                                  title="Copy Key Identifier"
+                                >
+                                  {copiedKeyId === key.id ? (
+                                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                  ) : (
+                                    <Copy className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </div>
+                            </td>
+
+                            <td className="p-4 text-xs text-slate-300">
+                              <span className="bg-slate-900/60 px-2.5 py-1 rounded-lg border border-slate-800 text-slate-400 font-mono text-[11px] truncate max-w-[150px] inline-block">
+                                {key.contributorEmail || key.contributedBy || 'User'}
+                              </span>
+                            </td>
+
+                            <td className="p-4 text-xs text-slate-400">
+                              {key.createdAt ? new Date(key.createdAt).toLocaleString() : 'N/A'}
+                            </td>
+
+                            <td className="p-4">
+                              <button 
+                                onClick={() => toggleKeyStatus(key.id, key.enabled)}
+                                className={`px-2.5 py-1 text-[11px] font-bold rounded-full uppercase transition-all cursor-pointer ${
+                                  key.enabled 
+                                    ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30' 
+                                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700 border border-slate-700'
+                                }`}
+                              >
+                                {key.enabled ? 'Active / Enabled' : 'Disabled'}
+                              </button>
+                            </td>
+
+                            <td className="p-4 text-right">
+                              <button
+                                onClick={() => deleteKey(key.id)}
+                                className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
+                                title="Delete Key from Central Pool"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         </div>
