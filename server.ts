@@ -41,16 +41,42 @@ interface StoredKey {
     label: string;
     encryptedKey: string;
     keyHash: string;
+    maskedKey?: string;
     enabled: boolean;
     createdAt: string;
     contributedBy?: string;
     contributorEmail?: string;
 }
 
+let centralKeyCache: { id: string; key: string }[] = [];
 let centralKeys: { id: string; key: string }[] = [];
-let lastCentralKeysFetchTime = 0;
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes TTL
+let centralKeyCacheTimestamp = 0;
+let centralKeyCacheVersion = 1;
+let cachedVersion = 0;
+const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes safety fallback TTL
 let centralKeyRefreshPromise: Promise<{ id: string; key: string }[]> | null = null;
+
+// Telemetry & Diagnostics
+let centralCacheHits = 0;
+let centralCacheMisses = 0;
+let centralCacheRefreshes = 0;
+let centralCacheInvalidations = 0;
+let centralCacheRefreshFailures = 0;
+
+// Single-Document Migration & Registry Metrics
+let migrationStatus = 'active';
+let legacyDocsMigrated = 0;
+let duplicatesRemoved = 0;
+let keysInApiKeysDoc = 0;
+
+// Mutex / Concurrency Lock for Atomic Key Mutations
+let keyMutationQueue: Promise<any> = Promise.resolve();
+
+async function runWithKeyMutationLock<T>(fn: () => Promise<T>): Promise<T> {
+    const res = keyMutationQueue.then(() => fn());
+    keyMutationQueue = res.catch(() => {});
+    return res;
+}
 
 function loadStoredKeys(): StoredKey[] {
     try {
@@ -73,7 +99,190 @@ function saveStoredKeys(keys: StoredKey[]) {
 }
 
 /**
- * Fetches central keys from Firestore collection via REST API
+ * Converts StoredKey[] into Firestore REST fields for single central_keys/APIkeys document
+ */
+function keysToFirestoreDocFields(keys: StoredKey[]) {
+    return {
+        fields: {
+            keys: {
+                arrayValue: {
+                    values: keys.map(k => ({
+                        mapValue: {
+                            fields: {
+                                id: { stringValue: k.id || '' },
+                                label: { stringValue: k.label || 'Central Key' },
+                                encryptedKey: { stringValue: k.encryptedKey || '' },
+                                maskedKey: { stringValue: k.maskedKey || '••••••••' },
+                                keyHash: { stringValue: k.keyHash || '' },
+                                contributedBy: { stringValue: k.contributedBy || '' },
+                                contributorEmail: { stringValue: k.contributorEmail || '' },
+                                enabled: { booleanValue: k.enabled !== false },
+                                createdAt: { stringValue: k.createdAt || new Date().toISOString() }
+                            }
+                        }
+                    }))
+                }
+            },
+            updatedAt: { stringValue: new Date().toISOString() },
+            version: { integerValue: "1" }
+        }
+    };
+}
+
+/**
+ * Parses StoredKey[] from Firestore REST single document APIkeys response
+ */
+function parseFirestoreApiKeysDoc(data: any): StoredKey[] {
+    const fields = data.fields || {};
+    const values = fields.keys?.arrayValue?.values || [];
+    const items: StoredKey[] = [];
+
+    for (const val of values) {
+        const f = val.mapValue?.fields || {};
+        const id = f.id?.stringValue || crypto.randomUUID();
+        const label = f.label?.stringValue || 'Central Key';
+        const encryptedKey = f.encryptedKey?.stringValue || '';
+        const maskedKey = f.maskedKey?.stringValue || '••••••••';
+        const keyHash = f.keyHash?.stringValue || '';
+        const contributedBy = f.contributedBy?.stringValue || '';
+        const contributorEmail = f.contributorEmail?.stringValue || '';
+        const enabled = f.enabled?.booleanValue !== false;
+        const createdAt = f.createdAt?.stringValue || new Date().toISOString();
+
+        if (encryptedKey) {
+            items.push({
+                id,
+                label,
+                encryptedKey,
+                maskedKey,
+                keyHash,
+                enabled,
+                createdAt,
+                contributedBy,
+                contributorEmail
+            });
+        }
+    }
+    return items;
+}
+
+/**
+ * Writes StoredKey[] array to single central_keys/APIkeys document in Firestore
+ */
+async function saveApiKeysDocumentToFirestore(keys: StoredKey[]): Promise<boolean> {
+    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+    const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+    const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
+
+    if (!projectId) return false;
+
+    try {
+        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/APIkeys${apiKey ? `?key=${apiKey}` : ''}`;
+        const docBody = keysToFirestoreDocFields(keys);
+
+        const resp = await fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(docBody)
+        });
+
+        if (!resp.ok) {
+            console.warn(`[Server] Firestore write central_keys/APIkeys status ${resp.status}`);
+            return false;
+        }
+
+        keysInApiKeysDoc = keys.length;
+        return true;
+    } catch (err) {
+        console.warn("[Server] Error writing central_keys/APIkeys document:", err);
+        return false;
+    }
+}
+
+/**
+ * Idempotently migrates legacy central_keys/{docId} collection entries into central_keys/APIkeys
+ */
+async function migrateLegacyKeysToSingleDoc(projectId: string, apiKey?: string, dbId: string = '(default)'): Promise<StoredKey[]> {
+    try {
+        console.log('[Server] Checking legacy central_keys collection for migration...');
+        const collectionUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys?pageSize=1000${apiKey ? `&key=${apiKey}` : ''}`;
+        const resp = await fetch(collectionUrl);
+
+        const keyMap = new Map<string, StoredKey>();
+
+        // Include local file keys first
+        const fileKeys = loadStoredKeys();
+        for (const fk of fileKeys) {
+            keyMap.set(fk.keyHash || fk.id, fk);
+        }
+
+        let legacyCount = 0;
+        let dupesCount = 0;
+
+        if (resp.ok) {
+            const data = (await resp.json()) as any;
+            if (data.documents && Array.isArray(data.documents)) {
+                for (const doc of data.documents) {
+                    const docPath = doc.name || '';
+                    const docId = docPath.split('/').pop() || '';
+                    if (docId === 'APIkeys') continue; // Skip single doc if present
+
+                    legacyCount++;
+                    const fields = doc.fields || {};
+                    const rawKey = fields.key?.stringValue || '';
+                    let encryptedKey = fields.encryptedKey?.stringValue || '';
+                    const label = fields.label?.stringValue || 'Central Key';
+                    const enabled = fields.enabled?.booleanValue !== false;
+                    const createdAt = fields.createdAt?.stringValue || new Date().toISOString();
+                    const keyHash = fields.keyHash?.stringValue || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex');
+                    const contributedBy = fields.contributedBy?.stringValue;
+                    const contributorEmail = fields.contributorEmail?.stringValue;
+
+                    if (!encryptedKey && rawKey) {
+                        encryptedKey = (rawKey.includes(':') && rawKey.length > 40) ? rawKey : encrypt(rawKey);
+                    }
+
+                    if (keyMap.has(keyHash)) {
+                        dupesCount++;
+                    } else if (encryptedKey || rawKey) {
+                        keyMap.set(keyHash, {
+                            id: fields.id?.stringValue || docId,
+                            label,
+                            encryptedKey: encryptedKey || encrypt(rawKey),
+                            keyHash,
+                            enabled,
+                            createdAt,
+                            contributedBy,
+                            contributorEmail
+                        });
+                    }
+                }
+            }
+        }
+
+        const mergedKeys = Array.from(keyMap.values());
+        saveStoredKeys(mergedKeys);
+
+        // Persist to single central_keys/APIkeys document
+        const written = await saveApiKeysDocumentToFirestore(mergedKeys);
+        if (written) {
+            migrationStatus = 'migrated_to_single_doc';
+            legacyDocsMigrated = legacyCount;
+            duplicatesRemoved = dupesCount;
+            keysInApiKeysDoc = mergedKeys.length;
+            console.log(`[Server] Migration completed: ${legacyCount} legacy documents scanned, ${dupesCount} duplicates deduplicated, ${mergedKeys.length} keys stored in central_keys/APIkeys.`);
+        }
+
+        return mergedKeys;
+    } catch (err) {
+        console.error('[Server] Error during legacy central_keys migration:', err);
+        return loadStoredKeys();
+    }
+}
+
+/**
+ * Single-document loader for central_keys/APIkeys
+ * Performs exactly 1 Firestore document read on cold cache.
  */
 async function fetchKeysFromFirestore(): Promise<StoredKey[] | null> {
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
@@ -81,73 +290,48 @@ async function fetchKeysFromFirestore(): Promise<StoredKey[] | null> {
     const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
 
     if (!projectId) {
-        return [];
+        return null;
     }
 
     try {
-        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys?pageSize=1000${apiKey ? `&key=${apiKey}` : ''}`;
-        const resp = await fetch(url);
-        if (!resp.ok) {
-            console.warn(`[Server] Firestore REST fetch status ${resp.status}`);
-            return null;
+        const singleDocUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/APIkeys${apiKey ? `?key=${apiKey}` : ''}`;
+        const resp = await fetch(singleDocUrl);
+
+        if (resp.ok) {
+            const data = (await resp.json()) as any;
+            const keys = parseFirestoreApiKeysDoc(data);
+            keysInApiKeysDoc = keys.length;
+            migrationStatus = 'single_doc_active';
+            console.log(`[Server] Single document read: central_keys/APIkeys retrieved (${keys.length} keys, 1 Firestore read).`);
+            return keys;
         }
-        const data = (await resp.json()) as any;
-        if (!data.documents || !Array.isArray(data.documents)) {
-            return [];
+
+        if (resp.status === 404) {
+            console.log('[Server] central_keys/APIkeys document missing. Executing idempotent single-doc migration...');
+            return await migrateLegacyKeysToSingleDoc(projectId, apiKey, dbId);
         }
 
-        const items: StoredKey[] = [];
-        for (const doc of data.documents) {
-            const fields = doc.fields || {};
-            const docPath = doc.name || '';
-            const docId = docPath.split('/').pop() || '';
-
-            const rawKey = fields.key?.stringValue || '';
-            let encryptedKey = fields.encryptedKey?.stringValue || '';
-            const label = fields.label?.stringValue || 'Central Key';
-            const enabled = fields.enabled?.booleanValue !== false;
-            const createdAt = fields.createdAt?.stringValue || new Date().toISOString();
-            const keyHash = fields.keyHash?.stringValue || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex');
-            const contributedBy = fields.contributedBy?.stringValue;
-            const contributorEmail = fields.contributorEmail?.stringValue;
-
-            // Encrypt plaintext keys on the server
-            if (!encryptedKey && rawKey) {
-                if (rawKey.includes(':') && rawKey.length > 40) {
-                    encryptedKey = rawKey;
-                } else {
-                    encryptedKey = encrypt(rawKey);
-                }
-            }
-
-            if (encryptedKey || rawKey) {
-                items.push({
-                    id: fields.id?.stringValue || docId,
-                    label,
-                    encryptedKey: encryptedKey || encrypt(rawKey),
-                    keyHash,
-                    enabled,
-                    createdAt,
-                    contributedBy,
-                    contributorEmail
-                });
-            }
-        }
-        return items;
+        console.warn(`[Server] Firestore GET APIkeys document status ${resp.status}`);
+        return null;
     } catch (err) {
-        console.warn("[Server] Notice fetching Firestore central_keys:", err);
+        console.warn("[Server] Notice fetching central_keys/APIkeys document:", err);
         return null;
     }
 }
 
 /**
- * Server-side centralized key registry synchronizer with concurrency lock
+ * Server-side centralized key registry synchronizer with concurrency lock & cache versioning
  */
 async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key: string }[]> {
     const now = Date.now();
-    // Return warm cache if valid
-    if (!forceRefresh && centralKeys.length > 0 && (now - lastCentralKeysFetchTime < CACHE_TTL_MS)) {
-        return centralKeys;
+    const isCacheValid = !forceRefresh && 
+                         cachedVersion === centralKeyCacheVersion && 
+                         centralKeyCache.length > 0 && 
+                         (now - centralKeyCacheTimestamp < CACHE_TTL_MS);
+
+    if (isCacheValid) {
+        centralCacheHits++;
+        return centralKeyCache;
     }
 
     // In-flight refresh lock: concurrent requests await the exact same promise
@@ -155,9 +339,12 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
         return await centralKeyRefreshPromise;
     }
 
+    centralCacheMisses++;
+
     centralKeyRefreshPromise = (async () => {
+        centralCacheRefreshes++;
         try {
-            console.log(`[Server] Performing controlled Central API registry sync (forceRefresh=${forceRefresh})...`);
+            console.log(`[Server] Performing controlled Central API registry refresh (v${centralKeyCacheVersion}, forceRefresh=${forceRefresh})...`);
             
             // 1. Fetch from local file storage
             const fileKeys = loadStoredKeys();
@@ -193,13 +380,19 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
                 return { id: data.id, key: decryptedKey };
             }).filter(k => k.key.length > 0);
 
+            centralKeyCache = active;
             centralKeys = active;
-            lastCentralKeysFetchTime = Date.now();
-            console.log(`[Server] Central API key registry active count: ${centralKeys.length} nodes`);
-            return centralKeys;
+            cachedVersion = centralKeyCacheVersion;
+            centralKeyCacheTimestamp = Date.now();
+            console.log(`[Server] Central API key registry active count: ${centralKeyCache.length} nodes (version v${cachedVersion})`);
+            return centralKeyCache;
         } catch (error) {
+            centralCacheRefreshFailures++;
             console.error("[Server] Error in syncCentralKeys:", error);
-            return centralKeys;
+            if (centralKeyCache.length > 0) {
+                return centralKeyCache;
+            }
+            return [];
         } finally {
             centralKeyRefreshPromise = null;
         }
@@ -209,8 +402,10 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
 }
 
 function invalidateCentralCache() {
-    lastCentralKeysFetchTime = 0;
-    console.log('[Server] Central API registry cache invalidated (event-driven).');
+    centralKeyCacheVersion++;
+    centralKeyCacheTimestamp = 0;
+    centralCacheInvalidations++;
+    console.log(`[Server] Central API registry cache invalidated. New version: v${centralKeyCacheVersion}`);
 }
 
 async function startServer() {
@@ -255,7 +450,11 @@ async function startServer() {
     // 1-Read Central API Keys Pool for Runtime Client Processing (Safe Virtual Node Handles Only)
     app.get("/api/central-keys-pool", async (req, res) => {
         try {
-            await syncCentralKeys(false);
+            const force = req.query.refresh === 'true';
+            if (force) {
+                invalidateCentralCache();
+            }
+            await syncCentralKeys(force);
 
             let poolKeys: { id: string; label: string; key: string }[] = [];
             if (centralKeys.length > 0) {
@@ -544,40 +743,79 @@ Return a strictly valid JSON array where each object contains:
             const { keys, contributedBy, contributorEmail } = req.body;
             if (!Array.isArray(keys)) return res.status(400).send("Expected array of keys");
 
-            let added = 0;
-            const storedKeys = loadStoredKeys();
-            
-            for (const k of keys) {
-                if (!k.key) continue;
+            const result = await runWithKeyMutationLock(async () => {
+                let added = 0;
+                const storedKeys = loadStoredKeys();
                 
-                const keyHash = crypto.createHash('sha256').update(k.key).digest('hex');
-                
-                const existing = storedKeys.find(sk => sk.keyHash === keyHash);
-                if (existing) continue; // Skip duplicate
+                for (const k of keys) {
+                    if (!k.key || typeof k.key !== 'string' || k.key.trim().length < 15) continue;
+                    
+                    const keyHash = crypto.createHash('sha256').update(k.key.trim()).digest('hex');
+                    
+                    const existing = storedKeys.find(sk => sk.keyHash === keyHash);
+                    if (existing) continue; // Skip duplicate
 
-                const encryptedKey = encrypt(k.key);
-                storedKeys.push({
-                    id: crypto.randomUUID(),
-                    label: k.label || 'User Contributed Key',
-                    encryptedKey,
-                    keyHash,
-                    enabled: true,
-                    createdAt: new Date().toISOString(),
-                    contributedBy: contributedBy || k.contributedBy || 'user',
-                    contributorEmail: contributorEmail || k.contributorEmail || ''
-                });
-                added++;
-            }
-            if (added > 0) {
-                saveStoredKeys(storedKeys);
-                invalidateCentralCache();
-                await syncCentralKeys(true);
-            }
-            res.json({ success: true, added, total: centralKeys.length });
+                    const encryptedKey = encrypt(k.key.trim());
+                    storedKeys.push({
+                        id: crypto.randomUUID(),
+                        label: k.label || 'User Contributed Key',
+                        encryptedKey,
+                        keyHash,
+                        enabled: true,
+                        createdAt: new Date().toISOString(),
+                        contributedBy: contributedBy || k.contributedBy || 'user',
+                        contributorEmail: contributorEmail || k.contributorEmail || ''
+                    });
+                    added++;
+                }
+                if (added > 0) {
+                    saveStoredKeys(storedKeys);
+                    await saveApiKeysDocumentToFirestore(storedKeys);
+                    invalidateCentralCache();
+                }
+                return { added, total: storedKeys.filter(k => k.enabled).length };
+            });
+
+            res.json({ success: true, added: result.added, total: result.total });
         } catch (e: any) {
             console.error("Error collecting keys:", e);
             res.status(500).send(e.message);
         }
+    });
+
+    // Telemetry & Diagnostics Endpoint
+    app.get("/api/admin/cache-telemetry", (req, res) => {
+        const storedKeys = loadStoredKeys();
+        const docObj = keysToFirestoreDocFields(storedKeys);
+        const docJson = JSON.stringify(docObj);
+        const docSizeBytes = Buffer.byteLength(docJson, 'utf8');
+        const maxDocSizeBytes = 1048576; // 1 MB limit
+        const docCapacityUsedPercent = Number(((docSizeBytes / maxDocSizeBytes) * 100).toFixed(2));
+        const avgKeySize = storedKeys.length > 0 ? Math.round(docSizeBytes / storedKeys.length) : 350;
+        const remainingBytes = Math.max(0, maxDocSizeBytes - docSizeBytes);
+        const estimatedRemainingKeys = Math.floor(remainingBytes / (avgKeySize || 350));
+
+        res.json({
+            hits: centralCacheHits,
+            misses: centralCacheMisses,
+            refreshes: centralCacheRefreshes,
+            invalidations: centralCacheInvalidations,
+            refreshFailures: centralCacheRefreshFailures,
+            cacheVersion: centralKeyCacheVersion,
+            cachedVersion: cachedVersion,
+            cacheSize: centralKeyCache.length,
+            cacheAgeMs: centralKeyCacheTimestamp ? Date.now() - centralKeyCacheTimestamp : null,
+            refreshInFlight: !!centralKeyRefreshPromise,
+            migrationStatus,
+            legacyDocsMigrated,
+            duplicatesRemoved,
+            keysInApiKeysDoc: storedKeys.length,
+            docSizeBytes,
+            maxDocSizeBytes,
+            docCapacityUsedPercent,
+            sizeWarning: docCapacityUsedPercent >= 80,
+            estimatedRemainingKeys
+        });
     });
 
     // Admin endpoints to manage Central Keys
@@ -585,34 +823,38 @@ Return a strictly valid JSON array where each object contains:
         try {
             const { label, key, contributedBy, contributorEmail } = req.body;
             if (!label || !key) return res.status(400).send("Label and key required");
-            
-            const encryptedKey = encrypt(key.trim());
-            const keyHash = crypto.createHash('sha256').update(key.trim()).digest('hex');
-            
-            const storedKeys = loadStoredKeys();
-            const existing = storedKeys.find(sk => sk.keyHash === keyHash);
-            if (existing) {
-                return res.status(400).json({ error: "Key already exists in the central pool" });
-            }
 
-            const newKey = {
-                id: crypto.randomUUID(),
-                label: label.trim(),
-                encryptedKey,
-                keyHash,
-                enabled: true,
-                createdAt: new Date().toISOString(),
-                contributedBy: contributedBy || 'admin',
-                contributorEmail: contributorEmail || ''
-            };
-            storedKeys.push(newKey);
-            saveStoredKeys(storedKeys);
+            const newKey = await runWithKeyMutationLock(async () => {
+                const encryptedKey = encrypt(key.trim());
+                const keyHash = crypto.createHash('sha256').update(key.trim()).digest('hex');
+                
+                const storedKeys = loadStoredKeys();
+                const existing = storedKeys.find(sk => sk.keyHash === keyHash);
+                if (existing) {
+                    throw new Error("Key already exists in the central pool");
+                }
+
+                const created = {
+                    id: crypto.randomUUID(),
+                    label: label.trim(),
+                    encryptedKey,
+                    keyHash,
+                    enabled: true,
+                    createdAt: new Date().toISOString(),
+                    contributedBy: contributedBy || 'admin',
+                    contributorEmail: contributorEmail || ''
+                };
+                storedKeys.push(created);
+                saveStoredKeys(storedKeys);
+                await saveApiKeysDocumentToFirestore(storedKeys);
+                
+                invalidateCentralCache();
+                return created;
+            });
             
-            invalidateCentralCache();
-            await syncCentralKeys(true);
             res.json({ id: newKey.id, label: newKey.label, enabled: true });
         } catch (e: any) {
-            res.status(500).send(e.message);
+            res.status(400).send(e.message || "Failed to add central key");
         }
     });
 
@@ -651,10 +893,11 @@ Return a strictly valid JSON array where each object contains:
     app.get("/api/admin/keys", async (req, res) => {
         try {
             const force = req.query.refresh === 'true';
-            invalidateCentralCache();
-            await syncCentralKeys(force);
+            if (force) {
+                invalidateCentralCache();
+                await syncCentralKeys(true);
+            }
             const storedKeys = loadStoredKeys();
-            // Sort by createdAt descending
             storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
             
             const keys = storedKeys.map(data => {
@@ -684,11 +927,13 @@ Return a strictly valid JSON array where each object contains:
 
     app.delete("/api/admin/keys/:id", async (req, res) => {
         try {
-            let storedKeys = loadStoredKeys();
-            storedKeys = storedKeys.filter(k => k.id !== req.params.id);
-            saveStoredKeys(storedKeys);
-            
-            invalidateCentralCache();
+            await runWithKeyMutationLock(async () => {
+                let storedKeys = loadStoredKeys();
+                storedKeys = storedKeys.filter(k => k.id !== req.params.id);
+                saveStoredKeys(storedKeys);
+                await saveApiKeysDocumentToFirestore(storedKeys);
+                invalidateCentralCache();
+            });
             res.json({ success: true });
         } catch (e: any) {
             res.status(500).send(e.message);
@@ -698,13 +943,16 @@ Return a strictly valid JSON array where each object contains:
     app.patch("/api/admin/keys/:id", async (req, res) => {
         try {
             const { enabled } = req.body;
-            const storedKeys = loadStoredKeys();
-            const key = storedKeys.find(k => k.id === req.params.id);
-            if (key) {
-                key.enabled = enabled;
-                saveStoredKeys(storedKeys);
-                invalidateCentralCache();
-            }
+            await runWithKeyMutationLock(async () => {
+                const storedKeys = loadStoredKeys();
+                const key = storedKeys.find(k => k.id === req.params.id);
+                if (key) {
+                    key.enabled = enabled;
+                    saveStoredKeys(storedKeys);
+                    await saveApiKeysDocumentToFirestore(storedKeys);
+                    invalidateCentralCache();
+                }
+            });
             res.json({ success: true });
         } catch (e: any) {
             res.status(500).send(e.message);

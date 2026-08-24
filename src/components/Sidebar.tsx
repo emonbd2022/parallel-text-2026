@@ -21,6 +21,7 @@ interface Props {
   onResetUsage: (id: string) => void;
   onResetAll?: () => void;
   onShowToast?: (title: string, message: string) => void;
+  onRefreshCentralKeys?: () => Promise<void>;
 }
 
 export const Sidebar: React.FC<Props> = ({ 
@@ -40,7 +41,8 @@ export const Sidebar: React.FC<Props> = ({
   onViewStats,
   onResetUsage,
   onResetAll,
-  onShowToast
+  onShowToast,
+  onRefreshCentralKeys
 }) => {
   
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
@@ -161,6 +163,7 @@ export const Sidebar: React.FC<Props> = ({
                 onResetUsage={onResetUsage}
                 onResetAll={onResetAll}
                 onShowToast={onShowToast}
+                onRefreshCentralKeys={onRefreshCentralKeys}
             />
 
             <div className="glass-panel p-6 rounded-2xl space-y-6">

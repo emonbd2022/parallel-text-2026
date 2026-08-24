@@ -1879,6 +1879,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
          onResetUsage={handleResetUsage}
          onResetAll={handleResetAllUsage}
          onShowToast={showNotification}
+         onRefreshCentralKeys={() => fetchCentralKeysPool(true).then(() => {})}
       />
 
       <main 

@@ -18,6 +18,7 @@ interface Props {
   onResetUsage: (id: string) => void;
   onResetAll?: () => void;
   onShowToast?: (title: string, message: string) => void;
+  onRefreshCentralKeys?: () => Promise<void>;
 }
 
 export const ApiKeyManager: React.FC<Props> = ({ 
@@ -30,9 +31,11 @@ export const ApiKeyManager: React.FC<Props> = ({
   onRemove, 
   onResetUsage, 
   onResetAll,
-  onShowToast 
+  onShowToast,
+  onRefreshCentralKeys
 }) => {
   const { userData, user, setIsAuthModalOpen } = useAuth();
+  const [isRefreshingCentral, setIsRefreshingCentral] = useState(false);
   const [label, setLabel] = useState('');
   const [keyVal, setKeyVal] = useState('');
   const [showInput, setShowInput] = useState(false);
@@ -368,10 +371,33 @@ export const ApiKeyManager: React.FC<Props> = ({
           <div className="space-y-2">
             <div className="flex justify-between items-center text-xs font-medium text-slate-400 px-1">
               <span>Connected Central Nodes</span>
-              <span className="text-emerald-400 flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                {keys.length > 0 ? `${keys.length} Ready` : 'Ready to Process'}
-              </span>
+              <div className="flex items-center gap-2">
+                {onRefreshCentralKeys && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsRefreshingCentral(true);
+                      try {
+                        await onRefreshCentralKeys();
+                        if (onShowToast) onShowToast('Central Pool Refreshed', 'Re-synced with central API database.');
+                      } catch (e) {
+                        console.error('Refresh error:', e);
+                      } finally {
+                        setIsRefreshingCentral(false);
+                      }
+                    }}
+                    disabled={isRefreshingCentral}
+                    className="flex items-center gap-1 text-[11px] font-semibold text-purple-400 hover:text-purple-300 bg-purple-950/40 hover:bg-purple-900/60 px-2.5 py-1 rounded-lg border border-purple-800/40 transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isRefreshingCentral ? 'animate-spin' : ''}`} />
+                    <span>{isRefreshingCentral ? 'Refreshing...' : 'Refresh'}</span>
+                  </button>
+                )}
+                <span className="text-emerald-400 flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  {keys.length > 0 ? `${keys.length} Ready` : 'Ready to Process'}
+                </span>
+              </div>
             </div>
 
             <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
