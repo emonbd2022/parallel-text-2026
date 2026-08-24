@@ -11,6 +11,7 @@ import {
   deleteCentralKeyFromFirestore,
   CentralKeyRecord 
 } from '../services/centralKeyService';
+import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
 
 type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active';
 
@@ -97,10 +98,10 @@ export const AdminDashboard: React.FC = () => {
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [keySearchTerm, setKeySearchTerm] = useState('');
 
-  const fetchCentralKeys = async () => {
+  const fetchCentralKeys = async (forceRefresh = false) => {
     setLoadingKeys(true);
     try {
-      const data = await fetchCentralKeysFromFirestore();
+      const data = await fetchCentralKeysFromFirestore(forceRefresh);
       if (Array.isArray(data)) {
         setCentralKeys(data);
       }
@@ -112,7 +113,7 @@ export const AdminDashboard: React.FC = () => {
 
   useEffect(() => {
     if (activeTab === 'keys') {
-      fetchCentralKeys();
+      fetchCentralKeys(false);
     }
   }, [activeTab]);
 
@@ -174,6 +175,7 @@ export const AdminDashboard: React.FC = () => {
     try {
       const q = query(collection(db, 'notifications'), orderBy('createdAt', 'desc'), limit(50));
       const snap = await getDocs(q);
+      recordFirestoreRead('notifications', snap.docs.length || 1, 'AdminDashboard:fetchServerNotifications');
       const list: AppNotification[] = [];
       snap.forEach(d => list.push(d.data() as AppNotification));
       setServerNotifications(list);
@@ -254,6 +256,7 @@ export const AdminDashboard: React.FC = () => {
         read: false
       };
       await setDoc(doc(db, 'notifications', notifId), newNotif);
+      recordFirestoreWrite('notifications', 1, 'AdminDashboard:sendGlobalNotification');
       setServerNotifications(prev => {
         const updated = [newNotif, ...prev.filter(n => n.id !== notifId)];
         try { sessionStorage.setItem('adminCachedServerNotifs', JSON.stringify(updated)); } catch {}
@@ -278,6 +281,7 @@ export const AdminDashboard: React.FC = () => {
     } catch {}
     try {
       await setDoc(doc(db, 'settings', 'general'), { maintenanceMode: newMode }, { merge: true });
+      recordFirestoreWrite('settings', 1, 'AdminDashboard:toggleMaintenance');
     } catch (e) {
       console.warn("Failed to update maintenance settings in Firestore", e);
     }
@@ -316,6 +320,7 @@ export const AdminDashboard: React.FC = () => {
       }
 
       const querySnapshot = await getDocs(q);
+      recordFirestoreRead('users', querySnapshot.docs.length || 1, 'AdminDashboard:fetchPage');
       const usersData: UserData[] = [];
       querySnapshot.forEach((d) => {
         const u = d.data() as UserData;
@@ -345,6 +350,7 @@ export const AdminDashboard: React.FC = () => {
     try {
       const q = query(collection(db, 'users'), orderBy('totalProcessedImages', 'desc'));
       const snapshot = await getDocs(q);
+      recordFirestoreRead('users', snapshot.docs.length || 1, 'AdminDashboard:fetchAllUsers');
       const list: UserData[] = [];
       snapshot.forEach(docSnap => {
         const d = docSnap.data();
@@ -414,6 +420,7 @@ export const AdminDashboard: React.FC = () => {
       let candidateUsers = allUsers;
       if (!candidateUsers || candidateUsers.length === 0) {
         const snap = await getDocs(collection(db, 'users'));
+        recordFirestoreRead('users', snap.docs.length || 1, 'AdminDashboard:searchUsers');
         const list: UserData[] = [];
         snap.forEach(d => list.push(d.data() as UserData));
         candidateUsers = list;
@@ -447,6 +454,7 @@ export const AdminDashboard: React.FC = () => {
   const handleUpdateUser = async (uid: string, updates: Partial<UserData>) => {
     try {
       await updateDoc(doc(db, 'users', uid), updates);
+      recordFirestoreWrite('users', 1, 'AdminDashboard:updateUser');
       setUsersByPage(prev => {
         const next = { ...prev };
         for (const p of Object.keys(next)) {
@@ -467,6 +475,7 @@ export const AdminDashboard: React.FC = () => {
     try {
       const uid = userToDelete.uid;
       await deleteDoc(doc(db, 'users', uid));
+      recordFirestoreWrite('users', 1, 'AdminDashboard:deleteUser');
 
       // Remove from paginated state and sessionStorage cache
       setUsersByPage(prev => {
@@ -538,6 +547,7 @@ export const AdminDashboard: React.FC = () => {
       let candidateUsers = allUsers;
       if (!candidateUsers || candidateUsers.length === 0) {
         const snap = await getDocs(collection(db, 'users'));
+        recordFirestoreRead('users', snap.docs.length || 1, 'AdminDashboard:calculateTotalImages');
         const list: UserData[] = [];
         snap.forEach(d => list.push(d.data() as UserData));
         candidateUsers = list;
@@ -572,6 +582,7 @@ export const AdminDashboard: React.FC = () => {
 
     try {
       const snap = await getDocs(collection(db, 'users'));
+      recordFirestoreRead('users', snap.docs.length || 1, 'AdminDashboard:cleanUserData');
       const total = snap.docs.length;
       let count = 0;
 
@@ -606,7 +617,9 @@ export const AdminDashboard: React.FC = () => {
         });
 
         // 1 controlled overwrite write per document with strict allowlist (no merge: true)
-        await setDoc(doc(db, 'users', d.id), cleanDoc).catch(err => {
+        await setDoc(doc(db, 'users', d.id), cleanDoc).then(() => {
+          recordFirestoreWrite('users', 1, 'AdminDashboard:cleanDoc');
+        }).catch(err => {
           console.warn(`Could not sanitize doc ${d.id}:`, err);
         });
       }
@@ -1613,7 +1626,7 @@ export const AdminDashboard: React.FC = () => {
                 </button>
 
                 <button 
-                  onClick={fetchCentralKeys}
+                  onClick={() => fetchCentralKeys(true)}
                   disabled={loadingKeys}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 disabled:opacity-50 cursor-pointer"
                 >

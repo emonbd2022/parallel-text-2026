@@ -15,6 +15,7 @@ import { db } from './lib/firebase';
 import { doc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
+import { recordFirestoreWrite } from './utils/firestoreAudit';
 
 
 // Persistence Keys
@@ -388,10 +389,10 @@ export default function App() {
   }, [userData?.uid, userData?.email]);
 
   // 1-Read Central API Keys Pool Fetch (In-memory ONLY, never persisted to localStorage)
-  const fetchCentralKeysPool = async (): Promise<ApiKey[]> => {
+  const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
     // 1. Fetch from Firestore (Direct 1-read connection that works on Vercel, Netlify, and production domains)
     try {
-      const fsKeys = await fetchCentralKeysFromFirestore();
+      const fsKeys = await fetchCentralKeysFromFirestore(forceRefresh);
       const validFsKeys = fsKeys.filter(
         k => k.enabled !== false && k.key && !k.key.startsWith('central-') && k.key.trim().length > 5
       );
@@ -400,7 +401,7 @@ export default function App() {
         const currentSession = getUsageSessionId();
         const pool: ApiKey[] = validFsKeys.map((k, idx) => ({
           id: k.id || `central-${idx}`,
-          label: k.label || `Central Pool Node ${idx + 1}`,
+          label: `Central Pool Node ${idx + 1}`, // Anonymous node label - NEVER expose contributor labels
           key: k.key.trim(), // Stored ONLY in React memory state, NEVER in localStorage
           errorCount: 0,
           usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
@@ -423,7 +424,7 @@ export default function App() {
             const currentSession = getUsageSessionId();
             const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
               id: k.id || `central-${idx}`,
-              label: k.label || `Central Pool Node ${idx + 1}`,
+              label: `Central Pool Node ${idx + 1}`, // Anonymous node label
               key: k.key, // Strictly kept in RAM state - NEVER saved to localStorage
               errorCount: 0,
               usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
@@ -1221,7 +1222,9 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
           
           // Single atomic updateDoc on users document only
           const userRef = doc(db, 'users', userData.uid);
-          updateDoc(userRef, updates).catch(e => console.error("Failed to update user credits/totals:", e));
+          updateDoc(userRef, updates)
+            .then(() => recordFirestoreWrite('users', 1, 'App:exportCreditsUpdate'))
+            .catch(e => console.error("Failed to update user credits/totals:", e));
           
           // Local Activity Summary saved exclusively in localStorage
           const dateObj = new Date();

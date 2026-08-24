@@ -327,7 +327,7 @@ export const ApiKeyManager: React.FC<Props> = ({
                 >
                   <div className="flex items-center gap-2.5">
                     <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                    <span className="text-slate-200 font-medium">{node.label || `Central Node ${index + 1}`}</span>
+                    <span className="text-slate-200 font-medium">{`Central Pool Node ${index + 1}`}</span>
                   </div>
                   <span className="text-[11px] font-mono text-purple-300/80 bg-purple-950/40 px-2 py-0.5 rounded border border-purple-900/40">
                     Active

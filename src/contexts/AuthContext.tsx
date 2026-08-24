@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useRef } from 'r
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
+import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
 
 export interface UserData {
   uid: string;
@@ -128,6 +129,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     getDoc(doc(db, 'settings', 'general'))
       .then((docSnap) => {
+        recordFirestoreRead('settings', 1, 'AuthContext:getSettings');
         if (docSnap.exists()) {
           const isMaint = docSnap.data()?.maintenanceMode === true;
           setMaintenanceMode(isMaint);
@@ -193,9 +195,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         limit(5)
     ));
 
-    Promise.all(queries.map(q => getDocs(q).catch(e => {
+    Promise.all(queries.map(q => getDocs(q).then(snap => {
+        recordFirestoreRead('notifications', snap.docs.length || 1, 'AuthContext:getNotifications');
+        return snap;
+    }).catch(e => {
         console.error("Failed to fetch notification query:", e);
-        return { docs: [] };
+        return { docs: [] } as any;
     })))
       .then((results) => {
         const dismissedNotifs: string[] = [
@@ -316,6 +321,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (db && userData?.role === 'admin') {
       try {
         await deleteDoc(doc(db, 'notifications', id));
+        recordFirestoreWrite('notifications', 1, 'AuthContext:deleteNotification');
         console.log(`[Notification] Admin explicitly deleted notification from server: notifications/${id}`);
       } catch (err: any) {
         console.error(`[Notification] Failed to delete notification notifications/${id} from Firestore:`, err);
@@ -370,6 +376,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           try {
             const userRef = doc(db, 'users', currentUser.uid);
             const docSnap = await getDoc(userRef);
+            recordFirestoreRead('users', 1, 'AuthContext:getUserDoc');
             
             if (docSnap.exists()) {
               const d = docSnap.data();
@@ -402,6 +409,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     updates.blocked = true;
                   }
                   await updateDoc(userRef, updates);
+                  recordFirestoreWrite('users', 1, 'AuthContext:updateDeviceIds');
                 } catch (e) {
                   console.error('Failed to update device limits', e);
                 }
@@ -491,6 +499,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               batch.set(userRef, newUserData);
               batch.set(notifRef, notifData);
               await batch.commit();
+              recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');
+              recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
               console.log(`[Auth] Atomically registered new user (${currentUser.uid}) and created admin notification (${notifId})`);
 
               setUserData(newUserData);
