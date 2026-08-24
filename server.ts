@@ -43,6 +43,8 @@ interface StoredKey {
     keyHash: string;
     enabled: boolean;
     createdAt: string;
+    contributedBy?: string;
+    contributorEmail?: string;
 }
 
 let centralKeys: { id: string; key: string }[] = [];
@@ -106,6 +108,8 @@ async function fetchKeysFromFirestore(): Promise<StoredKey[]> {
             const enabled = fields.enabled?.booleanValue !== false;
             const createdAt = fields.createdAt?.stringValue || new Date().toISOString();
             const keyHash = fields.keyHash?.stringValue || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex');
+            const contributedBy = fields.contributedBy?.stringValue;
+            const contributorEmail = fields.contributorEmail?.stringValue;
 
             // Encrypt plaintext keys on the server
             if (!encryptedKey && rawKey) {
@@ -123,7 +127,9 @@ async function fetchKeysFromFirestore(): Promise<StoredKey[]> {
                     encryptedKey: encryptedKey || encrypt(rawKey),
                     keyHash,
                     enabled,
-                    createdAt
+                    createdAt,
+                    contributedBy,
+                    contributorEmail
                 });
             }
         }
@@ -617,7 +623,9 @@ Return a strictly valid JSON array where each object contains:
                     label: data.label,
                     maskedKey,
                     enabled: data.enabled,
-                    createdAt: data.createdAt
+                    createdAt: data.createdAt,
+                    contributedBy: data.contributedBy,
+                    contributorEmail: data.contributorEmail
                 };
             });
             res.json({ success: true, keys, count: keys.length });
@@ -650,7 +658,9 @@ Return a strictly valid JSON array where each object contains:
                     label: data.label,
                     maskedKey,
                     enabled: data.enabled,
-                    createdAt: data.createdAt
+                    createdAt: data.createdAt,
+                    contributedBy: data.contributedBy,
+                    contributorEmail: data.contributorEmail
                 };
             });
             res.json(keys);

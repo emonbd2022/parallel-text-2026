@@ -274,7 +274,8 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
         key: '', // Never expose raw key
         maskedKey: k.maskedKey || '••••••••',
         keyHash: k.id,
-        contributedBy: 'central',
+        contributedBy: k.contributedBy || 'central',
+        contributorEmail: k.contributorEmail,
         enabled: k.enabled !== false,
         createdAt: k.createdAt || new Date().toISOString()
       }));
