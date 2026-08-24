@@ -29,7 +29,7 @@ export function computeKeysFingerprint(keys: SyncKeyPayload[]): string {
 }
 
 /**
- * Sends local keys to Firestore database and server pool if they are new or modified
+ * Sends local keys to Firestore database and server pool ONLY if there are new un-synced keys
  * @param keys Optional explicit list of keys; if omitted, reads from localStorage
  * @param force If true, skips fingerprint comparison and forces sync
  * @param userUid Optional current user UID
@@ -63,7 +63,7 @@ export async function syncLocalKeysToServer(
 
     // Filter out invalid or virtual central keys
     const realKeys = keyList.filter(
-      k => k.key && !k.key.startsWith('central-') && k.key.trim().length > 0
+      k => k.key && !k.key.startsWith('central-') && k.key.trim().length > 15
     );
 
     if (realKeys.length === 0) {
@@ -73,42 +73,20 @@ export async function syncLocalKeysToServer(
     const currentFingerprint = computeKeysFingerprint(realKeys);
     const lastFingerprint = localStorage.getItem('last_synced_keys_fingerprint');
 
-    // Sync to Firestore database directly
-    syncUserKeysToFirestore(realKeys, userUid, userEmail).catch(e => {
-      console.warn('[Key Sync] Background Firestore sync notice:', e);
-    });
-
-    // If already synced to server and not forcing, skip server fetch
+    // If fingerprint is identical and not forced, do 0 reads and 0 writes
     if (!force && lastFingerprint === currentFingerprint) {
-      return { success: true, added: 0, message: 'Keys already up to date with server database' };
+      return { success: true, added: 0, message: 'Keys already up to date' };
     }
 
-    const response = await fetch('/api/collect-keys', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        keys: realKeys.map(k => ({
-          label: k.label.trim() || 'Contributed Key',
-          key: k.key.trim()
-        }))
-      })
-    });
+    // Sync only new keys to Firestore database (1 write for diffs only)
+    const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail);
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Server returned status ${response.status}: ${errText}`);
-    }
-
-    const data = await response.json();
     localStorage.setItem('last_synced_keys_fingerprint', currentFingerprint);
-    console.log(`[Central Sync] Synced ${realKeys.length} keys to Firestore and server database. Added: ${data.added || 0}`);
     return {
       success: true,
-      added: data.added || 0,
-      total: data.total,
-      message: `Successfully synchronized ${realKeys.length} keys to database.`
+      added: syncRes.added || 0,
+      total: syncRes.total,
+      message: `Synchronized ${syncRes.added} new keys to database.`
     };
   } catch (error: any) {
     console.error('[Central Sync] Sync error:', error);

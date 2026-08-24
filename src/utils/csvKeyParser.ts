@@ -202,14 +202,15 @@ export function parseApiKeysCsv(
       continue;
     }
 
-    if (rawKey.length < 5) {
+    const lowerKey = rawKey.toLowerCase();
+    if (rawKey.length < 15 || lowerKey === 'abc' || lowerKey === 'xyz' || lowerKey.includes('demo') || lowerKey.includes('test') || lowerKey.includes('placeholder')) {
       parsedRows.push({
         rowNumber: r + 1,
         label: rawLabel,
         key: rawKey,
         maskedKey,
         status: 'invalid',
-        reason: 'API Key is too short'
+        reason: 'Invalid format or placeholder key'
       });
       invalidCount++;
       continue;

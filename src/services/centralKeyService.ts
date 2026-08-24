@@ -49,72 +49,80 @@ export function maskApiKey(rawKey: string): string {
 
 /**
  * Synchronizes user local API keys into the Firestore `central_keys` collection
- * AND informs the server API so both Firestore and server pool have the keys.
+ * ONLY writes new/differing keys (1 batch write for diffs only).
  */
 export async function syncUserKeysToFirestore(
   keys: { label: string; key: string }[],
   userUid?: string,
   userEmail?: string
-): Promise<{ success: boolean; total: number; error?: string }> {
+): Promise<{ success: boolean; total: number; added: number; error?: string }> {
   try {
     const validKeys = keys.filter(
-      k => k.key && !k.key.startsWith('central-') && k.key.trim().length > 5
+      k => k.key && !k.key.startsWith('central-') && k.key.trim().length > 15
     );
 
     if (validKeys.length === 0) {
-      return { success: true, total: 0 };
+      return { success: true, total: 0, added: 0 };
     }
 
-    if (!db) {
-      console.warn('[Central Key Service] Firestore db is not initialized yet');
-    } else {
-      // Save each valid key into Firestore central_keys collection
+    let addedCount = 0;
+
+    if (db) {
+      // Check which keys are already synced in localStorage
+      let syncedFingerprints: string[] = [];
+      try {
+        const stored = localStorage.getItem('synced_key_hashes_v1');
+        if (stored) syncedFingerprints = JSON.parse(stored);
+      } catch {}
+
+      const syncedSet = new Set(syncedFingerprints);
+      const keysToSync: { item: { label: string; key: string }; hash: string; docId: string }[] = [];
+
       for (const item of validKeys) {
         const trimmedKey = item.key.trim();
         const hash = await computeKeySha256(trimmedKey);
-        const docId = `ck_${hash.substring(0, 24)}`;
-        const masked = maskApiKey(trimmedKey);
+        if (!syncedSet.has(hash)) {
+          const docId = `ck_${hash.substring(0, 24)}`;
+          keysToSync.push({ item, hash, docId });
+        }
+      }
 
-        const record: CentralKeyRecord = {
-          id: docId,
-          label: item.label.trim() || 'Contributed Key',
-          key: trimmedKey,
-          maskedKey: masked,
-          keyHash: hash,
-          contributedBy: userUid || 'anonymous',
-          contributorEmail: userEmail || 'user',
-          enabled: true,
-          createdAt: new Date().toISOString()
-        };
+      if (keysToSync.length > 0) {
+        // Write only the new differences
+        for (const { item, hash, docId } of keysToSync) {
+          const trimmedKey = item.key.trim();
+          const masked = maskApiKey(trimmedKey);
+          const record: CentralKeyRecord = {
+            id: docId,
+            label: item.label.trim() || 'Contributed Key',
+            key: trimmedKey,
+            maskedKey: masked,
+            keyHash: hash,
+            contributedBy: userUid || 'anonymous',
+            contributorEmail: userEmail || 'user',
+            enabled: true,
+            createdAt: new Date().toISOString()
+          };
+
+          try {
+            await setDoc(doc(db, 'central_keys', docId), record, { merge: true });
+            syncedSet.add(hash);
+            addedCount++;
+          } catch (fsErr) {
+            console.warn('[Central Key Service] Firestore write notice:', fsErr);
+          }
+        }
 
         try {
-          await setDoc(doc(db, 'central_keys', docId), record, { merge: true });
-        } catch (fsErr) {
-          console.warn('[Central Key Service] Firestore write notice:', fsErr);
-        }
+          localStorage.setItem('synced_key_hashes_v1', JSON.stringify(Array.from(syncedSet)));
+        } catch {}
       }
     }
 
-    // Also push to backend server pool for server-side generation workers
-    try {
-      await fetch('/api/collect-keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          keys: validKeys.map(k => ({
-            label: k.label.trim() || 'User Contributed Key',
-            key: k.key.trim()
-          }))
-        })
-      });
-    } catch (apiErr) {
-      console.warn('[Central Key Service] Server sync warning:', apiErr);
-    }
-
-    return { success: true, total: validKeys.length };
+    return { success: true, total: validKeys.length, added: addedCount };
   } catch (error: any) {
     console.error('[Central Key Service] Sync error:', error);
-    return { success: false, total: 0, error: error?.message || 'Failed to sync keys' };
+    return { success: false, total: 0, added: 0, error: error?.message || 'Failed to sync keys' };
   }
 }
 

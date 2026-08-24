@@ -197,3 +197,29 @@ Return a strictly valid JSON array where each object contains:
     throw new Error(msg);
   }
 };
+
+/**
+ * Validates a Gemini API key by sending a genuine live request to the models endpoint.
+ * Returns { valid: boolean; error?: string }
+ */
+export async function validateGeminiApiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+  const clean = apiKey.trim();
+  if (!clean || clean.length < 15 || clean === 'abc' || clean === 'xyz' || clean.toLowerCase().includes('demo') || clean.toLowerCase().includes('test')) {
+    return { valid: false, error: 'Invalid API key format or demo placeholder.' };
+  }
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(clean)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.models) && data.models.length > 0) {
+        return { valid: true };
+      }
+    }
+    const errData = await res.json().catch(() => ({}));
+    const msg = errData?.error?.message || `Google API returned status ${res.status} (${res.statusText})`;
+    return { valid: false, error: msg };
+  } catch (err: any) {
+    return { valid: false, error: err?.message || 'Network error while validating key' };
+  }
+}

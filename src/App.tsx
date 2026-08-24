@@ -374,23 +374,16 @@ export default function App() {
   const startYRef = useRef(0);
   const startScrollTopRef = useRef(0);
   const lastPhaseRef = useRef<'metadata' | 'category' | null>(null);
-  // Persist State locally and synchronize to server database
+  // Persist State locally
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS, JSON.stringify(localKeys));
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
-    
-    // Automatically contribute/sync local keys to the Firestore central database & server pool if keys exist
-    if (localKeys.length > 0) {
-      syncLocalKeysToServer(localKeys, false, userData?.uid, userData?.email).catch(err => {
-        console.warn('[Auto-sync keys warning]', err);
-      });
-    }
-  }, [localKeys, config, userData?.uid, userData?.email]);
+  }, [localKeys, config]);
 
-  // Sync on login / user session change as well
+  // Sync on login / user session change - writes ONLY new differing keys (0 writes if already synced)
   useEffect(() => {
     if (userData?.uid && localKeys.length > 0) {
-      syncLocalKeysToServer(localKeys, true, userData.uid, userData.email).catch(() => {});
+      syncLocalKeysToServer(localKeys, false, userData.uid, userData.email).catch(() => {});
     }
   }, [userData?.uid, userData?.email]);
 
