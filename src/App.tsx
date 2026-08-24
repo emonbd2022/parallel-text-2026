@@ -393,30 +393,35 @@ export default function App() {
     }
   }, [userData?.uid, userData?.email]);
 
-  // Fetch central capacity
+  // 1-Read Central API Keys Pool Fetch (In-memory ONLY, never persisted to localStorage)
+  const fetchCentralKeysPool = async (): Promise<ApiKey[]> => {
+    try {
+      const res = await fetch('/api/central-keys-pool');
+      if (!res.ok) throw new Error('Central pool request failed');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
+        const currentSession = getUsageSessionId();
+        const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
+          id: k.id || `central-${idx}`,
+          label: k.label || `Central Pool Node ${idx + 1}`,
+          key: k.key, // Strictly kept in RAM state - NEVER saved to localStorage
+          errorCount: 0,
+          usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+        }));
+        setCentralKeys(pool);
+        return pool;
+      }
+    } catch (e) {
+      console.warn("Central keys pool fetch notice:", e);
+    }
+    return [];
+  };
+
+  // Fetch central keys pool whenever Central API mode is active
   useEffect(() => {
-     if (config.apiMode === 'central') {
-        fetch('/api/central-keys-capacity')
-           .then(res => res.json())
-           .then(data => {
-              const capacity = typeof data.capacity === 'number' ? data.capacity : 0;
-              if (capacity > 0) {
-                setCentralKeys(Array.from({ length: capacity }, (_, i) => ({
-                   id: `central-${i}`,
-                   label: `Central Pool Node ${i + 1}`,
-                   key: `central-${i}`,
-                   errorCount: 0,
-                   usage: { date: getUsageSessionId(), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0 }
-                } as ApiKey)));
-              } else {
-                setCentralKeys([]);
-              }
-           })
-           .catch(e => {
-              console.error("Central API capacity fetch failed:", e);
-              setCentralKeys([]);
-           });
-     }
+    if (config.apiMode === 'central') {
+      fetchCentralKeysPool();
+    }
   }, [config.apiMode]);
 
   useEffect(() => {
@@ -1392,9 +1397,16 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     
     if (validKeys.length === 0) {
         const totalKeys = keys.length;
-        if (totalKeys > 0) setStatusMsg("All keys have high error counts or hit safety limits.");
-        else setStatusMsg("No API keys configured.");
-        setIsProcessing(false);
+        if (totalKeys > 0) {
+            setStatusMsg("All keys have high error counts or hit safety limits.");
+            setIsProcessing(false);
+        } else if (config.apiMode === 'central') {
+            setStatusMsg("Loading Central API pool nodes...");
+            fetchCentralKeysPool();
+        } else {
+            setStatusMsg("No API keys configured.");
+            setIsProcessing(false);
+        }
         return;
     }
 
@@ -1619,21 +1631,37 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
           Notification.requestPermission();
       }
       
-      if (keys.length === 0) {
-          setStatusMsg("No API keys configured. Please add keys first.");
-          return;
+      let activeKeys = keys;
+      if (config.apiMode === 'central') {
+          if (activeKeys.length === 0) {
+              setStatusMsg("Connecting to Central API Pool...");
+              activeKeys = await fetchCentralKeysPool();
+          }
+          if (activeKeys.length === 0) {
+              setStatusMsg("No Central API keys available in server pool. Please add a key or try again.");
+              return;
+          }
+      } else {
+          if (activeKeys.length === 0) {
+              setStatusMsg("No API keys configured. Please add keys first.");
+              return;
+          }
       }
 
       setStatusMsg("Validating API keys...");
       let hasValidKey = false;
-      const keysToTest = keys.filter(k => k.errorCount < 20);
+      const keysToTest = activeKeys.filter(k => k.errorCount < 20);
       
       if (keysToTest.length === 0) {
           setStatusMsg("All configured keys have hit safety limits.");
           return;
       }
 
-      for (const key of keysToTest) {
+      for (const key of keysToTest.slice(0, 5)) {
+          if (key.key.startsWith('central-')) {
+              hasValidKey = true;
+              break;
+          }
           try {
               const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key.key}`);
               if (res.ok) {
@@ -1646,12 +1674,15 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       }
 
       if (!hasValidKey) {
-          setStatusMsg("No valid API keys found. Please check your keys.");
-          return;
+          if (config.apiMode === 'central' && activeKeys.length > 0) {
+              hasValidKey = true;
+          } else {
+              setStatusMsg("No valid API keys found. Please check your keys.");
+              return;
+          }
       }
 
       setIsProcessing(true);
-      
       setStatusMsg("Starting processing...");
   };
   

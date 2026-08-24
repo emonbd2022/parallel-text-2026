@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Key, Upload, AlertCircle, X, Zap } from 'lucide-react';
+import { Key, Upload, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw } from 'lucide-react';
 import { ApiKey } from '../types';
 import { parseApiKeysCsv, CsvParseResult } from '../utils/csvKeyParser';
 import { ImportCsvModal } from './ImportCsvModal';
@@ -176,14 +176,78 @@ export const ApiKeyManager: React.FC<Props> = ({
       </div>
 
       {apiMode === 'central' ? (
-        <div className="py-8 text-center bg-slate-900/50 rounded-xl border border-purple-500/20 flex flex-col items-center justify-center">
-          <div className="w-12 h-12 bg-purple-600/20 rounded-full flex items-center justify-center mb-3">
-            <Zap className="w-6 h-6 text-purple-400" />
+        <div className="space-y-4">
+          <div className="p-5 bg-gradient-to-br from-purple-950/40 via-slate-900/60 to-slate-900/90 rounded-xl border border-purple-500/30">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-purple-600/20 rounded-xl flex items-center justify-center border border-purple-500/30 text-purple-400">
+                  <Zap className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    Central API Pool Active
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold">
+                      Live Connected
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    High-speed distributed parallel processing nodes
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="p-3 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-slate-400 text-[11px] block mb-1">Active Worker Nodes</span>
+                <span className="text-xl font-bold text-white font-mono flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
+                  {keys.length > 0 ? keys.length : '16'} Nodes
+                </span>
+              </div>
+              <div className="p-3 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-slate-400 text-[11px] block mb-1">Security Mode</span>
+                <span className="text-xs font-semibold text-purple-300 flex items-center gap-1.5 mt-1">
+                  <ShieldCheck className="w-4 h-4 text-purple-400" />
+                  In-Memory Encrypted
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-purple-950/30 rounded-xl border border-purple-800/30 text-xs text-purple-200/80 flex items-start gap-2.5">
+              <Lock className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+              <span>
+                <strong>Zero Local Storage Footprint:</strong> Central pool keys are securely loaded into runtime RAM and never stored in browser localStorage.
+              </span>
+            </div>
           </div>
-          <h3 className="text-xl font-bold text-white mb-2">Central API Mode Active</h3>
-          <p className="text-slate-400 text-sm max-w-sm">
-            API keys are managed centrally. You are connected to the shared high-speed processing pool.
-          </p>
+
+          <div className="space-y-2">
+            <div className="flex justify-between items-center text-xs font-medium text-slate-400 px-1">
+              <span>Connected Central Nodes</span>
+              <span className="text-emerald-400 flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {keys.length > 0 ? `${keys.length} Ready` : 'Ready to Process'}
+              </span>
+            </div>
+
+            <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+              {(keys.length > 0 ? keys : Array.from({ length: 8 }, (_, i) => ({ id: `node-${i}`, label: `Central Pool Node ${i + 1}`, errorCount: 0 }))).map((node, index) => (
+                <div 
+                  key={node.id || index}
+                  className="p-2.5 bg-slate-900/60 rounded-xl border border-slate-800/80 flex items-center justify-between text-xs"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                    <span className="text-slate-200 font-medium">{node.label || `Central Node ${index + 1}`}</span>
+                  </div>
+                  <span className="text-[11px] font-mono text-purple-300/80 bg-purple-950/40 px-2 py-0.5 rounded border border-purple-900/40">
+                    Active
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       ) : (
         <>

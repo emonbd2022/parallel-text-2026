@@ -126,6 +126,39 @@ async function startServer() {
         });
     });
 
+    // 1-Read Central API Keys Pool for Runtime Client Processing
+    app.get("/api/central-keys-pool", async (req, res) => {
+        try {
+            if (centralKeys.length === 0) {
+                await syncCentralKeys();
+            }
+
+            let poolKeys: { id: string; label: string; key: string }[] = [];
+            if (centralKeys.length > 0) {
+                poolKeys = centralKeys.map((k, index) => ({
+                    id: `central-${index}`,
+                    label: `Central Pool Node ${index + 1}`,
+                    key: k.key
+                }));
+            } else if (process.env.GEMINI_API_KEY) {
+                poolKeys = [{
+                    id: 'central-0',
+                    label: 'Central Pool Primary Node',
+                    key: process.env.GEMINI_API_KEY
+                }];
+            }
+
+            res.json({
+                success: true,
+                keys: poolKeys,
+                count: poolKeys.length
+            });
+        } catch (error: any) {
+            console.error("Error fetching central keys pool:", error);
+            res.status(500).json({ success: false, error: "Failed to fetch central keys", keys: [] });
+        }
+    });
+
     app.post("/api/central-generate", async (req, res) => {
         try {
             const { items, config, virtualKeyId } = req.body;
