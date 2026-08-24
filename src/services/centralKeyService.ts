@@ -124,39 +124,50 @@ export async function syncUserKeysToFirestore(
 export async function fetchCentralKeysFromFirestore(): Promise<CentralKeyRecord[]> {
   try {
     if (db) {
-      const q = query(collection(db, 'central_keys'), orderBy('createdAt', 'desc'));
-      const snap = await getDocs(q);
+      const snap = await getDocs(collection(db, 'central_keys'));
       if (!snap.empty) {
-        return snap.docs.map(d => ({
+        const records = snap.docs.map(d => ({
           ...d.data(),
           id: d.id
         } as CentralKeyRecord));
+
+        // Sort in memory by createdAt descending
+        records.sort((a, b) => {
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return timeB - timeA;
+        });
+
+        return records;
       }
     }
   } catch (e) {
-    console.warn('[Central Key Service] Firestore fetch warning, trying server endpoint:', e);
+    console.warn('[Central Key Service] Firestore fetch notice:', e);
   }
 
-  // Server endpoint fallback
+  // Server endpoint fallback (when running with Node backend)
   try {
-    const res = await fetch('/api/admin/keys');
+    const res = await fetch('/api/central-keys-pool');
     if (res.ok) {
-      const serverKeys = await res.json();
-      if (Array.isArray(serverKeys)) {
-        return serverKeys.map((sk: any) => ({
-          id: sk.id,
-          label: sk.label,
-          key: '',
-          maskedKey: sk.maskedKey || '••••••••',
-          keyHash: sk.id,
-          contributedBy: 'server',
-          enabled: sk.enabled !== false,
-          createdAt: sk.createdAt || new Date().toISOString()
-        }));
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.keys)) {
+          return data.keys.map((sk: any) => ({
+            id: sk.id,
+            label: sk.label || 'Central Node',
+            key: sk.key || '',
+            maskedKey: sk.key ? maskApiKey(sk.key) : '••••••••',
+            keyHash: sk.id,
+            contributedBy: 'server',
+            enabled: true,
+            createdAt: new Date().toISOString()
+          }));
+        }
       }
     }
   } catch (e) {
-    console.error('[Central Key Service] Server fetch error:', e);
+    // Ignore server error on static hosts
   }
 
   return [];

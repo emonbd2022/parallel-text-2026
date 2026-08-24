@@ -14,6 +14,7 @@ import { useAuth } from './contexts/AuthContext';
 import { db } from './lib/firebase';
 import { doc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
+import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
 
 
 // Persistence Keys
@@ -395,16 +396,19 @@ export default function App() {
 
   // 1-Read Central API Keys Pool Fetch (In-memory ONLY, never persisted to localStorage)
   const fetchCentralKeysPool = async (): Promise<ApiKey[]> => {
+    // 1. Fetch from Firestore (Direct 1-read connection that works on Vercel, Netlify, and production domains)
     try {
-      const res = await fetch('/api/central-keys-pool');
-      if (!res.ok) throw new Error('Central pool request failed');
-      const data = await res.json();
-      if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
+      const fsKeys = await fetchCentralKeysFromFirestore();
+      const validFsKeys = fsKeys.filter(
+        k => k.enabled !== false && k.key && !k.key.startsWith('central-') && k.key.trim().length > 5
+      );
+
+      if (validFsKeys.length > 0) {
         const currentSession = getUsageSessionId();
-        const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
+        const pool: ApiKey[] = validFsKeys.map((k, idx) => ({
           id: k.id || `central-${idx}`,
           label: k.label || `Central Pool Node ${idx + 1}`,
-          key: k.key, // Strictly kept in RAM state - NEVER saved to localStorage
+          key: k.key.trim(), // Stored ONLY in React memory state, NEVER in localStorage
           errorCount: 0,
           usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
         }));
@@ -412,7 +416,32 @@ export default function App() {
         return pool;
       }
     } catch (e) {
-      console.warn("Central keys pool fetch notice:", e);
+      console.warn("Firestore central keys pool fetch notice:", e);
+    }
+
+    // 2. Server endpoint fallback (when running with backend API / dev environment)
+    try {
+      const res = await fetch('/api/central-keys-pool');
+      if (res.ok) {
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
+            const currentSession = getUsageSessionId();
+            const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
+              id: k.id || `central-${idx}`,
+              label: k.label || `Central Pool Node ${idx + 1}`,
+              key: k.key, // Strictly kept in RAM state - NEVER saved to localStorage
+              errorCount: 0,
+              usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+            }));
+            setCentralKeys(pool);
+            return pool;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Central keys pool server fetch notice:", e);
     }
     return [];
   };
@@ -1401,8 +1430,16 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             setStatusMsg("All keys have high error counts or hit safety limits.");
             setIsProcessing(false);
         } else if (config.apiMode === 'central') {
-            setStatusMsg("Loading Central API pool nodes...");
-            fetchCentralKeysPool();
+            setStatusMsg("Connecting to Central API pool...");
+            fetchCentralKeysPool().then(pool => {
+                if (!pool || pool.length === 0) {
+                    setStatusMsg("No Central API keys available in the central pool. Please add an API key.");
+                    setIsProcessing(false);
+                }
+            }).catch(() => {
+                setStatusMsg("Could not connect to Central API pool. Please check your internet connection.");
+                setIsProcessing(false);
+            });
         } else {
             setStatusMsg("No API keys configured.");
             setIsProcessing(false);

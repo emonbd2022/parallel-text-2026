@@ -172,8 +172,8 @@ service cloud.firestore {
     // Centralized crowdsourced & admin-provided API keys in Firestore
     // =========================================================
     match /central_keys/{keyDocId} {
-      // Read: Authenticated users and administrators
-      allow read: if isAuthenticated();
+      // Read: Public/authenticated users can fetch the active keys pool for generation
+      allow read: if true;
 
       // Create: Authenticated users contributing keys or Admins
       allow create: if isAuthenticated() &&
