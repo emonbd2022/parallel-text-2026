@@ -290,7 +290,9 @@ async function startServer() {
             
             // Central API Eligibility Check
             let isEligible = false;
-            if (isAdmin || hasExplicitAdminGrant) {
+            if (centralKeys.length > 0 || process.env.GEMINI_API_KEY) {
+                isEligible = true;
+            } else if (isAdmin || hasExplicitAdminGrant) {
                 isEligible = true;
             } else if (Array.isArray(localKeys)) {
                 const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
@@ -299,7 +301,7 @@ async function startServer() {
                 }
             }
             if (!isEligible) {
-                throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
+                throw new Error("Central API access requires active central pool keys or Administrator approval.");
             }
 
             const apiKey = await getRealKey(virtualKeyId);
@@ -405,7 +407,9 @@ Return a strictly valid JSON array where each object contains:
             
             // Central API Eligibility Check
             let isEligible = false;
-            if (isAdmin || hasExplicitAdminGrant) {
+            if (centralKeys.length > 0 || process.env.GEMINI_API_KEY) {
+                isEligible = true;
+            } else if (isAdmin || hasExplicitAdminGrant) {
                 isEligible = true;
             } else if (Array.isArray(localKeys)) {
                 const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
@@ -414,7 +418,7 @@ Return a strictly valid JSON array where each object contains:
                 }
             }
             if (!isEligible) {
-                throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
+                throw new Error("Central API access requires active central pool keys or Administrator approval.");
             }
 
             const apiKey = await getRealKey(virtualKeyId);
