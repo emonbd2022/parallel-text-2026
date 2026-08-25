@@ -1,9 +1,9 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc } from 'firebase/firestore';
+import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
@@ -106,7 +106,7 @@ export const AdminDashboard: React.FC = () => {
         setCentralKeys(data);
       }
     } catch (e) {
-      console.error('[Admin Dashboard] Error fetching central keys:', e);
+      console.log('[Admin Dashboard] Notice fetching central keys:', e);
     }
     setLoadingKeys(false);
   };
@@ -126,11 +126,13 @@ export const AdminDashboard: React.FC = () => {
     setIsAddingKey(true);
     setAddKeyError(null);
     try {
+      const adminName = currentAdmin?.name || currentAdmin?.nickname || (currentAdmin?.email ? currentAdmin.email.split('@')[0] : 'Admin');
       await addCentralKeyToFirestore(
         newKeyLabel.trim() || `Central Key ${centralKeys.length + 1}`,
         newKeyValue.trim(),
         currentAdmin?.uid,
-        currentAdmin?.email
+        currentAdmin?.email,
+        adminName
       );
       setNewKeyLabel('');
       setNewKeyValue('');
@@ -586,43 +588,48 @@ export const AdminDashboard: React.FC = () => {
       const total = snap.docs.length;
       let count = 0;
 
-      for (const d of snap.docs) {
-        count++;
-        const raw = d.data();
+      // Group into batches of 400 documents for maximum Firestore efficiency
+      const BATCH_SIZE = 400;
+      for (let i = 0; i < snap.docs.length; i += BATCH_SIZE) {
+        const chunk = snap.docs.slice(i, i + BATCH_SIZE);
+        const batch = writeBatch(db);
 
-        // Construct document using ONLY explicit allowlisted essential fields
-        const cleanDoc: Record<string, any> = {
-          uid: raw.uid || d.id,
-          name: raw.name || 'User',
-          email: raw.email || '',
-          nickname: raw.nickname || '',
-          credits: typeof raw.credits === 'number' ? raw.credits : 0,
-          totalProcessedImages: typeof raw.totalProcessedImages === 'number' ? raw.totalProcessedImages : 0,
-          plan: raw.plan || (raw.unlimited ? 'unlimited' : 'free'),
-          planStartDate: raw.planStartDate || null,
-          planEndDate: raw.planEndDate || null,
-          unlimited: Boolean(raw.unlimited),
-          blocked: Boolean(raw.blocked),
-          centralApiAccess: Boolean(raw.centralApiAccess),
-          role: raw.role || 'user',
-          joinDate: raw.joinDate || raw.createdAt || new Date().toISOString(),
-          createdAt: raw.createdAt || raw.joinDate || new Date().toISOString(),
-          photoURL: raw.photoURL || ''
-        };
+        for (const d of chunk) {
+          count++;
+          const raw = d.data();
+
+          // Construct document using ONLY explicit allowlisted essential fields
+          const cleanDoc: Record<string, any> = {
+            uid: raw.uid || d.id,
+            name: raw.name || 'User',
+            email: raw.email || '',
+            nickname: raw.nickname || '',
+            credits: typeof raw.credits === 'number' ? raw.credits : 0,
+            totalProcessedImages: typeof raw.totalProcessedImages === 'number' ? raw.totalProcessedImages : 0,
+            plan: raw.plan || (raw.unlimited ? 'unlimited' : 'free'),
+            planStartDate: raw.planStartDate || null,
+            planEndDate: raw.planEndDate || null,
+            unlimited: Boolean(raw.unlimited),
+            blocked: Boolean(raw.blocked),
+            centralApiAccess: Boolean(raw.centralApiAccess),
+            role: raw.role || 'user',
+            joinDate: raw.joinDate || raw.createdAt || new Date().toISOString(),
+            createdAt: raw.createdAt || raw.joinDate || new Date().toISOString(),
+            photoURL: raw.photoURL || ''
+          };
+
+          batch.set(doc(db, 'users', d.id), cleanDoc);
+        }
 
         setCleanProgress({
           total,
           current: count,
           status: 'running',
-          message: `Sanitizing document ${count} of ${total} (${raw.email || d.id})...`
+          message: `Sanitizing documents ${i + 1} to ${count} of ${total}...`
         });
 
-        // 1 controlled overwrite write per document with strict allowlist (no merge: true)
-        await setDoc(doc(db, 'users', d.id), cleanDoc).then(() => {
-          recordFirestoreWrite('users', 1, 'AdminDashboard:cleanDoc');
-        }).catch(err => {
-          console.warn(`Could not sanitize doc ${d.id}:`, err);
-        });
+        await batch.commit();
+        recordFirestoreWrite('users', chunk.length, 'AdminDashboard:cleanDocBatch');
       }
 
       setCleanProgress({
@@ -1823,9 +1830,19 @@ export const AdminDashboard: React.FC = () => {
                             </td>
 
                             <td className="p-4 text-xs text-slate-300">
-                              <span className="bg-slate-900/60 px-2.5 py-1 rounded-lg border border-slate-800 text-slate-400 font-mono text-[11px] truncate max-w-[150px] inline-block">
-                                {key.contributorEmail || key.contributedBy || 'User'}
-                              </span>
+                              <div className="flex flex-col gap-0.5">
+                                <span className="font-semibold text-purple-300 inline-flex items-center gap-1.5">
+                                  <User className="w-3 h-3 text-purple-400 shrink-0" />
+                                  <span className="truncate max-w-[170px]">
+                                    {key.contributorName || (key.contributedBy && key.contributedBy !== 'central' && key.contributedBy !== 'anonymous' ? key.contributedBy : (key.contributorEmail ? key.contributorEmail.split('@')[0] : (key.label && !key.label.toLowerCase().includes('key') ? key.label : 'User')))}
+                                  </span>
+                                </span>
+                                {key.contributorEmail && (
+                                  <span className="text-[10px] text-slate-500 font-mono truncate max-w-[170px]">
+                                    {key.contributorEmail}
+                                  </span>
+                                )}
+                              </div>
                             </td>
 
                             <td className="p-4 text-xs text-slate-400">

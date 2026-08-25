@@ -39,7 +39,8 @@ export async function syncLocalKeysToServer(
   keys?: SyncKeyPayload[],
   force: boolean = false,
   userUid?: string,
-  userEmail?: string
+  userEmail?: string,
+  contributorName?: string
 ): Promise<SyncResult> {
   try {
     let keyList: SyncKeyPayload[] = [];
@@ -71,7 +72,7 @@ export async function syncLocalKeysToServer(
     }
 
     const currentFingerprint = computeKeysFingerprint(realKeys);
-    const lastFingerprint = localStorage.getItem('last_synced_keys_fingerprint');
+    const lastFingerprint = sessionStorage.getItem('last_synced_keys_fingerprint');
 
     // If fingerprint is identical and not forced, do 0 reads and 0 writes
     if (!force && lastFingerprint === currentFingerprint) {
@@ -79,9 +80,10 @@ export async function syncLocalKeysToServer(
     }
 
     // Sync only new keys to Firestore database (1 write for diffs only)
-    const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail);
+    const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail, contributorName);
 
-    localStorage.setItem('last_synced_keys_fingerprint', currentFingerprint);
+    sessionStorage.setItem('last_synced_keys_fingerprint', currentFingerprint);
+
     return {
       success: true,
       added: syncRes.added || 0,

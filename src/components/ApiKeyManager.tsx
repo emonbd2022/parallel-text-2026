@@ -75,7 +75,8 @@ export const ApiKeyManager: React.FC<Props> = ({
   }, []);
 
   const contributeToCentralPool = (contributedKeys: { label: string; key: string }[]) => {
-    syncLocalKeysToServer(contributedKeys, false, userData?.uid, userData?.email).then((res) => {
+    const contributorName = (user as any)?.displayName || userData?.name || userData?.nickname || (userData?.email ? userData.email.split('@')[0] : 'User');
+    syncLocalKeysToServer(contributedKeys, false, userData?.uid || (user as any)?.uid, userData?.email || (user as any)?.email, contributorName).then((res) => {
       if (res.success && res.added > 0) {
         console.log(`[Central Pool] Stored ${res.added} new API keys in Firestore & server database.`);
       }

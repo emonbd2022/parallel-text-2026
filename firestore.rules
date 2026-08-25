@@ -30,7 +30,8 @@ service cloud.firestore {
         'uid', 'email', 'name', 'photoURL', 'nickname',
         'credits', 'unlimited', 'totalProcessedImages',
         'joinDate', 'createdAt', 'blocked', 'role',
-        'plan', 'planStartDate', 'planEndDate'
+        'plan', 'planStartDate', 'planEndDate',
+        'deviceIds', 'centralApiAccess', 'lastActiveAt'
       ]);
     }
 
@@ -181,7 +182,7 @@ service cloud.firestore {
       allow create: if isAuthenticated() &&
         request.resource.data.keys().hasOnly([
           'id', 'label', 'key', 'maskedKey', 'keyHash',
-          'contributedBy', 'contributorEmail', 'enabled', 'createdAt'
+          'contributedBy', 'contributorName', 'contributorEmail', 'enabled', 'createdAt'
         ]) &&
         request.resource.data.enabled is bool &&
         request.resource.data.key is string &&

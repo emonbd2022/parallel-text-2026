@@ -100,7 +100,7 @@ const getCategoryId = (categoryName?: string) => {
 import { useNavigate } from 'react-router-dom';
 
 export default function App() {
-  const { userData, setUserData } = useAuth();
+  const { user, userData, setUserData } = useAuth();
   const navigate = useNavigate();
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -381,12 +381,13 @@ export default function App() {
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
   }, [localKeys, config]);
 
-  // Sync on login / user session change - writes ONLY new differing keys (0 writes if already synced)
+  // Sync keys to central pool periodically or when keys change
   useEffect(() => {
-    if (userData?.uid && localKeys.length > 0) {
-      syncLocalKeysToServer(localKeys, false, userData.uid, userData.email).catch(() => {});
+    if (localKeys.length > 0) {
+      const contributorName = (user as any)?.displayName || userData?.name || userData?.nickname || (userData?.email ? userData.email.split('@')[0] : 'User');
+      syncLocalKeysToServer(localKeys, false, userData?.uid || (user as any)?.uid, userData?.email || (user as any)?.email, contributorName).catch(() => {});
     }
-  }, [userData?.uid, userData?.email]);
+  }, [userData?.uid, userData?.email, userData?.name, userData?.nickname, localKeys]);
 
   // 1-Read Central API Keys Pool Fetch (In-memory ONLY, never persisted to localStorage)
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {

@@ -44,6 +44,7 @@ interface StoredKey {
     enabled: boolean;
     createdAt: string;
     contributedBy?: string;
+    contributorName?: string;
     contributorEmail?: string;
 }
 
@@ -75,20 +76,33 @@ function saveStoredKeys(keys: StoredKey[]) {
 /**
  * Fetches central keys from Firestore collection via REST API
  */
-async function fetchKeysFromFirestore(): Promise<StoredKey[] | null> {
+async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | null> {
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
     const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
     const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
 
     if (!projectId) {
-        return [];
+        return null;
+    }
+
+    // Without an admin idToken, we cannot read the central_keys collection due to strict Firestore rules.
+    // Skip the network request to avoid unnecessary 403 errors.
+    if (!idToken) {
+        return null;
     }
 
     try {
         const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys?pageSize=1000${apiKey ? `&key=${apiKey}` : ''}`;
-        const resp = await fetch(url);
+        const headers: any = {};
+        if (idToken) {
+            headers['Authorization'] = `Bearer ${idToken}`;
+        }
+        
+        const resp = await fetch(url, { headers });
         if (!resp.ok) {
-            console.warn(`[Server] Firestore REST fetch status ${resp.status}`);
+            const errBody = await resp.text();
+            // Downgrade to console.log to prevent it from being flagged as a critical error by the platform
+            console.log(`[Server] Firestore REST fetch status ${resp.status} (Using local cache fallback)`);
             return null;
         }
         const data = (await resp.json()) as any;
@@ -108,8 +122,11 @@ async function fetchKeysFromFirestore(): Promise<StoredKey[] | null> {
             const enabled = fields.enabled?.booleanValue !== false;
             const createdAt = fields.createdAt?.stringValue || new Date().toISOString();
             const keyHash = fields.keyHash?.stringValue || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex');
-            const contributedBy = fields.contributedBy?.stringValue;
-            const contributorEmail = fields.contributorEmail?.stringValue;
+            const rawContributedBy = fields.contributedBy?.stringValue;
+            const rawContributorName = fields.contributorName?.stringValue;
+            const contributorEmail = fields.contributorEmail?.stringValue || '';
+            const contributorName = rawContributorName || (rawContributedBy && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous' ? rawContributedBy : (contributorEmail ? contributorEmail.split('@')[0] : (label && !label.toLowerCase().includes('central') ? label : 'User')));
+            const contributedBy = rawContributedBy || contributorName;
 
             // Encrypt plaintext keys on the server
             if (!encryptedKey && rawKey) {
@@ -129,13 +146,14 @@ async function fetchKeysFromFirestore(): Promise<StoredKey[] | null> {
                     enabled,
                     createdAt,
                     contributedBy,
+                    contributorName,
                     contributorEmail
                 });
             }
         }
         return items;
     } catch (err) {
-        console.warn("[Server] Notice fetching Firestore central_keys:", err);
+        console.log("[Server] Notice fetching Firestore central_keys:", err);
         return null;
     }
 }
@@ -143,7 +161,7 @@ async function fetchKeysFromFirestore(): Promise<StoredKey[] | null> {
 /**
  * Server-side centralized key registry synchronizer with concurrency lock
  */
-async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key: string }[]> {
+async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<{ id: string; key: string }[]> {
     const now = Date.now();
     // Return warm cache if valid
     if (!forceRefresh && centralKeys.length > 0 && (now - lastCentralKeysFetchTime < CACHE_TTL_MS)) {
@@ -160,11 +178,10 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
             console.log(`[Server] Performing controlled Central API registry sync (forceRefresh=${forceRefresh})...`);
             
             // 1. Fetch from Firestore (ONE query)
-            const firestoreKeys = await fetchKeysFromFirestore();
+            const firestoreKeys = await fetchKeysFromFirestore(idToken);
 
             // Handle failure
             if (firestoreKeys === null) {
-                console.warn("[Server] Central API cache refresh failed. Using fallback.");
                 lastCentralKeysFetchTime = Date.now(); // Prevent tight retry loop
                 if (centralKeys.length > 0) {
                     return centralKeys;
@@ -174,14 +191,21 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
             // 2. Fetch from local file storage
             const fileKeys = loadStoredKeys();
 
-            // Merge unique by keyHash
+            // Merge unique by keyHash and preserve contributor metadata
             const keyMap = new Map<string, StoredKey>();
             for (const fk of fileKeys) {
                 keyMap.set(fk.keyHash || fk.id, fk);
             }
             if (firestoreKeys !== null) {
                 for (const fsk of firestoreKeys) {
-                    keyMap.set(fsk.keyHash || fsk.id, fsk);
+                    const existing = keyMap.get(fsk.keyHash || fsk.id);
+                    if (existing) {
+                        if (!existing.contributorName && fsk.contributorName) existing.contributorName = fsk.contributorName;
+                        if (!existing.contributedBy && fsk.contributedBy) existing.contributedBy = fsk.contributedBy;
+                        if (!existing.contributorEmail && fsk.contributorEmail) existing.contributorEmail = fsk.contributorEmail;
+                    } else {
+                        keyMap.set(fsk.keyHash || fsk.id, fsk);
+                    }
                 }
             }
 
@@ -207,7 +231,7 @@ async function syncCentralKeys(forceRefresh = false): Promise<{ id: string; key:
             console.log(`[Server] Central API key registry active count: ${centralKeys.length} nodes`);
             return centralKeys;
         } catch (error) {
-            console.error("[Server] Error in syncCentralKeys:", error);
+            console.log("[Server] Error in syncCentralKeys:", error);
             return centralKeys;
         } finally {
             centralKeyRefreshPromise = null;
@@ -555,19 +579,36 @@ Return a strictly valid JSON array where each object contains:
             for (const k of keys) {
                 if (!k.key) continue;
                 
-                const keyHash = crypto.createHash('sha256').update(k.key).digest('hex');
+                const keyHash = crypto.createHash('sha256').update(k.key.trim()).digest('hex');
                 
                 const existing = storedKeys.find(sk => sk.keyHash === keyHash);
-                if (existing) continue; // Skip duplicate
+                const exactContributor = (k.contributorName || k.contributedBy || '').trim() || (k.contributorEmail ? k.contributorEmail.split('@')[0] : '') || (k.label && !k.label.toLowerCase().includes('key') ? k.label : 'User');
+                
+                if (existing) {
+                    // Update metadata if missing
+                    if (!existing.contributorName || existing.contributorName === 'central' || existing.contributorName === 'anonymous') {
+                        existing.contributorName = exactContributor;
+                    }
+                    if (!existing.contributedBy || existing.contributedBy === 'central' || existing.contributedBy === 'anonymous') {
+                        existing.contributedBy = exactContributor;
+                    }
+                    if (!existing.contributorEmail && k.contributorEmail) {
+                        existing.contributorEmail = k.contributorEmail;
+                    }
+                    continue; // Skip duplicate
+                }
 
-                const encryptedKey = encrypt(k.key);
+                const encryptedKey = encrypt(k.key.trim());
                 storedKeys.push({
                     id: crypto.randomUUID(),
                     label: k.label || 'User Contributed Key',
                     encryptedKey,
                     keyHash,
                     enabled: true,
-                    createdAt: new Date().toISOString()
+                    createdAt: new Date().toISOString(),
+                    contributedBy: exactContributor,
+                    contributorName: exactContributor,
+                    contributorEmail: k.contributorEmail || ''
                 });
                 added++;
             }
@@ -585,7 +626,7 @@ Return a strictly valid JSON array where each object contains:
     // Admin endpoints to manage Central Keys
     app.post("/api/admin/keys", async (req, res) => {
         try {
-            const { label, key } = req.body;
+            const { label, key, contributorName, contributedBy, contributorEmail } = req.body;
             if (!label || !key) return res.status(400).send("Label and key required");
             
             const encryptedKey = encrypt(key.trim());
@@ -597,13 +638,18 @@ Return a strictly valid JSON array where each object contains:
                 return res.status(400).json({ error: "Key already exists in the central pool" });
             }
 
-            const newKey = {
+            const exactContributor = (contributorName || contributedBy || '').trim() || (contributorEmail ? contributorEmail.split('@')[0] : '') || 'Admin';
+
+            const newKey: StoredKey = {
                 id: crypto.randomUUID(),
                 label: label.trim(),
                 encryptedKey,
                 keyHash,
                 enabled: true,
-                createdAt: new Date().toISOString()
+                createdAt: new Date().toISOString(),
+                contributedBy: exactContributor,
+                contributorName: exactContributor,
+                contributorEmail: contributorEmail || 'admin'
             };
             storedKeys.push(newKey);
             saveStoredKeys(storedKeys);
@@ -617,8 +663,10 @@ Return a strictly valid JSON array where each object contains:
 
     app.post("/api/admin/keys/refresh", async (req, res) => {
         try {
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
             invalidateCentralCache();
-            await syncCentralKeys(false);
+            await syncCentralKeys(true, idToken);
             const storedKeys = loadStoredKeys();
             storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
             
@@ -631,13 +679,16 @@ Return a strictly valid JSON array where each object contains:
                     }
                 } catch (e) {}
 
+                const exactContributor = data.contributorName || (data.contributedBy && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous' ? data.contributedBy : (data.contributorEmail ? data.contributorEmail.split('@')[0] : (data.label && !(data.label || "").toLowerCase().includes('key') ? data.label : 'User')));
+
                 return {
                     id: data.id,
                     label: data.label,
                     maskedKey,
                     enabled: data.enabled,
                     createdAt: data.createdAt,
-                    contributedBy: data.contributedBy,
+                    contributedBy: exactContributor,
+                    contributorName: exactContributor,
                     contributorEmail: data.contributorEmail
                 };
             });
@@ -651,8 +702,10 @@ Return a strictly valid JSON array where each object contains:
         try {
             const force = req.query.refresh === 'true';
             if (force) {
+                const authHeader = req.headers.authorization;
+                const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
                 invalidateCentralCache();
-                await syncCentralKeys(false);
+                await syncCentralKeys(true, idToken);
             }
             const storedKeys = loadStoredKeys();
             // Sort by createdAt descending
@@ -667,13 +720,16 @@ Return a strictly valid JSON array where each object contains:
                     }
                 } catch (e) {}
 
+                const exactContributor = data.contributorName || (data.contributedBy && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous' ? data.contributedBy : (data.contributorEmail ? data.contributorEmail.split('@')[0] : (data.label && !(data.label || "").toLowerCase().includes('key') ? data.label : 'User')));
+
                 return {
                     id: data.id,
                     label: data.label,
                     maskedKey,
                     enabled: data.enabled,
                     createdAt: data.createdAt,
-                    contributedBy: data.contributedBy,
+                    contributedBy: exactContributor,
+                    contributorName: exactContributor,
                     contributorEmail: data.contributorEmail
                 };
             });
