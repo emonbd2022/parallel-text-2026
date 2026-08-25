@@ -40,13 +40,20 @@ export const generateCategoriesBatch = async (
        headers: { 'Content-Type': 'application/json' },
        body: JSON.stringify({ items, model, virtualKeyId: apiKey, localKeys, isAdmin, hasExplicitAdminGrant })
     });
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      throw new Error("Central API backend routing error: production endpoint returned HTML instead of JSON.");
+    }
     if (!res.ok) {
         let errMsg = await res.text();
         try {
             const errObj = JSON.parse(errMsg);
             if (errObj.error) errMsg = errObj.error;
         } catch {}
-        throw new Error(errMsg);
+        throw new Error(errMsg || `Server error ${res.status}`);
+    }
+    if (!contentType.includes('application/json')) {
+      throw new Error(`Invalid response format from Central API (received ${contentType || 'unknown'}). Expected JSON.`);
     }
     return await res.json();
   }

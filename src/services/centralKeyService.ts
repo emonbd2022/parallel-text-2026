@@ -248,59 +248,31 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
     try {
       // 1. First priority: Server-side Central Key Registry endpoint
       const res = await fetch(`/api/central-keys-pool${forceRefresh ? '?refresh=true' : ''}`);
-      if (res.ok) {
-        const contentType = res.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const data = await res.json();
-          if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
-            const mapped = data.keys.map((sk: any, idx: number) => ({
-              id: sk.id || `central-${idx}`,
-              label: sk.label || `Central Pool Node ${idx + 1}`,
-              key: sk.id || `central-${idx}`, // Virtual node ID
-              maskedKey: '••••••••',
-              keyHash: sk.id || `central-${idx}`,
-              contributedBy: 'central-pool',
-              enabled: true,
-              createdAt: new Date().toISOString()
-            }));
-            cachedCentralKeys = mapped;
-            lastCentralKeysFetchTime = Date.now();
-            return mapped;
-          }
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        console.warn('[Central Key Service] Backend routing error: /api/central-keys-pool returned HTML instead of JSON.');
+        return cachedCentralKeys || [];
+      }
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
+          const mapped = data.keys.map((sk: any, idx: number) => ({
+            id: sk.id || `central-${idx}`,
+            label: sk.label || `Central Pool Node ${idx + 1}`,
+            key: sk.id || `central-${idx}`, // Virtual node ID
+            maskedKey: '••••••••',
+            keyHash: sk.id || `central-${idx}`,
+            contributedBy: 'central-pool',
+            enabled: true,
+            createdAt: new Date().toISOString()
+          }));
+          cachedCentralKeys = mapped;
+          lastCentralKeysFetchTime = Date.now();
+          return mapped;
         }
       }
     } catch (e) {
       console.log('[Central Key Service] Server pool endpoint notice:', e);
-    }
-
-    // Direct Firestore fallback for client (e.g. Vercel deployment)
-    if (db) {
-      try {
-        const docSnap = await getDoc(doc(db, 'central_keys', 'APIkeys'));
-        recordFirestoreRead('central_keys', 1, 'fetchCentralKeys:directPool');
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          const rawKeys = Array.isArray(data.keys) ? data.keys : [];
-          const activeKeys = rawKeys.filter((k: any) => k.enabled !== false);
-          if (activeKeys.length > 0) {
-            const mapped = activeKeys.map((k: any, idx: number) => ({
-              id: k.id || `central-${idx}`,
-              label: `Central Pool Node ${idx + 1}`,
-              key: k.id || `central-${idx}`, // Virtual node handle (never raw key)
-              maskedKey: '••••••••',
-              keyHash: k.keyHash || k.id,
-              contributedBy: 'central-pool',
-              enabled: true,
-              createdAt: k.createdAt || new Date().toISOString()
-            }));
-            cachedCentralKeys = mapped;
-            lastCentralKeysFetchTime = Date.now();
-            return mapped;
-          }
-        }
-      } catch (fsErr) {
-        console.log('[Central Key Service] Direct Firestore pool notice:', fsErr);
-      }
     }
 
     return cachedCentralKeys || [];

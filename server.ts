@@ -314,14 +314,14 @@ function invalidateCentralCache() {
     console.log('[Server] Central API registry cache invalidated (event-driven).');
 }
 
+export const app = express();
+const PORT = 3000;
+
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+
 async function startServer() {
     await syncCentralKeys(); // Initial sync
-
-    const app = express();
-    const PORT = 3000;
-
-    app.use(cors());
-    app.use(express.json({ limit: '50mb' }));
 
     // Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
     async function getRealKey(virtualKeyId: string): Promise<string> {
@@ -396,7 +396,8 @@ async function startServer() {
 
     app.post("/api/central-generate", async (req, res) => {
         try {
-            const { items, config, virtualKeyId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            const { items, config, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            const virtualKeyId = vId || nodeId;
             
             // Central API Eligibility Check
             let isEligible = false;
@@ -505,13 +506,14 @@ Return a strictly valid JSON array where each object contains:
             res.json(results);
         } catch (error: any) {
             console.error("Central API Error:", error);
-            res.status(500).send(error.message || "Internal Server Error");
+            res.status(500).json({ error: error.message || "Internal Server Error" });
         }
     });
 
     app.post("/api/central-category", async (req, res) => {
         try {
-            const { items, model, virtualKeyId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            const { items, model, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            const virtualKeyId = vId || nodeId;
             
             // Central API Eligibility Check
             let isEligible = false;
@@ -640,7 +642,7 @@ Return a strictly valid JSON array where each object contains:
             res.json(results);
         } catch (error: any) {
             console.error("Central API Error:", error);
-            res.status(500).send(error.message || "Internal Server Error");
+            res.status(500).json({ error: error.message || "Internal Server Error" });
         }
     });
 
@@ -894,8 +896,13 @@ Return a strictly valid JSON array where each object contains:
             }
             res.json({ success: true });
         } catch (e: any) {
-            res.status(500).send(e.message);
+            res.status(500).json({ error: e.message });
         }
+    });
+
+    // Catch-all for API endpoints to ensure API requests never fall back to index.html
+    app.all('/api/*all', (req, res) => {
+        res.status(404).json({ error: `Central API endpoint ${req.method} ${req.path} not found` });
     });
 
     // Vite middleware for development
