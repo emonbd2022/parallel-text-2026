@@ -323,15 +323,24 @@ async function startServer() {
     app.use(cors());
     app.use(express.json({ limit: '50mb' }));
 
-    // Helper to map a virtual key ID like 'central-5' to a real key
+    // Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
     async function getRealKey(virtualKeyId: string): Promise<string> {
         await syncCentralKeys();
         if (centralKeys.length > 0) {
-            let index = 0;
-            if (virtualKeyId && virtualKeyId.startsWith('central-')) {
-                const num = parseInt(virtualKeyId.split('-')[1], 10);
-                if (!isNaN(num)) index = num;
+            let index = -1;
+            if (virtualKeyId) {
+                if (virtualKeyId.startsWith('central-')) {
+                    const num = parseInt(virtualKeyId.split('-')[1], 10);
+                    if (!isNaN(num) && num >= 0 && num < centralKeys.length) {
+                        index = num;
+                    }
+                }
+                if (index === -1) {
+                    const foundIdx = centralKeys.findIndex(k => k.id === virtualKeyId);
+                    if (foundIdx !== -1) index = foundIdx;
+                }
             }
+            if (index === -1) index = 0;
             return centralKeys[index % centralKeys.length].key;
         }
         if (process.env.GEMINI_API_KEY) {

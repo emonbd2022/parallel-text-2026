@@ -1702,7 +1702,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       }
 
       for (const key of keysToTest.slice(0, 5)) {
-          if (key.key.startsWith('central-')) {
+          if (config.apiMode === 'central' || key.key.startsWith('central-') || !key.key.startsWith('AIza')) {
               hasValidKey = true;
               break;
           }

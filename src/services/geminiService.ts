@@ -24,7 +24,7 @@ export const generateMetadataBatch = async (
   isAdmin?: boolean,
   hasExplicitAdminGrant?: boolean
 ): Promise<Record<string, GeminiResponse>> => {
-  if (apiKey.startsWith('central-')) {
+  if (apiKey.startsWith('central-') || !apiKey.startsWith('AIza')) {
     if (onProgress) onProgress("Creating titles & keywords (Central)...");
     const res = await fetch('/api/central-generate', {
        method: 'POST',
@@ -214,6 +214,9 @@ Return a strictly valid JSON array where each object contains:
  */
 export async function validateGeminiApiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
   const clean = apiKey.trim();
+  if (clean.startsWith('central-') || !clean.startsWith('AIza')) {
+    return { valid: true };
+  }
   if (!clean || clean.length < 15 || clean === 'abc' || clean === 'xyz' || clean.toLowerCase().includes('demo') || clean.toLowerCase().includes('test')) {
     return { valid: false, error: 'Invalid API key format or demo placeholder.' };
   }

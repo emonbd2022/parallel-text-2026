@@ -33,7 +33,7 @@ export const generateCategoriesBatch = async (
   isAdmin?: boolean,
   hasExplicitAdminGrant?: boolean
 ): Promise<Record<string, { category: string }>> => {
-  if (apiKey.startsWith('central-')) {
+  if (apiKey.startsWith('central-') || !apiKey.startsWith('AIza')) {
     if (onProgress) onProgress("Getting categories (Central)...");
     const res = await fetch('/api/central-category', {
        method: 'POST',

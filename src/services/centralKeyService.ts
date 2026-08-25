@@ -286,7 +286,7 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
             const mapped = activeKeys.map((k: any, idx: number) => ({
               id: k.id || `central-${idx}`,
               label: `Central Pool Node ${idx + 1}`,
-              key: k.key || k.id || `central-${idx}`,
+              key: k.id || `central-${idx}`, // Virtual node handle (never raw key)
               maskedKey: '••••••••',
               keyHash: k.keyHash || k.id,
               contributedBy: 'central-pool',
