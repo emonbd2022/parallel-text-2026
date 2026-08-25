@@ -395,7 +395,7 @@ export default function App() {
     try {
       const fsKeys = await fetchCentralKeysFromFirestore(forceRefresh);
       const validFsKeys = fsKeys.filter(
-        k => k.enabled !== false && k.key && !k.key.startsWith('central-') && k.key.trim().length > 5
+        k => k.enabled !== false && k.key && (k.key.startsWith('central-') || k.key.trim().length > 5)
       );
 
       if (validFsKeys.length > 0) {
@@ -441,11 +441,9 @@ export default function App() {
     return [];
   };
 
-  // Fetch central keys pool whenever Central API mode is active
+  // Fetch central keys pool on mount and whenever Central API mode is active
   useEffect(() => {
-    if (config.apiMode === 'central') {
-      fetchCentralKeysPool();
-    }
+    fetchCentralKeysPool();
   }, [config.apiMode]);
 
   useEffect(() => {

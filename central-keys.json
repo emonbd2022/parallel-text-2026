@@ -126,5 +126,16 @@
     "keyHash": "d80e2c209490b105584bbaa4534b567aaf51edc9a3b53999dc21baa4bf4b8994",
     "enabled": true,
     "createdAt": "2026-08-25T10:14:05.565Z"
+  },
+  {
+    "id": "1bbdbc2e-b7fc-417b-9f55-fad80c9038a4",
+    "label": "test-user-key",
+    "encryptedKey": "31d5a2d4c5102e4c12be817a:e2e4f3e76035ef96dcd945b3a11c87f3:1c6065fc90c0aca1ec7436f490af1e66f425765a788e",
+    "keyHash": "9ee553c2161e890edcc0f5ce146c9efc991e5f3612d460c112eaa76c2e564d82",
+    "enabled": true,
+    "createdAt": "2026-08-25T11:51:20.967Z",
+    "contributedBy": "TestUser",
+    "contributorName": "TestUser",
+    "contributorEmail": ""
   }
 ]
