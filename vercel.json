@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "https://ais-pre-4awvondozubiwytgmjuk4v-619090622501.asia-southeast1.run.app/api/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

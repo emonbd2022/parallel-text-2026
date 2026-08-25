@@ -176,8 +176,8 @@ service cloud.firestore {
     // Client users retrieve anonymous virtual nodes via server-side cached registry.
     // =========================================================
     match /central_keys/{keyDocId} {
-      // Read: Admin only (prevents multi-user document read spikes on Firestore)
-      allow read: if isAdmin();
+      // Read: Authenticated users can read the single central registry document (encrypted/masked metadata)
+      allow read: if isAuthenticated();
 
       // Write: Admin only (single document central_keys/APIkeys updated via server API / admin)
       allow write: if isAdmin();

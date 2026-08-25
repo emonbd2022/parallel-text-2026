@@ -203,29 +203,5 @@ export const INITIAL_CENTRAL_KEYS: InitialCentralKeyRecord[] = [
     contributedBy: "Community Contributor",
     contributorName: "Community Contributor",
     contributorEmail: ""
-  },
-  {
-    id: "1bbdbc2e-b7fc-417b-9f55-fad80c9038a4",
-    label: "test-user-key",
-    encryptedKey: "31d5a2d4c5102e4c12be817a:e2e4f3e76035ef96dcd945b3a11c87f3:1c6065fc90c0aca1ec7436f490af1e66f425765a788e",
-    maskedKey: "AIzaSy••••••••2345",
-    keyHash: "9ee553c2161e890edcc0f5ce146c9efc991e5f3612d460c112eaa76c2e564d82",
-    enabled: true,
-    createdAt: "2026-08-25T11:51:20.967Z",
-    contributedBy: "TestUser",
-    contributorName: "TestUser",
-    contributorEmail: ""
-  },
-  {
-    id: "98d63d7d-cda5-4b58-badb-3ea6e4a98db4",
-    label: "My New Project Key",
-    encryptedKey: "332651f6ac73f911282ea9df:79aa9b578dac496035cc97aab8e9b23d:9e5a9cf47742660678bd47096f978f1950ab1f290921525e0b9b03b2f15a70f79ae078a2cfc43c",
-    maskedKey: "AIzaSy••••••••2345",
-    keyHash: "0db1d89a4e60cad1885057e9b2187d37e6d3d9f5e60695bbedae96c69322d35b",
-    enabled: true,
-    createdAt: "2026-08-25T12:21:37.989Z",
-    contributedBy: "Shahin Alam Emon",
-    contributorName: "Shahin Alam Emon",
-    contributorEmail: "reactoremon2022@gmail.com"
   }
 ];
