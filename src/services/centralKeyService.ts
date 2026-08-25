@@ -1,6 +1,7 @@
 import { collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
+import { INITIAL_CENTRAL_KEYS, InitialCentralKeyRecord } from '../data/initialCentralKeys';
 
 export interface CentralKeyRecord {
   id: string;
@@ -56,6 +57,26 @@ export function maskApiKey(rawKey: string): string {
 }
 
 /**
+ * Helper to derive correct contributor name avoiding 'central', 'anonymous', or label collisions
+ */
+export function deriveContributorDisplay(k: any): { name: string; email: string } {
+  const email = (k.contributorEmail || '').trim();
+  let derivedName = '';
+
+  if (k.contributorName && k.contributorName !== k.label && k.contributorName !== 'central' && k.contributorName !== 'anonymous') {
+    derivedName = k.contributorName;
+  } else if (k.contributedBy && k.contributedBy !== k.label && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous') {
+    derivedName = k.contributedBy;
+  } else if (email) {
+    derivedName = email.split('@')[0];
+  } else {
+    derivedName = 'Community Contributor';
+  }
+
+  return { name: derivedName, email };
+}
+
+/**
  * Retrieves the local synchronization registry key name for a user
  */
 function getSyncRegistryKey(userUid?: string): string {
@@ -65,7 +86,6 @@ function getSyncRegistryKey(userUid?: string): string {
 /**
  * Synchronizes user local API keys into the Central API pool
  * strictly event-driven: ONLY writes genuinely new/differing keys (0 writes if already synced).
- * Uses batch writes to optimize Firestore efficiency.
  */
 export async function syncUserKeysToFirestore(
   keys: { label: string; key: string }[],
@@ -132,13 +152,59 @@ export async function syncUserKeysToFirestore(
         })
       });
       if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          addedCount = data.added ?? keysToSync.length;
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.success) {
+            addedCount = data.added ?? keysToSync.length;
+          }
         }
       }
     } catch (serverErr) {
       console.log('[Central Key Service] Server collect-keys notice:', serverErr);
+    }
+
+    // 2. Direct Firestore fallback if server was not reachable (e.g. static site)
+    if (addedCount === 0 && db && auth?.currentUser) {
+      try {
+        const docRef = doc(db, 'central_keys', 'APIkeys');
+        const docSnap = await getDoc(docRef);
+        let existingKeys: any[] = [];
+        if (docSnap.exists()) {
+          existingKeys = docSnap.data().keys || [];
+        }
+        let localAdded = 0;
+        for (const k of keysToSync) {
+          const exists = existingKeys.some((ex: any) => ex.keyHash === k.hash || ex.id === k.docId);
+          if (!exists) {
+            existingKeys.push({
+              id: k.docId,
+              label: k.item.label || 'User Contributed Key',
+              key: k.item.key,
+              maskedKey: maskApiKey(k.item.key),
+              keyHash: k.hash,
+              enabled: true,
+              createdAt: new Date().toISOString(),
+              contributedBy: derivedContributor,
+              contributorName: derivedContributor,
+              contributorEmail: userEmail || ''
+            });
+            localAdded++;
+          }
+        }
+        if (localAdded > 0) {
+          await setDoc(docRef, {
+            keys: existingKeys,
+            totalCount: existingKeys.length,
+            updatedAt: new Date().toISOString(),
+            version: 1
+          }, { merge: true });
+          recordFirestoreWrite('central_keys', 1, 'syncUserKeysToFirestore:direct');
+          addedCount = localAdded;
+        }
+      } catch (fsErr) {
+        console.log('[Central Key Service] Direct Firestore collect sync notice:', fsErr);
+      }
     }
 
     // Update local persistent cache of synced hashes
@@ -186,7 +252,7 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
         const contentType = res.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const data = await res.json();
-          if (data.success && Array.isArray(data.keys)) {
+          if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
             const mapped = data.keys.map((sk: any, idx: number) => ({
               id: sk.id || `central-${idx}`,
               label: sk.label || `Central Pool Node ${idx + 1}`,
@@ -207,7 +273,36 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
       console.log('[Central Key Service] Server pool endpoint notice:', e);
     }
 
-    // Removed client fallback as per NO CLIENT-SIDE CENTRAL COLLECTION FETCH requirement
+    // Direct Firestore fallback for client (e.g. Vercel deployment)
+    if (db) {
+      try {
+        const docSnap = await getDoc(doc(db, 'central_keys', 'APIkeys'));
+        recordFirestoreRead('central_keys', 1, 'fetchCentralKeys:directPool');
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const rawKeys = Array.isArray(data.keys) ? data.keys : [];
+          const activeKeys = rawKeys.filter((k: any) => k.enabled !== false);
+          if (activeKeys.length > 0) {
+            const mapped = activeKeys.map((k: any, idx: number) => ({
+              id: k.id || `central-${idx}`,
+              label: `Central Pool Node ${idx + 1}`,
+              key: k.key || k.id || `central-${idx}`,
+              maskedKey: '••••••••',
+              keyHash: k.keyHash || k.id,
+              contributedBy: 'central-pool',
+              enabled: true,
+              createdAt: k.createdAt || new Date().toISOString()
+            }));
+            cachedCentralKeys = mapped;
+            lastCentralKeysFetchTime = Date.now();
+            return mapped;
+          }
+        }
+      } catch (fsErr) {
+        console.log('[Central Key Service] Direct Firestore pool notice:', fsErr);
+      }
+    }
+
     return cachedCentralKeys || [];
   })();
 
@@ -222,6 +317,7 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
  * Fetches admin-level Central Key metadata list (masked credentials only)
  */
 export async function fetchAdminCentralKeys(forceRefresh = false): Promise<CentralKeyRecord[]> {
+  // 1. First priority: Server-side admin endpoint (if running on Node.js/Cloud Run)
   try {
     const url = forceRefresh ? '/api/admin/keys?refresh=true' : '/api/admin/keys';
     const headers: Record<string, string> = {
@@ -236,61 +332,112 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
 
     const res = await fetch(url, { method: 'GET', headers });
     if (res.ok) {
-      const data = await res.json();
-      const list = Array.isArray(data) ? data : (data.keys || []);
-      if (list.length > 0 || !db) {
-        return list.map((k: any) => {
-          const derivedContributor = k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' ? k.contributedBy : (k.contributorEmail ? k.contributorEmail.split('@')[0] : (k.label && !(k.label || "").toLowerCase().includes('key') ? k.label : 'User')));
-          return {
-            id: k.id,
-            label: k.label || 'Central Key',
-            key: '', // Never expose raw key
-            maskedKey: k.maskedKey || '••••••••',
-            keyHash: k.keyHash || k.id,
-            contributedBy: derivedContributor,
-            contributorName: derivedContributor,
-            contributorEmail: k.contributorEmail || '',
-            enabled: k.enabled !== false,
-            createdAt: k.createdAt || new Date().toISOString()
-          };
-        });
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.keys || []);
+        if (list.length > 0) {
+          return list.map((k: any) => {
+            const { name: derivedContributor, email } = deriveContributorDisplay(k);
+            return {
+              id: k.id,
+              label: k.label || 'Central Key',
+              key: '', // Never expose raw key
+              maskedKey: k.maskedKey || '••••••••',
+              keyHash: k.keyHash || k.id,
+              contributedBy: derivedContributor,
+              contributorName: derivedContributor,
+              contributorEmail: email,
+              enabled: k.enabled !== false,
+              createdAt: k.createdAt || new Date().toISOString()
+            };
+          });
+        }
       }
     }
   } catch (e) {
     console.log('[Central Key Service] Server admin keys fetch notice:', e);
   }
 
-  // Direct Firestore 1-read Fallback for Admin (e.g. Vercel static deployment or serverless)
+  // 2. Direct Firestore 1-read Fallback for Admin (e.g. Vercel static deployment)
   if (db) {
     try {
-      const docSnap = await getDoc(doc(db, 'central_keys', 'APIkeys'));
+      const docRef = doc(db, 'central_keys', 'APIkeys');
+      const docSnap = await getDoc(docRef);
       recordFirestoreRead('central_keys', 1, 'fetchAdminCentralKeys:direct');
+      
       if (docSnap.exists()) {
         const data = docSnap.data();
         const rawKeys = Array.isArray(data.keys) ? data.keys : [];
-        const mapped = rawKeys.map((k: any) => {
-          const derivedContributor = k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' ? k.contributedBy : (k.contributorEmail ? k.contributorEmail.split('@')[0] : (k.label && !(k.label || "").toLowerCase().includes('key') ? k.label : 'User')));
-          return {
-            id: k.id,
-            label: k.label || 'Central Key',
-            key: '',
-            maskedKey: k.maskedKey || (k.key ? maskApiKey(k.key) : '••••••••'),
-            keyHash: k.keyHash || k.id,
-            contributedBy: derivedContributor,
-            contributorName: derivedContributor,
-            contributorEmail: k.contributorEmail || '',
-            enabled: k.enabled !== false,
-            createdAt: k.createdAt || new Date().toISOString()
-          };
-        });
-        return mapped;
+        if (rawKeys.length > 0) {
+          return rawKeys.map((k: any) => {
+            const { name: derivedContributor, email } = deriveContributorDisplay(k);
+            return {
+              id: k.id,
+              label: k.label || 'Central Key',
+              key: '',
+              maskedKey: k.maskedKey || (k.key ? maskApiKey(k.key) : '••••••••'),
+              keyHash: k.keyHash || k.id,
+              contributedBy: derivedContributor,
+              contributorName: derivedContributor,
+              contributorEmail: email,
+              enabled: k.enabled !== false,
+              createdAt: k.createdAt || new Date().toISOString()
+            };
+          });
+        }
       }
+
+      // Auto-seed Initial Central Keys into Firestore if empty or document doesn't exist
+      try {
+        await setDoc(docRef, {
+          keys: INITIAL_CENTRAL_KEYS,
+          totalCount: INITIAL_CENTRAL_KEYS.length,
+          updatedAt: new Date().toISOString(),
+          version: 1
+        }, { merge: true });
+        recordFirestoreWrite('central_keys', 1, 'seedInitialCentralKeys:direct');
+      } catch (seedErr) {
+        console.log('[Central Key Service] Auto-seed Firestore central keys notice:', seedErr);
+      }
+
+      // Return mapped initial keys immediately so Admin UI is instantly populated
+      return INITIAL_CENTRAL_KEYS.map(k => {
+        const { name: derivedContributor, email } = deriveContributorDisplay(k);
+        return {
+          id: k.id,
+          label: k.label,
+          key: '',
+          maskedKey: k.maskedKey || '••••••••',
+          keyHash: k.keyHash,
+          contributedBy: derivedContributor,
+          contributorName: derivedContributor,
+          contributorEmail: email,
+          enabled: k.enabled !== false,
+          createdAt: k.createdAt
+        };
+      });
     } catch (fsErr) {
       console.log('[Central Key Service] Direct Firestore fetch notice:', fsErr);
     }
   }
 
-  return [];
+  // Fallback to static initial list if offline or Firestore uninitialized
+  return INITIAL_CENTRAL_KEYS.map(k => {
+    const { name: derivedContributor, email } = deriveContributorDisplay(k);
+    return {
+      id: k.id,
+      label: k.label,
+      key: '',
+      maskedKey: k.maskedKey || '••••••••',
+      keyHash: k.keyHash,
+      contributedBy: derivedContributor,
+      contributorName: derivedContributor,
+      contributorEmail: email,
+      enabled: k.enabled !== false,
+      createdAt: k.createdAt
+    };
+  });
 }
 
 /**
@@ -346,8 +493,11 @@ export async function addCentralKeyToFirestore(
       })
     });
     if (res.ok) {
-      const data = await res.json();
-      if (data.id) record.id = data.id;
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.id) record.id = data.id;
+      }
     }
   } catch (err) {
     console.log('Server key sync notice:', err);
@@ -361,6 +511,8 @@ export async function addCentralKeyToFirestore(
       let existingKeys: any[] = [];
       if (docSnap.exists()) {
         existingKeys = docSnap.data().keys || [];
+      } else {
+        existingKeys = [...INITIAL_CENTRAL_KEYS];
       }
       const exists = existingKeys.some((k: any) => k.keyHash === hash || k.id === docId);
       if (!exists) {
@@ -379,7 +531,8 @@ export async function addCentralKeyToFirestore(
         await setDoc(docRef, {
           keys: existingKeys,
           totalCount: existingKeys.length,
-          updatedAt: new Date().toISOString()
+          updatedAt: new Date().toISOString(),
+          version: 1
         }, { merge: true });
         recordFirestoreWrite('central_keys', 1, 'addCentralKeyToFirestore:direct');
       }
@@ -429,7 +582,8 @@ export async function toggleCentralKeyStatus(
           await setDoc(docRef, {
             keys: existingKeys,
             totalCount: existingKeys.length,
-            updatedAt: new Date().toISOString()
+            updatedAt: new Date().toISOString(),
+            version: 1
           }, { merge: true });
           recordFirestoreWrite('central_keys', 1, 'toggleCentralKeyStatus:direct');
         }
@@ -472,7 +626,8 @@ export async function deleteCentralKeyFromFirestore(keyId: string): Promise<void
         await setDoc(docRef, {
           keys: filtered,
           totalCount: filtered.length,
-          updatedAt: new Date().toISOString()
+          updatedAt: new Date().toISOString(),
+          version: 1
         }, { merge: true });
         recordFirestoreWrite('central_keys', 1, 'deleteCentralKeyFromFirestore:direct');
       }

@@ -1,0 +1,231 @@
+export interface InitialCentralKeyRecord {
+  id: string;
+  label: string;
+  encryptedKey: string;
+  maskedKey: string;
+  keyHash: string;
+  enabled: boolean;
+  createdAt: string;
+  contributedBy?: string;
+  contributorName?: string;
+  contributorEmail?: string;
+}
+
+export const INITIAL_CENTRAL_KEYS: InitialCentralKeyRecord[] = [
+  {
+    id: "8276d682-2ca7-4689-95bc-e3565136f02b",
+    label: "Key 1",
+    encryptedKey: "c6f93cde90e18022e4a9a476:7188ddf313ee93308cdaf205220f4e58:768b582acb7c38b52de6cffa4a42914b727c040635ba96d06d88052415aeff3e272f5c0f6e8868",
+    maskedKey: "AIzaSy••••••••Hivo",
+    keyHash: "be004272f13bf6229d418f5a44907abf1f70bbf3f472010661054a2199049979",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.564Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "cee2a758-d005-4477-9617-3c6aeb67949e",
+    label: "Reactor",
+    encryptedKey: "b135ba026c2017a9b5040cfe:fab136f1a0f2c3fc94b72c3aaa386340:1b98f99b2d90cac7d52480b199465937435865026948aabc1c71cfa5f515f0aaf615ace432e8e7",
+    maskedKey: "AIzaSy••••••••8g0U",
+    keyHash: "211c657f4774649db24671afccf482840f46b35f5158e84a43c5d3c0b40f55f2",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.564Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "a7d6b36c-364f-43c9-929f-c8f2713b912b",
+    label: "Mika",
+    encryptedKey: "9f0155cb7f010cb14f9809eb:3b5ce8c5a0613b485c639e29ac139998:0b944a0f1e1d5c9490fc0cea80eac354821dd9b46bae5da4b59567adcdf12736a8038b7580096df8a65b95a54afbd8c7ce4d8e3ffb",
+    maskedKey: "AQ.Ab8••••••••9a2w",
+    keyHash: "f286b1b0e0b4c73a999e4aba988d94866837f070d953e5c2c2bd05d4a81d24cf",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.564Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "c3eb42b8-83d5-421c-a9c6-1bfdfc74bf7d",
+    label: "Nasrin",
+    encryptedKey: "0d6fb432971fa107a03f1579:b6d938c456e16a67352cd79ea5e50d84:3c0e29b8ba748de6da7b24a8d2a84dda02f0a280af77cbd68125debb07eb9a1e6ceef267279897",
+    maskedKey: "AIzaSy••••••••vtP8",
+    keyHash: "8949ab45c7c224d1125d8bb0e56c6bee0dfa7bb53e451746f4609006c7dd628a",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.564Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "83084b09-300e-4fb0-b30a-c0ae133ce3c9",
+    label: "Khorshed",
+    encryptedKey: "1d51069778ce5d55461b8b24:bd00c31871ddd8559232d72df64a950d:fb0eabe9d016720b105852d6d84d69121fe86f1eb7d65a0322ea80f9dbc49852f651f575f7613022338c7a5ae5782ff711c6a831e6",
+    maskedKey: "AQ.Ab8••••••••VrjA",
+    keyHash: "f45a642bac0445892b454fa65b70498d3a48853884f5aeeb3fce146c0cc092e3",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.564Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "ce21fd49-db09-4b0b-be0b-5db8da664fa3",
+    label: "Storage 2",
+    encryptedKey: "f91be84e9fbc7e4205618d0b:4ea7b260126ab25f8fc187991d213254:64f6ac7897c418097386b893802f956ad1a333bd70cecf895b6aea077f4213a008b4904ca041aa",
+    maskedKey: "AIzaSy••••••••TFxw",
+    keyHash: "c4b95af7c4fcc0722c5a8888324ed3b48c7cbe7b0f7e00cde19c2137f449e254",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.564Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "337772d6-2ab0-4a96-9916-422ad70daebf",
+    label: "Sakib",
+    encryptedKey: "f7effc99e1ac35c78b39daa5:74a931833156d82ec04e85416eb7cb13:5c447d6cc2ddfb2df684ca0831c7503b375645977acf60796bbb77179f9cc4532e4407f75c16d7",
+    maskedKey: "AIzaSy••••••••Qk-k",
+    keyHash: "aa1733cdb0aac07908df97bb2283cb4d42381676975ff8045fd1076025da360f",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.564Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "59c81bb2-b43c-4418-85b8-dca165c32eba",
+    label: "SharminOrpa99",
+    encryptedKey: "6d03ba17cf5ef8e845231193:67fc9f9de278b5c67bdd81cde1be466f:45e3778d70d4f90aa523ae397bbc91ed5019849643a1deee3edb4cda1cf75d51bc19473b2068b13fa3e85b7891c1bb086b3223539b",
+    maskedKey: "AQ.Ab8••••••••9CMA",
+    keyHash: "2383696896ba801ce125ac0dbe1d1051b751c70c1be36a76c600fb270e37d648",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.564Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "fb251abb-ab6c-47d3-8e1a-51717f97eec1",
+    label: "RifatSharmin",
+    encryptedKey: "c4212de6dad55a142551d9c5:3e0636bf21052967fa6dbcf08b57f343:a1c227d4bf6dfa6e955d8b875fb6181397b5b1a9ec949ad350a8ec5ee297e95bc71879d7e18eb395e6e0dcad850b554fcc47e7a238",
+    maskedKey: "AQ.Ab8••••••••ijAQ",
+    keyHash: "d94696a1cef6b55827197f8a7189712c1fb6482396f08079d48d76150f8391bb",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.565Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "53f7a4e4-d2b0-4fd9-b16f-814d359bfd31",
+    label: "MdAlamgir",
+    encryptedKey: "6a531a49c69730a85254351c:dcf7f7f06baba5e667946d46f688cabf:02c9df44784851356e1d7e370fc33b1e582cec2f89af52dcf4dec4fed0e7f035c6b3e3ef1877c7",
+    maskedKey: "AIzaSy••••••••wGuE",
+    keyHash: "364f04c7e49c96f727891eea516f15360be6ee2a5fd271f558d4c2a0d697bf20",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.565Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "3d6f6393-56bb-4161-88cb-d801c3db828f",
+    label: "Momin 1",
+    encryptedKey: "df05304c26d5228c2ff2f539:c35f2df35632751e49f13c9b5a73fc6d:f0a7d23ca2031c6715848e6c89612c6a0586bffbf759147ccf4085ed54c17312a2149e45626f76",
+    maskedKey: "AIzaSy••••••••ta6g",
+    keyHash: "8321b6dcf29329eec4a38d020070f007bdda29d8da06d9d8a93e5e1f808849fc",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.565Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "539f63fd-44f6-43f8-b366-19042cf1e501",
+    label: "Momin 2",
+    encryptedKey: "060e2f1d2e03343c6ba5a7a6:473bade91a97ec83238445ceb6f29742:8f4fde551f9f3ca1b91957513574ad6d04749dcd142fdf49ebc819900ce583e0958e2a018332aa",
+    maskedKey: "AIzaSy••••••••Y6is",
+    keyHash: "d2b5c37278b8eca61c00aca5a6ee946c59ca17f44cb24268be78aaa2f01c32ab",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.565Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "65c35723-a004-4aa6-8f34-cda560ddef6f",
+    label: ",Momin 3",
+    encryptedKey: "e291f27cd857cb54971f24a6:fc2984f3a0e73412bd4daaa42fad3eb2:a0178adc59ab2afeb3317d13441846f06fd538020b06d98b892b8ff319ba94a66a6f87c2858f63",
+    maskedKey: "AIzaSy••••••••FKDk",
+    keyHash: "8cb999906867d96615d96984414982627eec0cf540bab32430337b435c6ae447",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.565Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "3089c8c3-61ef-4c3d-aa97-a0ecd0acd701",
+    label: "Zihad 1",
+    encryptedKey: "27a04b1b392cbe95a7f88fa1:ba93d505b42a244aa2916dfa1bef7ab8:80a7f50613198d55b0fa82dc6bea6aeb0f5060086ada258d0f3a88406fbed7f6dff4958ee5e495",
+    maskedKey: "AIzaSy••••••••83tY",
+    keyHash: "4d9203eb5d8368676c883528a13bcc969865abfab437ba49c0fa9996930a1c60",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.565Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "db8a9b50-a787-4001-b95d-43126ab07707",
+    label: "Unknown 1",
+    encryptedKey: "af0a51ceba42c28f9da443e0:ebb2ca8eb7ee7385f647c5367c28406e:5b5e1adffa3e618b8a1d586f134802a62b97bdcf52a78ec58f8cbbaa677b467da28c180ef20321",
+    maskedKey: "AIzaSy••••••••pfnw",
+    keyHash: "24df60c58919247b3325c634c6ba05b40c1cfa8689f4bddcccb33d5d4a47fde8",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.565Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "bd83850f-39e6-45de-875d-288df5554e16",
+    label: "Unknown 2",
+    encryptedKey: "a4affa61bcead81818612d93:77a07a898d1f93e026aab71c4a8e216b:28bce688dfdc31a0ac03cf21275351faa191628ce908d3027e097609ff147d75e6c7db28bcfdc0",
+    maskedKey: "AIzaSy••••••••td74",
+    keyHash: "d80e2c209490b105584bbaa4534b567aaf51edc9a3b53999dc21baa4bf4b8994",
+    enabled: true,
+    createdAt: "2026-08-25T10:14:05.565Z",
+    contributedBy: "Community Contributor",
+    contributorName: "Community Contributor",
+    contributorEmail: ""
+  },
+  {
+    id: "1bbdbc2e-b7fc-417b-9f55-fad80c9038a4",
+    label: "test-user-key",
+    encryptedKey: "31d5a2d4c5102e4c12be817a:e2e4f3e76035ef96dcd945b3a11c87f3:1c6065fc90c0aca1ec7436f490af1e66f425765a788e",
+    maskedKey: "AIzaSy••••••••2345",
+    keyHash: "9ee553c2161e890edcc0f5ce146c9efc991e5f3612d460c112eaa76c2e564d82",
+    enabled: true,
+    createdAt: "2026-08-25T11:51:20.967Z",
+    contributedBy: "TestUser",
+    contributorName: "TestUser",
+    contributorEmail: ""
+  },
+  {
+    id: "98d63d7d-cda5-4b58-badb-3ea6e4a98db4",
+    label: "My New Project Key",
+    encryptedKey: "332651f6ac73f911282ea9df:79aa9b578dac496035cc97aab8e9b23d:9e5a9cf47742660678bd47096f978f1950ab1f290921525e0b9b03b2f15a70f79ae078a2cfc43c",
+    maskedKey: "AIzaSy••••••••2345",
+    keyHash: "0db1d89a4e60cad1885057e9b2187d37e6d3d9f5e60695bbedae96c69322d35b",
+    enabled: true,
+    createdAt: "2026-08-25T12:21:37.989Z",
+    contributedBy: "Shahin Alam Emon",
+    contributorName: "Shahin Alam Emon",
+    contributorEmail: "reactoremon2022@gmail.com"
+  }
+];

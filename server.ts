@@ -123,8 +123,18 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
             const rawContributedBy = kf.contributedBy?.stringValue;
             const rawContributorName = kf.contributorName?.stringValue;
             const contributorEmail = kf.contributorEmail?.stringValue || '';
-            const contributorName = rawContributorName || (rawContributedBy && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous' ? rawContributedBy : (contributorEmail ? contributorEmail.split('@')[0] : (label && !label.toLowerCase().includes('central') ? label : 'User')));
-            const contributedBy = rawContributedBy || contributorName;
+            
+            let contributorName = '';
+            if (rawContributorName && rawContributorName !== label && rawContributorName !== 'central' && rawContributorName !== 'anonymous') {
+                contributorName = rawContributorName;
+            } else if (rawContributedBy && rawContributedBy !== label && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous') {
+                contributorName = rawContributedBy;
+            } else if (contributorEmail) {
+                contributorName = contributorEmail.split('@')[0];
+            } else {
+                contributorName = 'Community Contributor';
+            }
+            const contributedBy = contributorName;
 
             // Encrypt plaintext keys if needed
             if (!encryptedKey && rawKey) {
@@ -640,7 +650,7 @@ Return a strictly valid JSON array where each object contains:
                 const keyHash = crypto.createHash('sha256').update(k.key.trim()).digest('hex');
                 
                 const existing = storedKeys.find(sk => sk.keyHash === keyHash);
-                const exactContributor = (k.contributorName || k.contributedBy || '').trim() || (k.contributorEmail ? k.contributorEmail.split('@')[0] : '') || (k.label && !k.label.toLowerCase().includes('key') ? k.label : 'User');
+                const exactContributor = (k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' ? k.contributedBy : '')).trim() || (k.contributorEmail ? k.contributorEmail.split('@')[0] : 'Community Contributor');
                 
                 if (existing) {
                     // Update metadata if missing
@@ -744,7 +754,17 @@ Return a strictly valid JSON array where each object contains:
                     }
                 } catch (e) {}
 
-                const exactContributor = data.contributorName || (data.contributedBy && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous' ? data.contributedBy : (data.contributorEmail ? data.contributorEmail.split('@')[0] : (data.label && !(data.label || "").toLowerCase().includes('key') ? data.label : 'User')));
+                const contributorEmail = data.contributorEmail || '';
+                let exactContributor = '';
+                if (data.contributorName && data.contributorName !== data.label && data.contributorName !== 'central' && data.contributorName !== 'anonymous') {
+                    exactContributor = data.contributorName;
+                } else if (data.contributedBy && data.contributedBy !== data.label && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous') {
+                    exactContributor = data.contributedBy;
+                } else if (contributorEmail) {
+                    exactContributor = contributorEmail.split('@')[0];
+                } else {
+                    exactContributor = 'Community Contributor';
+                }
 
                 return {
                     id: data.id,
@@ -795,7 +815,17 @@ Return a strictly valid JSON array where each object contains:
                     }
                 } catch (e) {}
 
-                const exactContributor = data.contributorName || (data.contributedBy && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous' ? data.contributedBy : (data.contributorEmail ? data.contributorEmail.split('@')[0] : (data.label && !(data.label || "").toLowerCase().includes('key') ? data.label : 'User')));
+                const contributorEmail = data.contributorEmail || '';
+                let exactContributor = '';
+                if (data.contributorName && data.contributorName !== data.label && data.contributorName !== 'central' && data.contributorName !== 'anonymous') {
+                    exactContributor = data.contributorName;
+                } else if (data.contributedBy && data.contributedBy !== data.label && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous') {
+                    exactContributor = data.contributedBy;
+                } else if (contributorEmail) {
+                    exactContributor = contributorEmail.split('@')[0];
+                } else {
+                    exactContributor = 'Community Contributor';
+                }
 
                 return {
                     id: data.id,

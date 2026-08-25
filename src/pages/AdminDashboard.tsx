@@ -1792,6 +1792,8 @@ export const AdminDashboard: React.FC = () => {
                             (k.label && k.label.toLowerCase().includes(q)) ||
                             (k.maskedKey && k.maskedKey.toLowerCase().includes(q)) ||
                             (k.contributorEmail && k.contributorEmail.toLowerCase().includes(q)) ||
+                            (k.contributorName && k.contributorName.toLowerCase().includes(q)) ||
+                            (k.contributedBy && k.contributedBy.toLowerCase().includes(q)) ||
                             k.id.toLowerCase().includes(q)
                           );
                         })
@@ -1834,7 +1836,19 @@ export const AdminDashboard: React.FC = () => {
                                 <span className="font-semibold text-purple-300 inline-flex items-center gap-1.5">
                                   <User className="w-3 h-3 text-purple-400 shrink-0" />
                                   <span className="truncate max-w-[170px]">
-                                    {key.contributorName || (key.contributedBy && key.contributedBy !== 'central' && key.contributedBy !== 'anonymous' ? key.contributedBy : (key.contributorEmail ? key.contributorEmail.split('@')[0] : (key.label && !key.label.toLowerCase().includes('key') ? key.label : 'User')))}
+                                    {(() => {
+                                      const email = key.contributorEmail || '';
+                                      if (key.contributorName && key.contributorName !== key.label && key.contributorName !== 'central' && key.contributorName !== 'anonymous') {
+                                        return key.contributorName;
+                                      }
+                                      if (key.contributedBy && key.contributedBy !== key.label && key.contributedBy !== 'central' && key.contributedBy !== 'anonymous') {
+                                        return key.contributedBy;
+                                      }
+                                      if (email) {
+                                        return email.split('@')[0];
+                                      }
+                                      return 'Community Contributor';
+                                    })()}
                                   </span>
                                 </span>
                                 {key.contributorEmail && (
