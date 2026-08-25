@@ -74,7 +74,7 @@ function saveStoredKeys(keys: StoredKey[]) {
 }
 
 /**
- * Fetches central keys from Firestore collection via REST API
+ * Fetches central keys from Firestore single document central_keys/APIkeys via REST API
  */
 async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | null> {
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
@@ -92,7 +92,7 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
     }
 
     try {
-        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys?pageSize=1000${apiKey ? `&key=${apiKey}` : ''}`;
+        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/APIkeys${apiKey ? `?key=${apiKey}` : ''}`;
         const headers: any = {};
         if (idToken) {
             headers['Authorization'] = `Bearer ${idToken}`;
@@ -100,35 +100,33 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
         
         const resp = await fetch(url, { headers });
         if (!resp.ok) {
-            const errBody = await resp.text();
-            // Downgrade to console.log to prevent it from being flagged as a critical error by the platform
+            if (resp.status === 404) {
+                return [];
+            }
             console.log(`[Server] Firestore REST fetch status ${resp.status} (Using local cache fallback)`);
             return null;
         }
         const data = (await resp.json()) as any;
-        if (!data.documents || !Array.isArray(data.documents)) {
-            return [];
-        }
+        const fields = data.fields || {};
+        const rawKeysArray = fields.keys?.arrayValue?.values || [];
 
         const items: StoredKey[] = [];
-        for (const doc of data.documents) {
-            const fields = doc.fields || {};
-            const docPath = doc.name || '';
-            const docId = docPath.split('/').pop() || '';
-
-            const rawKey = fields.key?.stringValue || '';
-            let encryptedKey = fields.encryptedKey?.stringValue || '';
-            const label = fields.label?.stringValue || 'Central Key';
-            const enabled = fields.enabled?.booleanValue !== false;
-            const createdAt = fields.createdAt?.stringValue || new Date().toISOString();
-            const keyHash = fields.keyHash?.stringValue || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex');
-            const rawContributedBy = fields.contributedBy?.stringValue;
-            const rawContributorName = fields.contributorName?.stringValue;
-            const contributorEmail = fields.contributorEmail?.stringValue || '';
+        for (const item of rawKeysArray) {
+            const kf = item.mapValue?.fields || {};
+            const id = kf.id?.stringValue || crypto.randomUUID();
+            const label = kf.label?.stringValue || 'Central Key';
+            const rawKey = kf.key?.stringValue || '';
+            let encryptedKey = kf.encryptedKey?.stringValue || '';
+            const keyHash = kf.keyHash?.stringValue || '';
+            const enabled = kf.enabled?.booleanValue !== false;
+            const createdAt = kf.createdAt?.stringValue || new Date().toISOString();
+            const rawContributedBy = kf.contributedBy?.stringValue;
+            const rawContributorName = kf.contributorName?.stringValue;
+            const contributorEmail = kf.contributorEmail?.stringValue || '';
             const contributorName = rawContributorName || (rawContributedBy && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous' ? rawContributedBy : (contributorEmail ? contributorEmail.split('@')[0] : (label && !label.toLowerCase().includes('central') ? label : 'User')));
             const contributedBy = rawContributedBy || contributorName;
 
-            // Encrypt plaintext keys on the server
+            // Encrypt plaintext keys if needed
             if (!encryptedKey && rawKey) {
                 if (rawKey.includes(':') && rawKey.length > 40) {
                     encryptedKey = rawKey;
@@ -139,10 +137,10 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
 
             if (encryptedKey || rawKey) {
                 items.push({
-                    id: fields.id?.stringValue || docId,
+                    id,
                     label,
                     encryptedKey: encryptedKey || encrypt(rawKey),
-                    keyHash,
+                    keyHash: keyHash || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex'),
                     enabled,
                     createdAt,
                     contributedBy,
@@ -153,8 +151,68 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
         }
         return items;
     } catch (err) {
-        console.log("[Server] Notice fetching Firestore central_keys:", err);
+        console.log("[Server] Notice fetching Firestore central_keys/APIkeys:", err);
         return null;
+    }
+}
+
+/**
+ * Saves all central keys to the single Firestore document central_keys/APIkeys
+ */
+async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string): Promise<boolean> {
+    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+    const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+    const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
+
+    if (!projectId) return false;
+
+    try {
+        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/APIkeys${apiKey ? `?key=${apiKey}` : ''}`;
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json'
+        };
+        if (idToken) {
+            headers['Authorization'] = `Bearer ${idToken}`;
+        }
+
+        const values = keys.map(k => ({
+            mapValue: {
+                fields: {
+                    id: { stringValue: k.id },
+                    label: { stringValue: k.label || 'Central Key' },
+                    encryptedKey: { stringValue: k.encryptedKey },
+                    keyHash: { stringValue: k.keyHash },
+                    enabled: { booleanValue: k.enabled !== false },
+                    createdAt: { stringValue: k.createdAt || new Date().toISOString() },
+                    contributedBy: { stringValue: k.contributedBy || 'central' },
+                    contributorName: { stringValue: k.contributorName || 'User' },
+                    contributorEmail: { stringValue: k.contributorEmail || '' }
+                }
+            }
+        }));
+
+        const body = {
+            fields: {
+                keys: {
+                    arrayValue: {
+                        values
+                    }
+                },
+                totalCount: { integerValue: keys.length.toString() },
+                updatedAt: { stringValue: new Date().toISOString() }
+            }
+        };
+
+        const resp = await fetch(url, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify(body)
+        });
+
+        return resp.ok;
+    } catch (e) {
+        console.log('[Server] Notice saving central_keys/APIkeys to Firestore:', e);
+        return false;
     }
 }
 
@@ -615,6 +673,9 @@ Return a strictly valid JSON array where each object contains:
             if (added > 0) {
                 saveStoredKeys(storedKeys);
                 invalidateCentralCache();
+                const authHeader = req.headers.authorization;
+                const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+                await saveKeysToFirestoreDocument(storedKeys, idToken);
             }
             res.json({ success: true, added, total: centralKeys.length });
         } catch (e: any) {
@@ -655,6 +716,10 @@ Return a strictly valid JSON array where each object contains:
             saveStoredKeys(storedKeys);
             
             invalidateCentralCache();
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            await saveKeysToFirestoreDocument(storedKeys, idToken);
+
             res.json({ id: newKey.id, label: newKey.label, enabled: true });
         } catch (e: any) {
             res.status(500).send(e.message);
@@ -685,14 +750,24 @@ Return a strictly valid JSON array where each object contains:
                     id: data.id,
                     label: data.label,
                     maskedKey,
-                    enabled: data.enabled,
+                    enabled: data.enabled !== false,
                     createdAt: data.createdAt,
                     contributedBy: exactContributor,
                     contributorName: exactContributor,
                     contributorEmail: data.contributorEmail
                 };
             });
-            res.json({ success: true, keys, count: keys.length });
+            const activeKeys = keys.filter(k => k.enabled).length;
+            const disabledKeys = keys.filter(k => !k.enabled).length;
+            res.json({
+                success: true,
+                keys,
+                totalKeys: keys.length,
+                activeKeys,
+                disabledKeys,
+                updatedAt: new Date().toISOString(),
+                version: 1
+            });
         } catch (e: any) {
             res.status(500).send(e.message);
         }
@@ -726,14 +801,23 @@ Return a strictly valid JSON array where each object contains:
                     id: data.id,
                     label: data.label,
                     maskedKey,
-                    enabled: data.enabled,
+                    enabled: data.enabled !== false,
                     createdAt: data.createdAt,
                     contributedBy: exactContributor,
                     contributorName: exactContributor,
                     contributorEmail: data.contributorEmail
                 };
             });
-            res.json(keys);
+            const activeKeys = keys.filter(k => k.enabled).length;
+            const disabledKeys = keys.filter(k => !k.enabled).length;
+            res.json({
+                keys,
+                totalKeys: keys.length,
+                activeKeys,
+                disabledKeys,
+                updatedAt: new Date().toISOString(),
+                version: 1
+            });
         } catch (e: any) {
             res.status(500).send(e.message);
         }
@@ -746,6 +830,10 @@ Return a strictly valid JSON array where each object contains:
             saveStoredKeys(storedKeys);
             
             invalidateCentralCache();
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            await saveKeysToFirestoreDocument(storedKeys, idToken);
+
             res.json({ success: true });
         } catch (e: any) {
             res.status(500).send(e.message);
@@ -761,6 +849,9 @@ Return a strictly valid JSON array where each object contains:
                 key.enabled = enabled;
                 saveStoredKeys(storedKeys);
                 invalidateCentralCache();
+                const authHeader = req.headers.authorization;
+                const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+                await saveKeysToFirestoreDocument(storedKeys, idToken);
             }
             res.json({ success: true });
         } catch (e: any) {

@@ -1,5 +1,5 @@
-import { collection, doc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
 
 export interface CentralKeyRecord {
@@ -85,7 +85,7 @@ export async function syncUserKeysToFirestore(
     const registryKey = getSyncRegistryKey(userUid);
     let syncedFingerprints: string[] = [];
     try {
-      const stored = sessionStorage.getItem(registryKey);
+      const stored = localStorage.getItem(registryKey) || sessionStorage.getItem(registryKey);
       if (stored) syncedFingerprints = JSON.parse(stored);
     } catch {}
 
@@ -109,11 +109,18 @@ export async function syncUserKeysToFirestore(
     let addedCount = 0;
     const derivedContributor = contributorName || (userEmail ? userEmail.split('@')[0] : 'User');
 
-    // 1. Sync to server-side registry (which handles server memory & encryption)
+    // 1. Sync to server-side registry (which handles server memory, AES-256-GCM encryption & single Firestore doc)
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (auth?.currentUser) {
+        try {
+          headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+        } catch {}
+      }
+
       const res = await fetch('/api/collect-keys', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           keys: keysToSync.map(k => ({
             label: k.item.label || 'User Contributed Key',
@@ -127,48 +134,19 @@ export async function syncUserKeysToFirestore(
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
-          addedCount = data.added || keysToSync.length;
+          addedCount = data.added ?? keysToSync.length;
         }
       }
     } catch (serverErr) {
       console.log('[Central Key Service] Server collect-keys notice:', serverErr);
     }
 
-    // 2. Also persist to Firestore if db is configured using a single writeBatch for optimal efficiency
-    if (db && keysToSync.length > 0) {
-      try {
-        const batch = writeBatch(db);
-        for (const { item, hash, docId } of keysToSync) {
-          const trimmedKey = item.key.trim();
-          const masked = maskApiKey(trimmedKey);
-          const record: CentralKeyRecord = {
-            id: docId,
-            label: item.label.trim() || 'Contributed Key',
-            key: trimmedKey,
-            maskedKey: masked,
-            keyHash: hash,
-            contributedBy: derivedContributor,
-            contributorName: derivedContributor,
-            contributorEmail: userEmail || '',
-            enabled: true,
-            createdAt: new Date().toISOString()
-          };
-
-          batch.set(doc(db, 'central_keys', docId), record, { merge: true });
-        }
-        await batch.commit();
-        recordFirestoreWrite('central_keys', keysToSync.length, 'syncUserKeysToFirestore:batch');
-        keysToSync.forEach(k => syncedSet.add(k.hash));
-        if (addedCount === 0) addedCount = keysToSync.length;
-      } catch (fsErr) {
-        console.log('[Central Key Service] Firestore batch write notice:', fsErr);
-      }
-    }
-
-    // Update local session cache of synced hashes
+    // Update local persistent cache of synced hashes
     try {
       keysToSync.forEach(k => syncedSet.add(k.hash));
-      sessionStorage.setItem(registryKey, JSON.stringify(Array.from(syncedSet)));
+      const arr = Array.from(syncedSet);
+      localStorage.setItem(registryKey, JSON.stringify(arr));
+      sessionStorage.setItem(registryKey, JSON.stringify(arr));
     } catch {}
 
     // Invalidate client cache if keys were added
@@ -240,53 +218,84 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
   }
 }
 
-import { auth } from '../lib/firebase';
-
 /**
  * Fetches admin-level Central Key metadata list (masked credentials only)
  */
 export async function fetchAdminCentralKeys(forceRefresh = false): Promise<CentralKeyRecord[]> {
   try {
-    const url = forceRefresh ? '/api/admin/keys/refresh' : '/api/admin/keys';
-    const method = forceRefresh ? 'POST' : 'GET';
+    const url = forceRefresh ? '/api/admin/keys?refresh=true' : '/api/admin/keys';
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
     };
     
     if (auth?.currentUser) {
-      headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
     }
 
-    const res = await fetch(url, { method, headers });
+    const res = await fetch(url, { method: 'GET', headers });
     if (res.ok) {
       const data = await res.json();
       const list = Array.isArray(data) ? data : (data.keys || []);
-      return list.map((k: any) => {
-        const derivedContributor = k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' ? k.contributedBy : (k.contributorEmail ? k.contributorEmail.split('@')[0] : (k.label && !(k.label || "").toLowerCase().includes('key') ? k.label : 'User')));
-        return {
-          id: k.id,
-          label: k.label,
-          key: '', // Never expose raw key
-          maskedKey: k.maskedKey || '••••••••',
-          keyHash: k.id,
-          contributedBy: derivedContributor,
-          contributorName: derivedContributor,
-          contributorEmail: k.contributorEmail,
-          enabled: k.enabled !== false,
-          createdAt: k.createdAt || new Date().toISOString()
-        };
-      });
+      if (list.length > 0 || !db) {
+        return list.map((k: any) => {
+          const derivedContributor = k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' ? k.contributedBy : (k.contributorEmail ? k.contributorEmail.split('@')[0] : (k.label && !(k.label || "").toLowerCase().includes('key') ? k.label : 'User')));
+          return {
+            id: k.id,
+            label: k.label || 'Central Key',
+            key: '', // Never expose raw key
+            maskedKey: k.maskedKey || '••••••••',
+            keyHash: k.keyHash || k.id,
+            contributedBy: derivedContributor,
+            contributorName: derivedContributor,
+            contributorEmail: k.contributorEmail || '',
+            enabled: k.enabled !== false,
+            createdAt: k.createdAt || new Date().toISOString()
+          };
+        });
+      }
     }
   } catch (e) {
-    console.log('[Central Key Service] Error fetching admin keys:', e);
+    console.log('[Central Key Service] Server admin keys fetch notice:', e);
   }
 
-  // Fallback to fetchCentralKeysFromFirestore if server API unavailable
-  return await fetchCentralKeysFromFirestore(forceRefresh);
+  // Direct Firestore 1-read Fallback for Admin (e.g. Vercel static deployment or serverless)
+  if (db) {
+    try {
+      const docSnap = await getDoc(doc(db, 'central_keys', 'APIkeys'));
+      recordFirestoreRead('central_keys', 1, 'fetchAdminCentralKeys:direct');
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const rawKeys = Array.isArray(data.keys) ? data.keys : [];
+        const mapped = rawKeys.map((k: any) => {
+          const derivedContributor = k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' ? k.contributedBy : (k.contributorEmail ? k.contributorEmail.split('@')[0] : (k.label && !(k.label || "").toLowerCase().includes('key') ? k.label : 'User')));
+          return {
+            id: k.id,
+            label: k.label || 'Central Key',
+            key: '',
+            maskedKey: k.maskedKey || (k.key ? maskApiKey(k.key) : '••••••••'),
+            keyHash: k.keyHash || k.id,
+            contributedBy: derivedContributor,
+            contributorName: derivedContributor,
+            contributorEmail: k.contributorEmail || '',
+            enabled: k.enabled !== false,
+            createdAt: k.createdAt || new Date().toISOString()
+          };
+        });
+        return mapped;
+      }
+    } catch (fsErr) {
+      console.log('[Central Key Service] Direct Firestore fetch notice:', fsErr);
+    }
+  }
+
+  return [];
 }
 
 /**
- * Adds a new Central Key directly to Firestore and Server
+ * Adds a new Central Key directly via Server (which encrypts and updates central_keys/APIkeys)
+ * and direct Firestore single-document fallback
  */
 export async function addCentralKeyToFirestore(
   label: string,
@@ -314,17 +323,20 @@ export async function addCentralKeyToFirestore(
     createdAt: new Date().toISOString()
   };
 
-  if (db) {
-    await setDoc(doc(db, 'central_keys', docId), record);
-    recordFirestoreWrite('central_keys', 1, 'addCentralKeyToFirestore');
-    cachedCentralKeys = null; // Invalidate cache
-  }
+  cachedCentralKeys = null; // Invalidate client cache
 
-  // Also sync to server API
+  // 1. Sync to server API
   try {
-    await fetch('/api/admin/keys', {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
+    }
+
+    const res = await fetch('/api/admin/keys', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         label: record.label,
         key: trimmedKey,
@@ -333,8 +345,47 @@ export async function addCentralKeyToFirestore(
         contributorEmail: userEmail || ''
       })
     });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.id) record.id = data.id;
+    }
   } catch (err) {
     console.log('Server key sync notice:', err);
+  }
+
+  // 2. Direct Firestore single-document fallback
+  if (db) {
+    try {
+      const docRef = doc(db, 'central_keys', 'APIkeys');
+      const docSnap = await getDoc(docRef);
+      let existingKeys: any[] = [];
+      if (docSnap.exists()) {
+        existingKeys = docSnap.data().keys || [];
+      }
+      const exists = existingKeys.some((k: any) => k.keyHash === hash || k.id === docId);
+      if (!exists) {
+        existingKeys.push({
+          id: docId,
+          label: record.label,
+          key: trimmedKey,
+          maskedKey: masked,
+          keyHash: hash,
+          enabled: true,
+          createdAt: record.createdAt,
+          contributedBy: exactName,
+          contributorName: exactName,
+          contributorEmail: userEmail || ''
+        });
+        await setDoc(docRef, {
+          keys: existingKeys,
+          totalCount: existingKeys.length,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        recordFirestoreWrite('central_keys', 1, 'addCentralKeyToFirestore:direct');
+      }
+    } catch (fsErr) {
+      console.log('Direct Firestore key write notice:', fsErr);
+    }
   }
 
   return record;
@@ -347,26 +398,45 @@ export async function toggleCentralKeyStatus(
   keyId: string,
   newEnabledStatus: boolean
 ): Promise<void> {
-  if (db) {
-    try {
-      await updateDoc(doc(db, 'central_keys', keyId), {
-        enabled: newEnabledStatus
-      });
-      recordFirestoreWrite('central_keys', 1, 'toggleCentralKeyStatus');
-      cachedCentralKeys = null; // Invalidate cache
-    } catch (e) {
-      console.log('Firestore update warning:', e);
-    }
-  }
+  cachedCentralKeys = null; // Invalidate client cache
 
   try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
+    }
+
     await fetch(`/api/admin/keys/${keyId}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ enabled: newEnabledStatus })
     });
   } catch (e) {
     console.log('Server patch warning:', e);
+  }
+
+  if (db) {
+    try {
+      const docRef = doc(db, 'central_keys', 'APIkeys');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const existingKeys: any[] = docSnap.data().keys || [];
+        const item = existingKeys.find((k: any) => k.id === keyId);
+        if (item) {
+          item.enabled = newEnabledStatus;
+          await setDoc(docRef, {
+            keys: existingKeys,
+            totalCount: existingKeys.length,
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+          recordFirestoreWrite('central_keys', 1, 'toggleCentralKeyStatus:direct');
+        }
+      }
+    } catch (fsErr) {
+      console.log('Direct Firestore key update notice:', fsErr);
+    }
   }
 }
 
@@ -374,21 +444,40 @@ export async function toggleCentralKeyStatus(
  * Deletes a key from Firestore and Server
  */
 export async function deleteCentralKeyFromFirestore(keyId: string): Promise<void> {
-  if (db) {
-    try {
-      await deleteDoc(doc(db, 'central_keys', keyId));
-      recordFirestoreWrite('central_keys', 1, 'deleteCentralKeyFromFirestore');
-      cachedCentralKeys = null; // Invalidate cache
-    } catch (e) {
-      console.log('Firestore delete warning:', e);
-    }
-  }
+  cachedCentralKeys = null; // Invalidate client cache
 
   try {
+    const headers: Record<string, string> = {};
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
+    }
+
     await fetch(`/api/admin/keys/${keyId}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers
     });
   } catch (e) {
     console.log('Server delete warning:', e);
+  }
+
+  if (db) {
+    try {
+      const docRef = doc(db, 'central_keys', 'APIkeys');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const existingKeys: any[] = docSnap.data().keys || [];
+        const filtered = existingKeys.filter((k: any) => k.id !== keyId);
+        await setDoc(docRef, {
+          keys: filtered,
+          totalCount: filtered.length,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        recordFirestoreWrite('central_keys', 1, 'deleteCentralKeyFromFirestore:direct');
+      }
+    } catch (fsErr) {
+      console.log('Direct Firestore key delete notice:', fsErr);
+    }
   }
 }
