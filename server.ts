@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from "@google/genai";
+import { DEFAULT_CENTRAL_KEYS } from './src/data/centralKeysData';
 
 dotenv.config();
 
@@ -72,7 +73,7 @@ function loadStoredKeys(): StoredKey[] {
     } catch (e) {
         console.error("Error reading central-keys.json:", e);
     }
-    return [];
+    return DEFAULT_CENTRAL_KEYS || [];
 }
 
 function saveStoredKeys(keys: StoredKey[]) {
