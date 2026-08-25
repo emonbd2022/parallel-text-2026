@@ -55,9 +55,19 @@ let centralKeyRefreshPromise: Promise<{ id: string; key: string }[]> | null = nu
 
 function loadStoredKeys(): StoredKey[] {
     try {
-        if (fs.existsSync(DATA_FILE)) {
-            const data = fs.readFileSync(DATA_FILE, 'utf8');
-            return JSON.parse(data);
+        const locations = [
+            path.join(process.cwd(), 'central-keys.json'),
+            path.join(__dirname, 'central-keys.json'),
+            path.resolve('central-keys.json')
+        ];
+        for (const loc of locations) {
+            if (fs.existsSync(loc)) {
+                const data = fs.readFileSync(loc, 'utf8');
+                const parsed = JSON.parse(data);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    return parsed;
+                }
+            }
         }
     } catch (e) {
         console.error("Error reading central-keys.json:", e);
@@ -320,37 +330,37 @@ const PORT = 3000;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-async function startServer() {
-    await syncCentralKeys(); // Initial sync
-
-    // Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
-    async function getRealKey(virtualKeyId: string): Promise<string> {
-        await syncCentralKeys();
-        if (centralKeys.length > 0) {
-            let index = -1;
-            if (virtualKeyId) {
-                if (virtualKeyId.startsWith('central-')) {
-                    const num = parseInt(virtualKeyId.split('-')[1], 10);
-                    if (!isNaN(num) && num >= 0 && num < centralKeys.length) {
-                        index = num;
-                    }
-                }
-                if (index === -1) {
-                    const foundIdx = centralKeys.findIndex(k => k.id === virtualKeyId);
-                    if (foundIdx !== -1) index = foundIdx;
+// Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
+async function getRealKey(virtualKeyId: string): Promise<string> {
+    await syncCentralKeys();
+    if (centralKeys.length > 0) {
+        let index = -1;
+        if (virtualKeyId) {
+            if (virtualKeyId.startsWith('central-')) {
+                const num = parseInt(virtualKeyId.split('-')[1], 10);
+                if (!isNaN(num) && num >= 0 && num < centralKeys.length) {
+                    index = num;
                 }
             }
-            if (index === -1) index = 0;
-            return centralKeys[index % centralKeys.length].key;
+            if (index === -1) {
+                const foundIdx = centralKeys.findIndex(k => k.id === virtualKeyId);
+                if (foundIdx !== -1) index = foundIdx;
+            }
         }
-        if (process.env.GEMINI_API_KEY) {
-            return process.env.GEMINI_API_KEY;
-        }
-        throw new Error("No Central API keys available in pool. Please contribute an API key or switch to Local API mode.");
+        if (index === -1) index = 0;
+        return centralKeys[index % centralKeys.length].key;
     }
+    if (process.env.GEMINI_API_KEY) {
+        return process.env.GEMINI_API_KEY;
+    }
+    throw new Error("No Central API keys available in server pool. Please add a key or try again.");
+}
 
-    // Capacity endpoint for client
-    app.get("/api/central-keys-capacity", (req, res) => {
+// Fire non-blocking initial central keys sync in background
+syncCentralKeys().catch(e => console.log("[Server] Background sync notice:", e));
+
+// Capacity endpoint for client
+app.get("/api/central-keys-capacity", (req, res) => {
         const stored = loadStoredKeys();
         const fallbackCount = process.env.GEMINI_API_KEY ? 1 : 0;
         const totalActive = centralKeys.length > 0 ? centralKeys.length : fallbackCount;
@@ -396,7 +406,7 @@ async function startServer() {
 
     app.post("/api/central-generate", async (req, res) => {
         try {
-            const { items, config, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            const { items = [], config = {}, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
             const virtualKeyId = vId || nodeId;
             
             // Central API Eligibility Check
@@ -456,8 +466,8 @@ Return a strictly valid JSON array where each object contains:
             promptParts.push({ text: promptText });
 
             const response = await ai.models.generateContent({
-                model: config.model,
-                contents: { parts: promptParts },
+                model: config.model || 'gemini-2.0-flash',
+                contents: promptParts,
                 config: {
                     systemInstruction: systemInstruction,
                     responseMimeType: "application/json",
@@ -506,7 +516,7 @@ Return a strictly valid JSON array where each object contains:
             res.json(results);
         } catch (error: any) {
             console.error("Central API Error:", error);
-            res.status(500).json({ error: error.message || "Internal Server Error" });
+            res.status(500).json({ error: String(error?.message || error), stackString: String(error?.stack || '') });
         }
     });
 
@@ -598,8 +608,8 @@ Return a strictly valid JSON array where each object contains:
             });
 
             const response = await ai.models.generateContent({
-                model: model,
-                contents: { parts: promptParts },
+                model: model || 'gemini-2.0-flash',
+                contents: promptParts,
                 config: {
                     systemInstruction: systemInstruction,
                     responseMimeType: "application/json",
@@ -900,6 +910,11 @@ Return a strictly valid JSON array where each object contains:
         }
     });
 
+    app.use((err: any, req: any, res: any, next: any) => {
+        console.error("GLOBAL SERVER ERROR:", err);
+        res.status(500).json({ error: err.message || "Internal Server Error", stack: err.stack });
+    });
+
     // Catch-all for API endpoints to ensure API requests never fall back to index.html
     app.all('/api/*all', (req, res) => {
         res.status(404).json({ error: `Central API endpoint ${req.method} ${req.path} not found` });
@@ -907,12 +922,16 @@ Return a strictly valid JSON array where each object contains:
 
     // Vite middleware for development
     if (process.env.NODE_ENV !== "production") {
-        const vite = await createViteServer({
+        createViteServer({
+            root: process.cwd(),
             server: { middlewareMode: true },
             appType: "spa",
+        }).then(vite => {
+            app.use(vite.middlewares);
+        }).catch(err => {
+            console.error("Vite server error:", err);
         });
-        app.use(vite.middlewares);
-    } else {
+    } else if (!process.env.VERCEL) {
         const distPath = path.join(process.cwd(), 'dist');
         app.use(express.static(distPath));
         app.get('*all', (req, res) => {
@@ -920,9 +939,8 @@ Return a strictly valid JSON array where each object contains:
         });
     }
 
-    app.listen(PORT, "0.0.0.0", () => {
-        console.log(`Server running on http://0.0.0.0:${PORT}`);
-    });
-}
-
-startServer();
+    if (!process.env.VERCEL) {
+        app.listen(PORT, "0.0.0.0", () => {
+            console.log(`Server running on http://0.0.0.0:${PORT}`);
+        });
+    }
