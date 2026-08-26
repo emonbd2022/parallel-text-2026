@@ -26,14 +26,26 @@ export function encrypt(text: string) {
 }
 
 export function decrypt(encText: string) {
-    const [ivHex, authTagHex, encrypted] = encText.split(':');
-    const iv = Buffer.from(ivHex, 'hex');
-    const authTag = Buffer.from(authTagHex, 'hex');
-    const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
+    if (!encText) return '';
+    if (!encText.includes(':')) return encText;
+    const parts = encText.split(':');
+    if (parts.length < 3) return encText;
+    const [ivHex, authTagHex, encrypted] = parts;
+    if (!ivHex || !authTagHex || !encrypted) return encText;
+    try {
+        const iv = Buffer.from(ivHex, 'hex');
+        const authTag = Buffer.from(authTagHex, 'hex');
+        const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv);
+        decipher.setAuthTag(authTag);
+        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (e) {
+        if (encText.length > 20 && !encText.includes(':')) {
+            return encText;
+        }
+        return '';
+    }
 }
 
 // In-memory cache of central keys
@@ -293,17 +305,20 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                 saveStoredKeys(allStored);
             }
 
-            const active = allStored.filter(k => k.enabled).map(data => {
+            const active = allStored.filter(k => k.enabled !== false).map(data => {
                 let decryptedKey = '';
                 try {
-                    decryptedKey = decrypt(data.encryptedKey);
+                    decryptedKey = decrypt(data.encryptedKey || (data as any).key);
                 } catch (e) {
-                    if (data.encryptedKey && data.encryptedKey.startsWith('AIza')) {
+                    if (data.encryptedKey && (data.encryptedKey.startsWith('AIza') || data.encryptedKey.startsWith('AQ.'))) {
                         decryptedKey = data.encryptedKey;
                     }
                 }
+                if (!decryptedKey && (data as any).key) {
+                    decryptedKey = (data as any).key;
+                }
                 return { id: data.id, key: decryptedKey };
-            }).filter(k => k.key.length > 0);
+            }).filter(k => k.key && k.key.length > 0);
 
             centralKeys = active;
             lastCentralKeysFetchTime = Date.now();
@@ -410,14 +425,15 @@ app.get("/api/central-keys-capacity", (req, res) => {
     // New endpoint to securely return actual keys to eligible clients
     app.post("/api/central-keys-pool-sync", async (req, res) => {
         try {
-            const { localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            const { localKeys, isAdmin, hasExplicitAdminGrant, forceRefresh } = req.body;
+            const isForceRefresh = forceRefresh === true || req.query.refresh === 'true';
             
             // Central API Eligibility Check
             let isEligible = false;
             if (isAdmin || hasExplicitAdminGrant) {
                 isEligible = true;
             } else if (Array.isArray(localKeys)) {
-                const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
+                const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
                 if (uniqueKeys.size >= 8) {
                     isEligible = true;
                 }
@@ -429,7 +445,7 @@ app.get("/api/central-keys-capacity", (req, res) => {
 
             const authHeader = req.headers.authorization;
             const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-            await syncCentralKeys(false, idToken);
+            await syncCentralKeys(isForceRefresh, idToken);
 
             let poolKeys: { id: string; label: string; key: string }[] = [];
             if (centralKeys.length > 0) {

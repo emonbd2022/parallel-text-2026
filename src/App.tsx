@@ -12,10 +12,12 @@ import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
 import { auth, db } from './lib/firebase';
-import { doc, updateDoc, increment } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
-import { getEncryptedCentralKeys, saveEncryptedCentralKeys } from './services/centralKeyCacheService';
+import { getEncryptedCentralKeys, saveEncryptedCentralKeys, clearEncryptedCentralKeys } from './services/centralKeyCacheService';
+import { decryptClientSide } from './utils/cryptoUtils';
+import { INITIAL_CENTRAL_KEYS } from './data/initialCentralKeys';
 import { recordFirestoreWrite } from './utils/firestoreAudit';
 
 
@@ -390,18 +392,18 @@ export default function App() {
     }
   }, [userData?.uid, userData?.email, userData?.name, userData?.nickname, localKeys]);
 
-  // Central API Keys Pool Fetch with secure encrypted localStorage cache
+  // Central API Keys Pool Fetch with secure encrypted localStorage cache and direct Firestore fallback
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
     try {
       const currentSession = getUsageSessionId();
       
-      // 1. Check local encrypted cache first
+      // 1. Check local encrypted cache first (unless forceRefresh requested)
       if (!forceRefresh) {
         const cached = getEncryptedCentralKeys();
         if (cached && cached.keys && cached.keys.length > 0) {
           const pool: ApiKey[] = cached.keys.map((k, idx) => ({
             id: k.id || `central-${idx}`,
-            label: `Central Pool Node ${idx + 1}`,
+            label: k.label || `Central Pool Node ${idx + 1}`,
             key: k.key, // Extracted from encrypted cache into RAM
             errorCount: 0,
             usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
@@ -409,57 +411,157 @@ export default function App() {
           setCentralKeys(pool);
           return pool;
         }
+      } else {
+        clearEncryptedCentralKeys();
       }
 
-      // 2. Fetch fresh real keys from backend sync endpoint
-      
+      // 2. Determine eligibility
+      const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+      const hasExplicitAdminGrant = userData?.centralApiAccess === true || isAdmin;
+      const validLocalKeys = localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
+      const uniqueKeysCount = new Set(validLocalKeys).size;
+      const isEligible = isAdmin || hasExplicitAdminGrant || uniqueKeysCount >= 8;
+
       let idToken = '';
       try {
         if (auth?.currentUser) {
-           idToken = await auth.currentUser.getIdToken();
+           idToken = await auth.currentUser.getIdToken(forceRefresh);
         }
       } catch (e) {}
       
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (idToken) {
-          headers['Authorization'] = `Bearer ${idToken}`;
+      // 3. Fetch fresh real keys from backend sync endpoint
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (idToken) {
+            headers['Authorization'] = `Bearer ${idToken}`;
+        }
+
+        const res = await fetch('/api/central-keys-pool-sync', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ 
+            forceRefresh,
+            localKeys: localKeys.map(k => k.key), 
+            isAdmin,
+            hasExplicitAdminGrant: isEligible
+          })
+        });
+
+        if (res.ok) {
+          const contentType = res.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            const data = await res.json();
+            if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
+              // Save to encrypted local storage cache
+              saveEncryptedCentralKeys(data.keys);
+
+              const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
+                id: k.id || `central-${idx}`,
+                label: k.label || `Central Pool Node ${idx + 1}`,
+                key: k.key, // Load into RAM
+                errorCount: 0,
+                usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+              }));
+              setCentralKeys(pool);
+              return pool;
+            }
+          }
+        }
+      } catch (serverErr) {
+        console.warn("Backend sync endpoint notice, attempting direct fallback:", serverErr);
       }
 
-      const res = await fetch('/api/central-keys-pool-sync', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ 
-          localKeys: localKeys.map(k => k.key), 
-          isAdmin: userData?.role === 'admin' || userData?.role === 'superadmin',
-          hasExplicitAdminGrant: false // can add this if needed
-        })
-      });
-
-      if (res.ok) {
-        const contentType = res.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const data = await res.json();
-          if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
-            
-            // Save to encrypted local storage cache
-            saveEncryptedCentralKeys(data.keys);
-
-            const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
-              id: k.id || `central-${idx}`,
-              label: `Central Pool Node ${idx + 1}`,
-              key: k.key, // Load into RAM
-              errorCount: 0,
-              usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
-            }));
-            setCentralKeys(pool);
-            return pool;
+      // 4. Client-side Direct Firestore Fallback (When eligible or authenticated)
+      if (db && isEligible) {
+        try {
+          const docRef = doc(db, 'central_keys', 'APIkeys');
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            const rawKeys = Array.isArray(data.keys) ? data.keys : [];
+            if (rawKeys.length > 0) {
+              const decryptedPromises = rawKeys.filter((k: any) => k.enabled !== false).map(async (k: any, idx: number) => {
+                let realKey = k.key || '';
+                if (!realKey && k.encryptedKey) {
+                  realKey = await decryptClientSide(k.encryptedKey);
+                }
+                return {
+                  id: k.id || `central-${idx}`,
+                  label: k.label || `Central Pool Node ${idx + 1}`,
+                  key: realKey
+                };
+              });
+              const decrypted = (await Promise.all(decryptedPromises)).filter(k => k.key && k.key.length > 0);
+              if (decrypted.length > 0) {
+                saveEncryptedCentralKeys(decrypted);
+                const pool: ApiKey[] = decrypted.map((k, idx) => ({
+                  id: k.id || `central-${idx}`,
+                  label: k.label,
+                  key: k.key,
+                  errorCount: 0,
+                  usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+                }));
+                setCentralKeys(pool);
+                return pool;
+              }
+            }
           }
+        } catch (firestoreErr) {
+          console.warn("Direct Firestore central keys fetch notice:", firestoreErr);
+        }
+      }
+
+      // 5. Initial Seed Decrypted Fallback
+      if (INITIAL_CENTRAL_KEYS && INITIAL_CENTRAL_KEYS.length > 0 && isEligible) {
+        const initialPromises = INITIAL_CENTRAL_KEYS.filter(k => k.enabled !== false).map(async (k, idx) => {
+          let realKey = '';
+          if (k.encryptedKey) {
+            realKey = await decryptClientSide(k.encryptedKey);
+          }
+          return {
+            id: k.id || `central-${idx}`,
+            label: k.label || `Central Pool Node ${idx + 1}`,
+            key: realKey
+          };
+        });
+        const decryptedInitial = (await Promise.all(initialPromises)).filter(k => k.key && k.key.length > 0);
+        if (decryptedInitial.length > 0) {
+          saveEncryptedCentralKeys(decryptedInitial);
+          const pool: ApiKey[] = decryptedInitial.map((k, idx) => ({
+            id: k.id || `central-${idx}`,
+            label: k.label,
+            key: k.key,
+            errorCount: 0,
+            usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+          }));
+          setCentralKeys(pool);
+          return pool;
         }
       }
     } catch (e) {
       console.warn("Central keys pool sync notice:", e);
     }
     return [];
+  };
+
+  const handleRefreshCentralKeys = async () => {
+    try {
+      showNotification("Refreshing Central Pool", "Pulling latest Central API keys from server...");
+      const pool = await fetchCentralKeysPool(true);
+      if (pool.length > 0) {
+        showNotification("Central Pool Refreshed", `Successfully loaded ${pool.length} active worker nodes.`);
+      } else {
+        const uniqueKeysCount = new Set(localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20)).size;
+        const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+        if (!isAdmin && uniqueKeysCount < 8 && !userData?.centralApiAccess) {
+          showNotification("Eligibility Notice", "Central API access requires at least 8 unique local API keys or Administrator approval.");
+        } else {
+          showNotification("Refresh Notice", "No central nodes returned from server. Check network connection.");
+        }
+      }
+    } catch (err: any) {
+      showNotification("Refresh Error", err?.message || "Failed to refresh central keys.");
+    }
   };
 
   // Fetch central keys pool on mount and whenever Central API mode is active
@@ -1899,7 +2001,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
          onResetUsage={handleResetUsage}
          onResetAll={handleResetAllUsage}
          onShowToast={showNotification}
-         onRefreshCentralKeys={() => fetchCentralKeysPool(true)}
+         onRefreshCentralKeys={handleRefreshCentralKeys}
       />
 
       <main 
