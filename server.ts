@@ -98,7 +98,7 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
             headers['Authorization'] = `Bearer ${idToken}`;
         }
         
-        const resp = await fetch(url, { headers });
+        const resp = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
         if (!resp.ok) {
             if (resp.status === 404) {
                 return [];
@@ -216,7 +216,8 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
         const resp = await fetch(url, {
             method: 'PATCH',
             headers,
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(5000)
         });
 
         return resp.ok;
@@ -321,8 +322,6 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 async function startServer() {
-    await syncCentralKeys(); // Initial sync
-
     // Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
     async function getRealKey(virtualKeyId: string): Promise<string> {
         await syncCentralKeys();
@@ -922,7 +921,8 @@ Return a strictly valid JSON array where each object contains:
 
     app.listen(PORT, "0.0.0.0", () => {
         console.log(`Server running on http://0.0.0.0:${PORT}`);
+        syncCentralKeys().catch(err => console.log("[Server] Notice initial syncCentralKeys:", err));
     });
 }
 
-startServer();
+startServer().catch(err => console.error("Fatal error starting server:", err));
