@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -17,10 +16,17 @@ export let globalCentralModeEnabled = true;
 
 function loadConfig() {
     try {
-        if (fs.existsSync(CONFIG_FILE)) {
-            const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-            if (data.centralModeEnabled !== undefined) {
-                globalCentralModeEnabled = !!data.centralModeEnabled;
+        const candidates = [
+            path.join('/tmp', 'central-config.json'),
+            CONFIG_FILE
+        ];
+        for (const cand of candidates) {
+            if (fs.existsSync(cand)) {
+                const data = JSON.parse(fs.readFileSync(cand, 'utf8'));
+                if (data.centralModeEnabled !== undefined) {
+                    globalCentralModeEnabled = !!data.centralModeEnabled;
+                    return;
+                }
             }
         }
     } catch (e) {
@@ -32,7 +38,11 @@ function saveConfig() {
     try {
         fs.writeFileSync(CONFIG_FILE, JSON.stringify({ centralModeEnabled: globalCentralModeEnabled }, null, 2));
     } catch (e) {
-        console.warn("[Server] saveConfig notice (safe for read-only environments):", e);
+        try {
+            fs.writeFileSync(path.join('/tmp', 'central-config.json'), JSON.stringify({ centralModeEnabled: globalCentralModeEnabled }, null, 2));
+        } catch (tmpErr) {
+            console.warn("[Server] saveConfig notice (safe for read-only environments):", tmpErr);
+        }
     }
 }
 
@@ -81,6 +91,14 @@ export function decrypt(encText: string): string {
     }
 }
 
+function extractCleanKeys(localKeys: any): Set<string> {
+    if (!Array.isArray(localKeys)) return new Set();
+    const extracted = localKeys
+        .map((k: any) => typeof k === 'string' ? k.trim() : (typeof k?.key === 'string' ? k.key.trim() : ''))
+        .filter((k: string) => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
+    return new Set(extracted);
+}
+
 // In-memory cache of central keys
 interface StoredKey {
     id: string;
@@ -102,6 +120,7 @@ let centralKeyRefreshPromise: Promise<{ id: string; key: string }[]> | null = nu
 function loadStoredKeys(): StoredKey[] {
     try {
         const locations = [
+            path.join('/tmp', 'central-keys.json'),
             path.join(process.cwd(), 'central-keys.json'),
             path.resolve('central-keys.json')
         ];
@@ -109,13 +128,13 @@ function loadStoredKeys(): StoredKey[] {
             if (fs.existsSync(loc)) {
                 const data = fs.readFileSync(loc, 'utf8');
                 const parsed = JSON.parse(data);
-                if (Array.isArray(parsed)) {
+                if (Array.isArray(parsed) && parsed.length > 0) {
                     return parsed;
                 }
             }
         }
     } catch (e) {
-        console.error("Error reading central-keys.json:", e);
+        console.warn("[Server] Reading central-keys.json notice:", e);
     }
     return DEFAULT_CENTRAL_KEYS || [];
 }
@@ -124,7 +143,11 @@ function saveStoredKeys(keys: StoredKey[]) {
     try {
         fs.writeFileSync(DATA_FILE, JSON.stringify(keys, null, 2));
     } catch (e) {
-        console.error("Error writing central-keys.json:", e);
+        try {
+            fs.writeFileSync(path.join('/tmp', 'central-keys.json'), JSON.stringify(keys, null, 2));
+        } catch (tmpErr) {
+            console.warn("[Server] Writing central-keys.json notice (safe for read-only environments):", tmpErr);
+        }
     }
 }
 
@@ -482,11 +505,7 @@ app.get("/api/central-keys-capacity", async (req, res) => {
             if (isAdmin || hasExplicitAdminGrant) {
                 isEligible = true;
             } else if (Array.isArray(localKeys)) {
-                const rawKeyList = Array.isArray(localKeys) ? localKeys : [];
-                const extractedKeys = rawKeyList
-                    .map((k: any) => typeof k === 'string' ? k.trim() : (typeof k?.key === 'string' ? k.key.trim() : ''))
-                    .filter(Boolean);
-                const uniqueKeys = new Set(extractedKeys.filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
+                const uniqueKeys = extractCleanKeys(localKeys);
                 if (uniqueKeys.size >= 8) {
                     isEligible = true;
                 }
@@ -547,7 +566,7 @@ app.get("/api/central-keys-capacity", async (req, res) => {
             if (isAdmin || hasExplicitAdminGrant) {
                 isEligible = true;
             } else if (Array.isArray(localKeys)) {
-                const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
+                const uniqueKeys = extractCleanKeys(localKeys);
                 if (uniqueKeys.size >= 8) {
                     isEligible = true;
                 }
@@ -671,7 +690,7 @@ Return a strictly valid JSON array where each object contains:
             if (isAdmin || hasExplicitAdminGrant) {
                 isEligible = true;
             } else if (Array.isArray(localKeys)) {
-                const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
+                const uniqueKeys = extractCleanKeys(localKeys);
                 if (uniqueKeys.size >= 8) {
                     isEligible = true;
                 }
@@ -1301,15 +1320,17 @@ app.get("/api/admin/keys", async (req, res) => {
     });
 
     // Vite middleware for development
-    if (process.env.NODE_ENV !== "production") {
-        createViteServer({
-            root: process.cwd(),
-            server: { middlewareMode: true },
-            appType: "spa",
+    if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
+        import('vite').then(({ createServer }) => {
+            return createServer({
+                root: process.cwd(),
+                server: { middlewareMode: true },
+                appType: "spa",
+            });
         }).then(vite => {
             app.use(vite.middlewares);
         }).catch(err => {
-            console.error("Vite server error:", err);
+            console.warn("[Server] Vite dev server middleware notice:", err);
         });
     } else if (!process.env.VERCEL) {
         const distPath = path.join(process.cwd(), 'dist');

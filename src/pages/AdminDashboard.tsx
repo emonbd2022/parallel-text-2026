@@ -237,11 +237,19 @@ export const AdminDashboard: React.FC = () => {
               headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
           }
           const res = await fetch(`/api/admin/keys/${id}/reveal`, { headers });
-          const data = await res.json();
-          if (data.success && data.key) {
-              setRevealedKeys(prev => ({ ...prev, [id]: data.key }));
+          if (!res.ok) {
+              const text = await res.text();
+              console.warn(`[AdminDashboard] Reveal key notice (${res.status}):`, text);
+              return;
           }
-      } catch (e) { console.error(e); }
+          const contentType = res.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+              const data = await res.json();
+              if (data.success && data.key) {
+                  setRevealedKeys(prev => ({ ...prev, [id]: data.key }));
+              }
+          }
+      } catch (e) { console.warn("[AdminDashboard] toggleRevealKey error:", e); }
   };
 
   const fetchCentralKeys = async (forceRefresh = false) => {
