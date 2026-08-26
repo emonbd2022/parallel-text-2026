@@ -4,15 +4,11 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from "@google/genai";
 import { DEFAULT_CENTRAL_KEYS } from './src/data/centralKeysData';
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const DATA_FILE = path.join(process.cwd(), 'central-keys.json');
 
@@ -74,7 +70,6 @@ function loadStoredKeys(): StoredKey[] {
     try {
         const locations = [
             path.join(process.cwd(), 'central-keys.json'),
-            path.join(__dirname, 'central-keys.json'),
             path.resolve('central-keys.json')
         ];
         for (const loc of locations) {
