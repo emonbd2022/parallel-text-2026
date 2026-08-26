@@ -114,6 +114,9 @@ export const ApiKeyManager: React.FC<Props> = ({
       }
     }
     onChangeApiMode(mode);
+    if (mode === 'central' && onRefreshCentralKeys) {
+      onRefreshCentralKeys();
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

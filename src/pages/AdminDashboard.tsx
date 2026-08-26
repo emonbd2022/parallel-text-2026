@@ -1854,7 +1854,7 @@ export const AdminDashboard: React.FC = () => {
                                       if (email) {
                                         return email.split('@')[0];
                                       }
-                                      return 'Community Contributor';
+                                      return key.label || 'User';
                                     })()}
                                   </span>
                                 </span>

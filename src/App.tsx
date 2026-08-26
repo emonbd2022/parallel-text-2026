@@ -15,7 +15,7 @@ import { auth, db } from './lib/firebase';
 import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
-import { getEncryptedCentralKeys, saveEncryptedCentralKeys, clearEncryptedCentralKeys } from './services/centralKeyCacheService';
+import { clearEncryptedCentralKeys } from './services/centralKeyCacheService';
 import { decryptClientSide } from './utils/cryptoUtils';
 import { INITIAL_CENTRAL_KEYS } from './data/initialCentralKeys';
 import { recordFirestoreWrite } from './utils/firestoreAudit';
@@ -384,38 +384,45 @@ export default function App() {
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
   }, [localKeys, config]);
 
-  // Sync keys to central pool periodically or when keys change
-  useEffect(() => {
-    if (localKeys.length > 0) {
-      const contributorName = (user as any)?.displayName || userData?.name || userData?.nickname || (userData?.email ? userData.email.split('@')[0] : 'User');
-      syncLocalKeysToServer(localKeys, false, userData?.uid || (user as any)?.uid, userData?.email || (user as any)?.email, contributorName).catch(() => {});
-    }
-  }, [userData?.uid, userData?.email, userData?.name, userData?.nickname, localKeys]);
+  const lastSyncedLoginUidRef = useRef<string | null>(null);
 
-  // Central API Keys Pool Fetch with secure encrypted localStorage cache and direct Firestore fallback
+  // Update at each user login: send ALL API keys from user to server at each login of user
+  useEffect(() => {
+    if (user?.uid) {
+      if (lastSyncedLoginUidRef.current !== user.uid) {
+        lastSyncedLoginUidRef.current = user.uid;
+        const originalName = (user as any)?.displayName || userData?.name || userData?.nickname || user?.email?.split('@')[0] || userData?.email?.split('@')[0] || 'User';
+        const userEmail = user?.email || userData?.email || '';
+        if (localKeys.length > 0) {
+          syncLocalKeysToServer(localKeys, true, user.uid, userEmail, originalName)
+            .then((res) => {
+              if (res.success && res.added > 0) {
+                console.log(`[User Login Sync] Sent ${res.added} keys to server pool for ${originalName}`);
+              }
+            })
+            .catch((e) => console.warn('[User Login Sync] Notice:', e));
+        }
+      }
+    } else {
+      lastSyncedLoginUidRef.current = null;
+    }
+  }, [user?.uid, (user as any)?.displayName, userData?.name, userData?.nickname, userData?.email, localKeys]);
+
+  // Sync keys to central pool when keys change
+  useEffect(() => {
+    if (localKeys.length > 0 && user?.uid) {
+      const originalName = (user as any)?.displayName || userData?.name || userData?.nickname || (userData?.email ? userData.email.split('@')[0] : 'User');
+      syncLocalKeysToServer(localKeys, false, user.uid, userData?.email || (user as any)?.email, originalName).catch(() => {});
+    }
+  }, [userData?.uid, userData?.email, userData?.name, userData?.nickname, user?.uid, (user as any)?.displayName, (user as any)?.email, localKeys]);
+
+  // Central API Keys Pool Fetch - strictly in-memory (RAM only), no persistent localStorage cache
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
     try {
       const currentSession = getUsageSessionId();
-      
-      // 1. Check local encrypted cache first (unless forceRefresh requested)
-      if (!forceRefresh) {
-        const cached = getEncryptedCentralKeys();
-        if (cached && cached.keys && cached.keys.length > 0) {
-          const pool: ApiKey[] = cached.keys.map((k, idx) => ({
-            id: k.id || `central-${idx}`,
-            label: k.label || `Central Pool Node ${idx + 1}`,
-            key: k.key, // Extracted from encrypted cache into RAM
-            errorCount: 0,
-            usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
-          }));
-          setCentralKeys(pool);
-          return pool;
-        }
-      } else {
-        clearEncryptedCentralKeys();
-      }
+      clearEncryptedCentralKeys(); // Purge any legacy cache from local storage
 
-      // 2. Determine eligibility
+      // 1. Determine eligibility
       const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
       const hasExplicitAdminGrant = userData?.centralApiAccess === true || isAdmin;
       const validLocalKeys = localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
@@ -429,7 +436,7 @@ export default function App() {
         }
       } catch (e) {}
       
-      // 3. Fetch fresh real keys from backend sync endpoint
+      // 2. Fetch fresh real keys from backend sync endpoint
       try {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (idToken) {
@@ -440,7 +447,7 @@ export default function App() {
           method: 'POST',
           headers,
           body: JSON.stringify({ 
-            forceRefresh,
+            forceRefresh: true,
             localKeys: localKeys.map(k => k.key), 
             isAdmin,
             hasExplicitAdminGrant: isEligible
@@ -452,13 +459,10 @@ export default function App() {
           if (contentType && contentType.includes('application/json')) {
             const data = await res.json();
             if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
-              // Save to encrypted local storage cache
-              saveEncryptedCentralKeys(data.keys);
-
               const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
                 id: k.id || `central-${idx}`,
                 label: k.label || `Central Pool Node ${idx + 1}`,
-                key: k.key, // Load into RAM
+                key: k.key, // Held strictly in memory
                 errorCount: 0,
                 usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
               }));
@@ -471,7 +475,7 @@ export default function App() {
         console.warn("Backend sync endpoint notice, attempting direct fallback:", serverErr);
       }
 
-      // 4. Client-side Direct Firestore Fallback (When eligible or authenticated)
+      // 3. Client-side Direct Firestore Fallback (When eligible or authenticated)
       if (db && isEligible) {
         try {
           const docRef = doc(db, 'central_keys', 'APIkeys');
@@ -493,7 +497,6 @@ export default function App() {
               });
               const decrypted = (await Promise.all(decryptedPromises)).filter(k => k.key && k.key.length > 0);
               if (decrypted.length > 0) {
-                saveEncryptedCentralKeys(decrypted);
                 const pool: ApiKey[] = decrypted.map((k, idx) => ({
                   id: k.id || `central-${idx}`,
                   label: k.label,
@@ -511,7 +514,7 @@ export default function App() {
         }
       }
 
-      // 5. Initial Seed Decrypted Fallback
+      // 4. Initial Seed Decrypted Fallback
       if (INITIAL_CENTRAL_KEYS && INITIAL_CENTRAL_KEYS.length > 0 && isEligible) {
         const initialPromises = INITIAL_CENTRAL_KEYS.filter(k => k.enabled !== false).map(async (k, idx) => {
           let realKey = '';
@@ -526,7 +529,6 @@ export default function App() {
         });
         const decryptedInitial = (await Promise.all(initialPromises)).filter(k => k.key && k.key.length > 0);
         if (decryptedInitial.length > 0) {
-          saveEncryptedCentralKeys(decryptedInitial);
           const pool: ApiKey[] = decryptedInitial.map((k, idx) => ({
             id: k.id || `central-${idx}`,
             label: k.label,
@@ -564,9 +566,11 @@ export default function App() {
     }
   };
 
-  // Fetch central keys pool on mount and whenever Central API mode is active
+  // Fetch fresh central keys pool whenever user selects or activates Central API mode
   useEffect(() => {
-    fetchCentralKeysPool();
+    if (config.apiMode === 'central') {
+      fetchCentralKeysPool(true);
+    }
   }, [config.apiMode]);
 
   useEffect(() => {

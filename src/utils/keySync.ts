@@ -79,8 +79,8 @@ export async function syncLocalKeysToServer(
       return { success: true, added: 0, message: 'Keys already up to date' };
     }
 
-    // Sync only new keys to Firestore database (1 write for diffs only)
-    const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail, contributorName);
+    // Sync keys to Firestore database and server pool
+    const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail, contributorName, force);
 
     sessionStorage.setItem('last_synced_keys_fingerprint', currentFingerprint);
 

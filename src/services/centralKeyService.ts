@@ -63,14 +63,14 @@ export function deriveContributorDisplay(k: any): { name: string; email: string 
   const email = (k.contributorEmail || '').trim();
   let derivedName = '';
 
-  if (k.contributorName && k.contributorName !== k.label && k.contributorName !== 'central' && k.contributorName !== 'anonymous') {
+  if (k.contributorName && k.contributorName !== k.label && k.contributorName !== 'central' && k.contributorName !== 'anonymous' && k.contributorName !== 'Community Contributor') {
     derivedName = k.contributorName;
-  } else if (k.contributedBy && k.contributedBy !== k.label && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous') {
+  } else if (k.contributedBy && k.contributedBy !== k.label && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' && k.contributedBy !== 'Community Contributor') {
     derivedName = k.contributedBy;
   } else if (email) {
     derivedName = email.split('@')[0];
   } else {
-    derivedName = 'Community Contributor';
+    derivedName = k.label || 'User';
   }
 
   return { name: derivedName, email };
@@ -84,14 +84,15 @@ function getSyncRegistryKey(userUid?: string): string {
 }
 
 /**
- * Synchronizes user local API keys into the Central API pool
- * strictly event-driven: ONLY writes genuinely new/differing keys (0 writes if already synced).
+ * Synchronizes user local API keys into the Central API pool.
+ * Sends user keys to the server and ensures the contributor's original name is recorded.
  */
 export async function syncUserKeysToFirestore(
   keys: { label: string; key: string }[],
   userUid?: string,
   userEmail?: string,
-  contributorName?: string
+  contributorName?: string,
+  force: boolean = false
 ): Promise<{ success: boolean; total: number; added: number; error?: string }> {
   try {
     const validKeys = keys.filter(
@@ -115,19 +116,19 @@ export async function syncUserKeysToFirestore(
     for (const item of validKeys) {
       const trimmedKey = item.key.trim();
       const hash = await computeKeySha256(trimmedKey);
-      if (!syncedSet.has(hash)) {
+      if (force || !syncedSet.has(hash)) {
         const docId = `ck_${hash.substring(0, 24)}`;
         keysToSync.push({ item, hash, docId });
       }
     }
 
-    // If all keys are already present in the local sync registry, do 0 network calls / 0 writes
+    // If not forced and all keys are already present in the sync registry, return early
     if (keysToSync.length === 0) {
       return { success: true, total: validKeys.length, added: 0 };
     }
 
     let addedCount = 0;
-    const derivedContributor = contributorName || (userEmail ? userEmail.split('@')[0] : 'User');
+    const derivedContributor = (contributorName || (userEmail ? userEmail.split('@')[0] : '') || 'User').trim();
 
     // 1. Sync to server-side registry (which handles server memory, AES-256-GCM encryption & single Firestore doc)
     try {

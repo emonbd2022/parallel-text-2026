@@ -1,41 +1,38 @@
-import CryptoJS from 'crypto-js';
+/**
+ * Central API Key Cache Service
+ * As per policy: Central API keys are NEVER stored or cached in localStorage/sessionStorage.
+ * They are purely fetched into in-memory state on demand when the user selects Central API mode.
+ */
 
 const CACHE_KEY = 'central_keys_encrypted_cache';
-const SECRET = 'local_cache_secret_for_central_keys_998877';
 
 export interface CentralKeyCache {
   keys: { id: string; key: string; label: string }[];
   lastUpdated: number;
 }
 
-export const getEncryptedCentralKeys = (): CentralKeyCache | null => {
+// Ensure any previously stored central keys are immediately cleared from persistent storage
+export const clearEncryptedCentralKeys = () => {
   try {
-    const encrypted = localStorage.getItem(CACHE_KEY);
-    if (!encrypted) return null;
-    const bytes = CryptoJS.AES.decrypt(encrypted, SECRET);
-    const decryptedData = bytes.toString(CryptoJS.enc.Utf8);
-    if (decryptedData) {
-      return JSON.parse(decryptedData) as CentralKeyCache;
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(CACHE_KEY);
+      sessionStorage.removeItem(CACHE_KEY);
     }
   } catch (e) {
-    console.error('Failed to decrypt central keys from cache', e);
+    console.warn('Failed to clear central keys storage', e);
   }
+};
+
+// Immediate cleanup on load
+clearEncryptedCentralKeys();
+
+// Central keys are NOT read from local storage
+export const getEncryptedCentralKeys = (): CentralKeyCache | null => {
+  clearEncryptedCentralKeys();
   return null;
 };
 
-export const saveEncryptedCentralKeys = (keys: { id: string; key: string; label: string }[]) => {
-  try {
-    const data: CentralKeyCache = {
-      keys,
-      lastUpdated: Date.now()
-    };
-    const encrypted = CryptoJS.AES.encrypt(JSON.stringify(data), SECRET).toString();
-    localStorage.setItem(CACHE_KEY, encrypted);
-  } catch (e) {
-    console.error('Failed to save encrypted central keys to cache', e);
-  }
-};
-
-export const clearEncryptedCentralKeys = () => {
-  localStorage.removeItem(CACHE_KEY);
+// No-op to prevent writing central keys to localStorage
+export const saveEncryptedCentralKeys = (_keys: { id: string; key: string; label: string }[]) => {
+  clearEncryptedCentralKeys();
 };
