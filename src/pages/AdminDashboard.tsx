@@ -479,6 +479,11 @@ export const AdminDashboard: React.FC = () => {
       await deleteDoc(doc(db, 'users', uid));
       recordFirestoreWrite('users', 1, 'AdminDashboard:deleteUser');
 
+      // Also clean up any associated signup notification
+      try {
+        await deleteDoc(doc(db, 'notifications', `signup_${uid}`));
+      } catch {}
+
       // Remove from paginated state and sessionStorage cache
       setUsersByPage(prev => {
         const next = { ...prev };

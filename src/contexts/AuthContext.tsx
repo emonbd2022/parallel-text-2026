@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
 
@@ -520,27 +520,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 read: false,
               };
 
-              // Atomic batch commit: guarantees both docs exist together without extra reads
+              // Create initial user document in Firestore
               const { deviceLimitReached: _dl, ...firestoreUserData } = newUserData;
-              const batch = writeBatch(db);
-              batch.set(userRef, {
+              await setDoc(userRef, {
                 ...firestoreUserData,
                 lastActiveAt: nowISO
               });
-              batch.set(notifRef, notifData);
-              await batch.commit();
               recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');
-              recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
-              console.log(`[Auth] Atomically registered new user (${currentUser.uid}) and created admin notification (${notifId})`);
+              console.log(`[Auth] Successfully registered user (${currentUser.uid}) in Firestore`);
 
               setUserData(newUserData);
               saveUserDataToCache(newUserData);
+
+              // Non-blocking signup notification creation
+              try {
+                const notifId = `signup_${currentUser.uid}`;
+                const notifRef = doc(db, 'notifications', notifId);
+                const notifData: AppNotification = {
+                  id: notifId,
+                  targetUid: 'admin',
+                  type: 'signup',
+                  message: `New User Signup\nName: ${userName}\nEmail: ${userEmail}`,
+                  userName,
+                  userEmail,
+                  createdAt: nowISO,
+                  read: false,
+                };
+                await setDoc(notifRef, notifData);
+                recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
+              } catch (notifErr) {
+                console.warn("[Auth] Non-fatal: signup notification delivery error:", notifErr);
+              }
             }
           } catch (error: any) {
-            console.error("CRITICAL: Failed to initialize new user and signup notification in Firestore:", error);
+            console.error("CRITICAL: Failed to initialize/fetch user in Firestore:", error);
             if (error?.code) {
               console.error(`Firebase Error Code: ${error.code}, Message: ${error.message}`);
             }
+            // Clear stale ghost cache if Firestore document operation failed
+            localStorage.removeItem(`userCache_${currentUser.uid}`);
           }
         }
       } else {
