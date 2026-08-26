@@ -768,7 +768,14 @@ export const AdminDashboard: React.FC = () => {
             </button>
 
             <button
-              onClick={() => fetchPage(currentPage, true)}
+              onClick={() => {
+                sessionStorage.removeItem('adminCachedAllUsers');
+                sessionStorage.removeItem('adminCachedUsersByPage');
+                setAllUsers([]);
+                setUsersByPage({});
+                setLastVisibleByPage({});
+                setTimeout(() => fetchPage(1, true), 50);
+              }}
               className="flex items-center gap-2 bg-slate-900/50 hover:bg-slate-800 border border-slate-800 rounded-xl px-4 py-2 text-sm font-bold text-slate-300 transition-colors"
             >
               <RefreshCw className="w-4 h-4 text-purple-400" />

@@ -376,7 +376,9 @@ app.get("/api/central-keys-capacity", (req, res) => {
     // 1-Read Central API Keys Pool for Runtime Client Processing (Safe Virtual Node Handles Only)
     app.get("/api/central-keys-pool", async (req, res) => {
         try {
-            await syncCentralKeys(false);
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            await syncCentralKeys(false, idToken);
 
             let poolKeys: { id: string; label: string; key: string }[] = [];
             if (centralKeys.length > 0) {
@@ -401,7 +403,7 @@ app.get("/api/central-keys-capacity", (req, res) => {
             });
         } catch (error: any) {
             console.error("Error fetching central keys pool:", error);
-            res.status(500).json({ success: false, error: "Failed to fetch central keys", keys: [] });
+            res.status(500).json({ success: false, error: "Failed to fetch central keys", details: String(error?.message || error), stack: String(error?.stack || ''), keys: [] });
         }
     });
 
@@ -425,7 +427,9 @@ app.get("/api/central-keys-capacity", (req, res) => {
                 return res.status(403).json({ success: false, error: "Central API access requires at least 8 unique local API keys or Administrator approval.", keys: [] });
             }
 
-            await syncCentralKeys(false);
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            await syncCentralKeys(false, idToken);
 
             let poolKeys: { id: string; label: string; key: string }[] = [];
             if (centralKeys.length > 0) {
@@ -727,10 +731,10 @@ Return a strictly valid JSON array where each object contains:
                 const exactContributor = (k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' ? k.contributedBy : '')).trim() || (k.contributorEmail ? k.contributorEmail.split('@')[0] : 'Community Contributor');
                 
                 if (existing) {
-                    if (!existing.contributorName || existing.contributorName === 'central' || existing.contributorName === 'anonymous') {
+                    if (!existing.contributorName || existing.contributorName === 'central' || existing.contributorName === 'anonymous' || existing.contributorName === 'Community Contributor' || existing.contributorName === 'User' || existing.contributorName === 'Community') {
                         existing.contributorName = exactContributor;
                     }
-                    if (!existing.contributedBy || existing.contributedBy === 'central' || existing.contributedBy === 'anonymous') {
+                    if (!existing.contributedBy || existing.contributedBy === 'central' || existing.contributedBy === 'anonymous' || existing.contributedBy === 'Community Contributor' || existing.contributedBy === 'User' || existing.contributedBy === 'Community') {
                         existing.contributedBy = exactContributor;
                     }
                     if (!existing.contributorEmail && k.contributorEmail) {
@@ -761,7 +765,7 @@ Return a strictly valid JSON array where each object contains:
             res.json({ success: true, added, total: firestoreKeys.length });
         } catch (e: any) {
             console.error("Error collecting keys:", e);
-            res.status(500).send(e.message);
+            res.status(500).json({ error: String(e?.message || e), stack: String(e?.stack || '') });
         }
     });
 
@@ -803,7 +807,7 @@ Return a strictly valid JSON array where each object contains:
 
             res.json({ id: newKey.id, label: newKey.label, enabled: true });
         } catch (e: any) {
-            res.status(500).send(e.message);
+            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || "") });
         }
     });
 
@@ -860,7 +864,7 @@ Return a strictly valid JSON array where each object contains:
                 version: 1
             });
         } catch (e: any) {
-            res.status(500).send(e.message);
+            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || "") });
         }
     });
 
@@ -920,7 +924,7 @@ Return a strictly valid JSON array where each object contains:
                 version: 1
             });
         } catch (e: any) {
-            res.status(500).send(e.message);
+            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || "") });
         }
     });
 
@@ -937,7 +941,7 @@ Return a strictly valid JSON array where each object contains:
 
             res.json({ success: true });
         } catch (e: any) {
-            res.status(500).send(e.message);
+            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || "") });
         }
     });
 

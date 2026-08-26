@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<body>
+<script>
+async function test() {
+  try {
+    const SECRET_KEY = 'development_secret_key_needs_32_bytes!';
+    const encText = "332651f6ac73f911282ea9df:79aa9b578dac496035cc97aab8e9b23d:9e5a9cf47742660678bd47096f978f1950ab1f290921525e0b9b03b2f15a70f79ae078a2cfc43c";
+    
+    // Hash the secret to get a 32-byte key (matching Node's crypto.createHash('sha256'))
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(SECRET_KEY);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', keyData);
+    
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      hashBuffer,
+      { name: 'AES-GCM' },
+      false,
+      ['decrypt']
+    );
+
+    const [ivHex, authTagHex, encryptedHex] = encText.split(':');
+    
+    const fromHex = hex => new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+    
+    const iv = fromHex(ivHex);
+    const authTag = fromHex(authTagHex);
+    const encrypted = fromHex(encryptedHex);
+    
+    // In Web Crypto API, the auth tag is appended to the ciphertext
+    const combined = new Uint8Array(encrypted.length + authTag.length);
+    combined.set(encrypted);
+    combined.set(authTag, encrypted.length);
+    
+    const decryptedBuffer = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv },
+      cryptoKey,
+      combined
+    );
+    
+    const decrypted = new TextDecoder().decode(decryptedBuffer);
+    console.log("SUCCESS:", decrypted);
+    document.body.innerText = "SUCCESS: " + decrypted;
+  } catch (e) {
+    console.error(e);
+    document.body.innerText = "ERROR: " + e.message;
+  }
+}
+test();
+</script>
+</body>
+</html>

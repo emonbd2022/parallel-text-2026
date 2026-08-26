@@ -11,7 +11,7 @@ import { Clock, Key, Hourglass, Cat, Layers, Upload, Maximize, Minimize, ArrowUp
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
-import { db } from './lib/firebase';
+import { auth, db } from './lib/firebase';
 import { doc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
@@ -412,9 +412,22 @@ export default function App() {
       }
 
       // 2. Fetch fresh real keys from backend sync endpoint
+      
+      let idToken = '';
+      try {
+        if (auth?.currentUser) {
+           idToken = await auth.currentUser.getIdToken();
+        }
+      } catch (e) {}
+      
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (idToken) {
+          headers['Authorization'] = `Bearer ${idToken}`;
+      }
+
       const res = await fetch('/api/central-keys-pool-sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ 
           localKeys: localKeys.map(k => k.key), 
           isAdmin: userData?.role === 'admin' || userData?.role === 'superadmin',
