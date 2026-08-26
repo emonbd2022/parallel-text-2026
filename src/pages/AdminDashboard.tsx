@@ -1,15 +1,14 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
-import { db, auth } from '../lib/firebase';
+import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { EyeOff, Eye, Download, ShieldAlert, Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Laptop, Mail } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Laptop } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
   toggleCentralKeyStatus, 
   deleteCentralKeyFromFirestore,
-  clearAllCentralKeysFromDatabase,
   CentralKeyRecord 
 } from '../services/centralKeyService';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
@@ -98,159 +97,6 @@ export const AdminDashboard: React.FC = () => {
   const [addKeyError, setAddKeyError] = useState<string | null>(null);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [keySearchTerm, setKeySearchTerm] = useState('');
-
-  
-  const [centralModeEnabled, setCentralModeEnabled] = useState(true);
-  const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
-  const [isActionLoading, setIsActionLoading] = useState(false);
-  const [isTogglingCentralMode, setIsTogglingCentralMode] = useState(false);
-  
-  useEffect(() => {
-      // 1. Fetch from server API
-      fetch('/api/admin/config')
-        .then(res => res.json())
-        .then(data => {
-            if (data && data.centralModeEnabled !== undefined) {
-              setCentralModeEnabled(data.centralModeEnabled === true);
-            }
-        })
-        .catch(e => console.warn("[AdminDashboard] Server config fetch notice:", e));
-
-      // 2. Also check Firestore settings/general if available
-      if (db) {
-        getDoc(doc(db, 'settings', 'general'))
-          .then(docSnap => {
-            if (docSnap.exists() && docSnap.data()?.centralModeEnabled !== undefined) {
-              setCentralModeEnabled(docSnap.data().centralModeEnabled === true);
-            }
-          })
-          .catch(e => console.warn("[AdminDashboard] Firestore general settings fetch notice:", e));
-      }
-  }, []);
-  
-  const handleToggleCentralMode = async () => {
-      if (isTogglingCentralMode) return;
-      const newVal = !centralModeEnabled;
-      setCentralModeEnabled(newVal);
-      setIsTogglingCentralMode(true);
-      
-      try {
-          let idToken: string | undefined;
-          if (auth?.currentUser) {
-            try {
-              idToken = await auth.currentUser.getIdToken();
-            } catch {}
-          }
-
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-
-          await fetch('/api/admin/config', {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({ centralModeEnabled: newVal })
-          });
-      } catch (e) { 
-          console.error("Error updating server central mode config:", e); 
-      }
-
-      // Also persist to Firestore settings/general
-      if (db) {
-          try {
-              await setDoc(doc(db, 'settings', 'general'), {
-                  centralModeEnabled: newVal,
-                  updatedAt: new Date().toISOString()
-              }, { merge: true });
-              recordFirestoreWrite('settings', 1, 'AdminDashboard:setCentralMode');
-          } catch (fsErr) {
-              console.warn("Could not sync centralModeEnabled to Firestore settings:", fsErr);
-          }
-      }
-      setIsTogglingCentralMode(false);
-  };
-  
-  const handleClearAllKeys = async () => {
-      if (!window.confirm("Are you sure you want to permanently delete ALL Central API keys? This will clear all keys from both the server and database.")) return;
-      setIsActionLoading(true);
-      try {
-          await clearAllCentralKeysFromDatabase();
-          setCentralKeys([]);
-          await fetchCentralKeys(true);
-      } catch (e) {
-          console.error("Error clearing all central keys:", e);
-      } finally {
-          setIsActionLoading(false);
-      }
-  };
-  
-  const handleClearDuplicates = async () => {
-      setIsActionLoading(true);
-      try {
-          const headers: Record<string, string> = {};
-          if (auth?.currentUser) {
-              headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
-          }
-          const res = await fetch('/api/admin/keys/deduplicate', { method: 'POST', headers });
-          const data = await res.json();
-          if (data.success) {
-              alert(`Cleared ${data.removedCount} duplicate keys. ${data.remainingCount} unique keys remain.`);
-          }
-          await fetchCentralKeys(true);
-      } catch (e) { console.error(e); }
-      setIsActionLoading(false);
-  };
-  
-  const handleExportKeys = async () => {
-    setIsActionLoading(true);
-    try {
-      const headers: Record<string, string> = {};
-      if (auth?.currentUser) {
-        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
-      }
-      const res = await fetch('/api/admin/keys/export', { headers });
-      if (!res.ok) {
-        throw new Error('Failed to export keys from server');
-      }
-      const csvText = await res.text();
-      const blob = new Blob([csvText], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'central-api-keys.csv';
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      console.error(e);
-      alert('Failed to export real API keys.');
-    }
-    setIsActionLoading(false);
-  };
-  
-  const toggleRevealKey = async (id: string) => {
-      if (revealedKeys[id]) {
-          setRevealedKeys(prev => { const n = { ...prev }; delete n[id]; return n; });
-          return;
-      }
-      try {
-          const headers: Record<string, string> = {};
-          if (auth?.currentUser) {
-              headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
-          }
-          const res = await fetch(`/api/admin/keys/${id}/reveal`, { headers });
-          if (!res.ok) {
-              const text = await res.text();
-              console.warn(`[AdminDashboard] Reveal key notice (${res.status}):`, text);
-              return;
-          }
-          const contentType = res.headers.get('content-type');
-          if (contentType && contentType.includes('application/json')) {
-              const data = await res.json();
-              if (data.success && data.key) {
-                  setRevealedKeys(prev => ({ ...prev, [id]: data.key }));
-              }
-          }
-      } catch (e) { console.warn("[AdminDashboard] toggleRevealKey error:", e); }
-  };
 
   const fetchCentralKeys = async (forceRefresh = false) => {
     setLoadingKeys(true);
@@ -952,24 +798,8 @@ export const AdminDashboard: React.FC = () => {
               Clean User Data
             </button>
 
-            <label className="flex items-center gap-2.5 cursor-pointer bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 shadow-lg" title="Toggle Central API access across the entire platform">
-                <input 
-                  type="checkbox" 
-                  checked={centralModeEnabled} 
-                  onChange={handleToggleCentralMode} 
-                  className="w-4 h-4 accent-purple-500 cursor-pointer" 
-                />
-                <span className="text-sm font-bold text-purple-300 flex items-center gap-1.5">
-                  <Key className="w-3.5 h-3.5 text-purple-400" />
-                  Central Mode
-                </span>
-                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${centralModeEnabled ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
-                  {centralModeEnabled ? 'ON' : 'OFF'}
-                </span>
-            </label>
-
             <label className="flex items-center gap-2 cursor-pointer bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 shadow-lg">
-                <input type="checkbox" checked={maintenanceMode} onChange={toggleMaintenance} className="w-4 h-4 accent-red-500 cursor-pointer" />
+                <input type="checkbox" checked={maintenanceMode} onChange={toggleMaintenance} className="w-4 h-4 accent-red-500" />
                 <span className="text-sm font-bold text-red-400">Maintenance Mode</span>
             </label>
           </div>
@@ -1876,35 +1706,7 @@ export const AdminDashboard: React.FC = () => {
                   <span>{showAddKeyForm ? 'Cancel' : 'Add API Key'}</span>
                 </button>
 
-                
-                <button
-                  type="button"
-                  onClick={handleExportKeys}
-                  className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 cursor-pointer"
-                >
-                  <Download className="w-4 h-4 text-purple-400" />
-                  <span className="hidden sm:inline">Export</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleClearDuplicates}
-                  disabled={isActionLoading}
-                  className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 disabled:opacity-50 cursor-pointer"
-                >
-                  {isActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4 text-amber-400" />}
-                  <span className="hidden sm:inline">Clear Duplicates</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleClearAllKeys}
-                  disabled={isActionLoading}
-                  className="flex items-center justify-center gap-2 px-4 py-2 bg-rose-900/30 hover:bg-rose-900/50 text-rose-300 rounded-xl text-sm font-semibold transition-colors border border-rose-800/50 disabled:opacity-50 cursor-pointer"
-                >
-                  {isActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4 text-rose-400" />}
-                  <span className="hidden sm:inline">Clear All</span>
-                </button>
-
-                <button
+                <button 
                   onClick={() => fetchCentralKeys(true)}
                   disabled={loadingKeys}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 disabled:opacity-50 cursor-pointer"
@@ -1916,20 +1718,6 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Manual Add Key Form */}
-            
-            <div className="flex items-center justify-between p-4 bg-slate-900 border border-slate-800 rounded-2xl mb-4">
-               <div>
-                  <h4 className="text-white font-bold">Central API Mode</h4>
-                  <p className="text-slate-400 text-xs">Allow users to utilize the Central API pool when they lack keys.</p>
-               </div>
-               <button
-                  onClick={handleToggleCentralMode}
-                  className={`w-12 h-6 rounded-full relative transition-colors ${centralModeEnabled ? 'bg-purple-600' : 'bg-slate-700'}`}
-               >
-                  <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${centralModeEnabled ? 'translate-x-7' : 'translate-x-1'}`} />
-               </button>
-            </div>
-
             {showAddKeyForm && (
               <form onSubmit={handleAddCentralKey} className="p-5 bg-slate-950/70 border border-purple-500/30 rounded-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
                 <div className="flex items-center justify-between">
@@ -2066,21 +1854,11 @@ export const AdminDashboard: React.FC = () => {
                             <td className="p-4">
                               <div className="flex items-center gap-2">
                                 <span className="font-mono text-xs text-slate-300 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
-                                  {revealedKeys[key.id] || key.maskedKey || '••••••••'}
+                                  {key.maskedKey || '••••••••'}
                                 </span>
-                                
                                 <button
                                   type="button"
-                                  onClick={() => toggleRevealKey(key.id)}
-                                  className="p-1 hover:bg-slate-800 text-slate-500 hover:text-slate-300 rounded transition-colors"
-                                  title={revealedKeys[key.id] ? "Hide Key" : "Reveal Key"}
-                                >
-                                  {revealedKeys[key.id] ? <EyeOff className="w-3.5 h-3.5 text-amber-400" /> : <Eye className="w-3.5 h-3.5" />}
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => copyKeyIdentifier(key.id, revealedKeys[key.id] || key.maskedKey || key.id)}
+                                  onClick={() => copyKeyIdentifier(key.id, key.maskedKey || key.id)}
                                   className="p-1 hover:bg-slate-800 text-slate-500 hover:text-slate-300 rounded transition-colors"
                                   title="Copy Key Identifier"
                                 >
@@ -2093,34 +1871,30 @@ export const AdminDashboard: React.FC = () => {
                               </div>
                             </td>
 
-                            <td className="p-4 text-xs">
-                              <div className="flex flex-col gap-1">
-                                <div className="font-semibold text-slate-100 flex items-center gap-1.5 text-sm">
-                                  <User className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                                  <span className="truncate max-w-[220px]" title={key.contributorName || key.contributedBy || 'User'}>
+                            <td className="p-4 text-xs text-slate-300">
+                              <div className="flex flex-col gap-0.5">
+                                <span className="font-semibold text-purple-300 inline-flex items-center gap-1.5">
+                                  <User className="w-3 h-3 text-purple-400 shrink-0" />
+                                  <span className="truncate max-w-[170px]">
                                     {(() => {
-                                      const name = (key.contributorName || key.contributedBy || '').trim();
-                                      if (name && name !== 'central' && name !== 'anonymous' && name !== 'Community Contributor') {
-                                        return name;
+                                      const email = key.contributorEmail || '';
+                                      if (key.contributorName && key.contributorName !== key.label && key.contributorName !== 'central' && key.contributorName !== 'anonymous') {
+                                        return key.contributorName;
                                       }
-                                      if (key.contributorEmail) {
-                                        return key.contributorEmail.split('@')[0];
+                                      if (key.contributedBy && key.contributedBy !== key.label && key.contributedBy !== 'central' && key.contributedBy !== 'anonymous') {
+                                        return key.contributedBy;
                                       }
-                                      return 'Community Contributor';
+                                      if (email) {
+                                        return email.split('@')[0];
+                                      }
+                                      return key.label || 'User';
                                     })()}
                                   </span>
-                                </div>
-                                {key.contributorEmail ? (
-                                  <div className="flex items-center gap-1 text-[11px] text-purple-300 font-mono pl-5">
-                                    <Mail className="w-3 h-3 text-purple-400/80 shrink-0" />
-                                    <span className="truncate max-w-[220px]" title={key.contributorEmail}>
-                                      {key.contributorEmail}
-                                    </span>
-                                  </div>
-                                ) : (
-                                  <div className="text-[10px] text-slate-500 italic pl-5">
-                                    No email attached
-                                  </div>
+                                </span>
+                                {key.contributorEmail && (
+                                  <span className="text-[10px] text-slate-500 font-mono truncate max-w-[170px]">
+                                    {key.contributorEmail}
+                                  </span>
                                 )}
                               </div>
                             </td>

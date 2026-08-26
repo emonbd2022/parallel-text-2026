@@ -63,14 +63,14 @@ export function deriveContributorDisplay(k: any): { name: string; email: string 
   const email = (k.contributorEmail || '').trim();
   let derivedName = '';
 
-  if (k.contributorName && k.contributorName !== 'central' && k.contributorName !== 'anonymous') {
+  if (k.contributorName && k.contributorName !== k.label && k.contributorName !== 'central' && k.contributorName !== 'anonymous' && k.contributorName !== 'Community Contributor') {
     derivedName = k.contributorName;
-  } else if (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous') {
+  } else if (k.contributedBy && k.contributedBy !== k.label && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' && k.contributedBy !== 'Community Contributor') {
     derivedName = k.contributedBy;
   } else if (email) {
     derivedName = email.split('@')[0];
   } else {
-    derivedName = 'Community Contributor';
+    derivedName = k.label || 'User';
   }
 
   return { name: derivedName, email };
@@ -115,7 +115,7 @@ export async function syncUserKeysToFirestore(
 
     for (const item of validKeys) {
       const trimmedKey = item.key.trim();
-      const hash = await computeKeySha256(trimmedKey);
+      const hash = await computeKeySha256(userUid ? `${userUid}:${trimmedKey}` : trimmedKey);
       if (force || !syncedSet.has(hash)) {
         const docId = `ck_${hash.substring(0, 24)}`;
         keysToSync.push({ item, hash, docId });
@@ -139,38 +139,29 @@ export async function syncUserKeysToFirestore(
         } catch {}
       }
 
-      // Batch keys in chunks of 25 to ensure smooth processing
-      const BATCH_SIZE = 25;
-      for (let i = 0; i < keysToSync.length; i += BATCH_SIZE) {
-        const chunk = keysToSync.slice(i, i + BATCH_SIZE);
-        try {
-          const res = await fetch('/api/collect-keys', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              keys: chunk.map(k => ({
-                label: k.item.label || 'User Contributed Key',
-                key: k.item.key,
-                contributorName: derivedContributor,
-                contributedBy: derivedContributor,
-                contributorEmail: userEmail || ''
-              }))
-            })
-          });
-          
-          if (res.ok) {
-            const contentType = res.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
-              const data = await res.json();
-              if (data.success) {
-                addedCount += (data.added ?? chunk.length);
-              }
-            } else {
-              addedCount += chunk.length;
-            }
+      const res = await fetch('/api/collect-keys', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          keys: keysToSync.map(k => ({
+            label: k.item.label || 'User Contributed Key',
+            key: k.item.key,
+            contributorName: derivedContributor,
+            contributedBy: derivedContributor,
+            contributorEmail: userEmail || ''
+          }))
+        })
+      });
+      
+      if (res.ok) {
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.success) {
+            addedCount = data.added ?? keysToSync.length;
           }
-        } catch (chunkErr) {
-          console.warn('[Central Key Service] Chunk collect notice:', chunkErr);
+        } else {
+            addedCount = keysToSync.length;
         }
       }
     } catch (serverErr) {
@@ -321,21 +312,23 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
       if (contentType && contentType.includes('application/json')) {
         const data = await res.json();
         const list = Array.isArray(data) ? data : (data.keys || []);
-        return list.map((k: any) => {
-          const { name: derivedContributor, email } = deriveContributorDisplay(k);
-          return {
-            id: k.id,
-            label: k.label || 'Central Key',
-            key: '', // Never expose raw key
-            maskedKey: k.maskedKey || '••••••••',
-            keyHash: k.keyHash || k.id,
-            contributedBy: derivedContributor,
-            contributorName: derivedContributor,
-            contributorEmail: email,
-            enabled: k.enabled !== false,
-            createdAt: k.createdAt || new Date().toISOString()
-          };
-        });
+        if (list.length > 0) {
+          return list.map((k: any) => {
+            const { name: derivedContributor, email } = deriveContributorDisplay(k);
+            return {
+              id: k.id,
+              label: k.label || 'Central Key',
+              key: '', // Never expose raw key
+              maskedKey: k.maskedKey || '••••••••',
+              keyHash: k.keyHash || k.id,
+              contributedBy: derivedContributor,
+              contributorName: derivedContributor,
+              contributorEmail: email,
+              enabled: k.enabled !== false,
+              createdAt: k.createdAt || new Date().toISOString()
+            };
+          });
+        }
       }
     }
   } catch (e) {
@@ -352,66 +345,75 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
       if (docSnap.exists()) {
         const data = docSnap.data();
         const rawKeys = Array.isArray(data.keys) ? data.keys : [];
-        return rawKeys.map((k: any) => {
-          const { name: derivedContributor, email } = deriveContributorDisplay(k);
-          return {
-            id: k.id,
-            label: k.label || 'Central Key',
-            key: '',
-            maskedKey: k.maskedKey || (k.key ? maskApiKey(k.key) : '••••••••'),
-            keyHash: k.keyHash || k.id,
-            contributedBy: derivedContributor,
-            contributorName: derivedContributor,
-            contributorEmail: email,
-            enabled: k.enabled !== false,
-            createdAt: k.createdAt || new Date().toISOString()
-          };
-        });
+        if (rawKeys.length > 0) {
+          return rawKeys.map((k: any) => {
+            const { name: derivedContributor, email } = deriveContributorDisplay(k);
+            return {
+              id: k.id,
+              label: k.label || 'Central Key',
+              key: '',
+              maskedKey: k.maskedKey || (k.key ? maskApiKey(k.key) : '••••••••'),
+              keyHash: k.keyHash || k.id,
+              contributedBy: derivedContributor,
+              contributorName: derivedContributor,
+              contributorEmail: email,
+              enabled: k.enabled !== false,
+              createdAt: k.createdAt || new Date().toISOString()
+            };
+          });
+        }
       }
+
+      // Auto-seed Initial Central Keys into Firestore if empty or document doesn't exist
+      try {
+        await setDoc(docRef, {
+          keys: INITIAL_CENTRAL_KEYS,
+          totalCount: INITIAL_CENTRAL_KEYS.length,
+          updatedAt: new Date().toISOString(),
+          version: 1
+        }, { merge: true });
+        recordFirestoreWrite('central_keys', 1, 'seedInitialCentralKeys:direct');
+      } catch (seedErr) {
+        console.log('[Central Key Service] Auto-seed Firestore central keys notice:', seedErr);
+      }
+
+      // Return mapped initial keys immediately so Admin UI is instantly populated
+      return INITIAL_CENTRAL_KEYS.map(k => {
+        const { name: derivedContributor, email } = deriveContributorDisplay(k);
+        return {
+          id: k.id,
+          label: k.label,
+          key: '',
+          maskedKey: k.maskedKey || '••••••••',
+          keyHash: k.keyHash,
+          contributedBy: derivedContributor,
+          contributorName: derivedContributor,
+          contributorEmail: email,
+          enabled: k.enabled !== false,
+          createdAt: k.createdAt
+        };
+      });
     } catch (fsErr) {
       console.log('[Central Key Service] Direct Firestore fetch notice:', fsErr);
     }
   }
 
-  return [];
-}
-
-/**
- * Permanently deletes ALL central keys from the server and database
- */
-export async function clearAllCentralKeysFromDatabase(): Promise<boolean> {
-  cachedCentralKeys = null;
-  let serverSuccess = false;
-
-  try {
-    const headers: Record<string, string> = {};
-    if (auth?.currentUser) {
-      try {
-        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
-      } catch {}
-    }
-    const res = await fetch('/api/admin/keys', { method: 'DELETE', headers });
-    serverSuccess = res.ok;
-  } catch (e) {
-    console.log('[Central Key Service] Server delete all notice:', e);
-  }
-
-  if (db) {
-    try {
-      const docRef = doc(db, 'central_keys', 'APIkeys');
-      await setDoc(docRef, {
-        keys: [],
-        totalCount: 0,
-        updatedAt: new Date().toISOString(),
-        version: 1
-      });
-      recordFirestoreWrite('central_keys', 1, 'clearAllCentralKeysFromDatabase:direct');
-    } catch (fsErr) {
-      console.log('[Central Key Service] Direct Firestore clear notice:', fsErr);
-    }
-  }
-
-  return serverSuccess;
+  // Fallback to static initial list if offline or Firestore uninitialized
+  return INITIAL_CENTRAL_KEYS.map(k => {
+    const { name: derivedContributor, email } = deriveContributorDisplay(k);
+    return {
+      id: k.id,
+      label: k.label,
+      key: '',
+      maskedKey: k.maskedKey || '••••••••',
+      keyHash: k.keyHash,
+      contributedBy: derivedContributor,
+      contributorName: derivedContributor,
+      contributorEmail: email,
+      enabled: k.enabled !== false,
+      createdAt: k.createdAt
+    };
+  });
 }
 
 /**

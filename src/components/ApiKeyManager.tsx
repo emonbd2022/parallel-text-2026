@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Key, Upload, Download, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw, LogIn, AlertTriangle, Loader2 } from 'lucide-react';
+import { Key, Upload, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw, LogIn, AlertTriangle, Loader2 } from 'lucide-react';
 import { ApiKey } from '../types';
 import { parseApiKeysCsv, CsvParseResult } from '../utils/csvKeyParser';
 import { ImportCsvModal } from './ImportCsvModal';
@@ -230,25 +230,6 @@ export const ApiKeyManager: React.FC<Props> = ({
     setCsvFileName('');
   };
 
-  const handleExportLocalKeys = () => {
-    if (!keys || keys.length === 0) return;
-    const lines = ["api label, api key"];
-    keys.forEach(k => {
-      const label = (k.label || 'API Key').replace(/[\r\n,]/g, ' ').trim();
-      const cleanKey = (k.key || '').trim();
-      if (cleanKey) {
-        lines.push(`${label}, ${cleanKey}`);
-      }
-    });
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'api_keys.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const toggleVisibility = (id: string) => {
     const next = new Set(visibleKeys);
     if (next.has(id)) next.delete(id);
@@ -423,7 +404,7 @@ export const ApiKeyManager: React.FC<Props> = ({
               {keys.length > 0 ? (
                 keys.map((node, index) => (
                   <div 
-                    key={node.id ? `central-node-${node.id}-${index}` : `central-node-${index}`}
+                    key={node.id || index}
                     className="p-2.5 bg-slate-900/60 rounded-xl border border-slate-800/80 flex items-center justify-between text-xs"
                   >
                     <div className="flex items-center gap-2.5">
@@ -504,17 +485,6 @@ export const ApiKeyManager: React.FC<Props> = ({
                   <Upload className="w-3.5 h-3.5 text-purple-400" />
                   Import CSV
                 </button>
-                {keys.length > 0 && (
-                  <button 
-                    type="button"
-                    onClick={handleExportLocalKeys}
-                    title="Export API keys to CSV"
-                    className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 hover:border-slate-600 shadow-sm flex items-center gap-1.5 cursor-pointer active:scale-95"
-                  >
-                    <Download className="w-3.5 h-3.5 text-purple-400" />
-                    Export CSV
-                  </button>
-                )}
                 <input 
                   type="file"
                   ref={fileInputRef}
@@ -613,7 +583,7 @@ export const ApiKeyManager: React.FC<Props> = ({
             <p className="text-xs text-slate-500 mt-1">Add a Gemini API key to start.</p>
           </div>
         )}
-        {keys.map((k, index) => {
+        {keys.map((k) => {
           const isCoolingDown = k.cooldownUntil && k.cooldownUntil > now;
           const remainingSecs = isCoolingDown ? Math.ceil((k.cooldownUntil! - now) / 1000) : 0;
           const isDead = k.errorCount >= 20; // Increased from 5
@@ -640,7 +610,7 @@ export const ApiKeyManager: React.FC<Props> = ({
           const health = Math.max(0, 100 - (k.errorCount * 5));
 
           return (
-            <div key={k.id ? `kitem-${k.id}-${index}` : `kitem-${index}`} className={`flex items-center justify-between transition-colors p-3 rounded-xl border group relative
+            <div key={k.id} className={`flex items-center justify-between transition-colors p-3 rounded-xl border group relative
               ${isDead ? 'bg-red-900/10 border-red-500/20' : 
                 isCoolingDown ? 'bg-amber-900/10 border-amber-500/20' : 
                 'bg-slate-800/40 hover:bg-slate-800/60 border-white/5'}`
@@ -737,8 +707,8 @@ export const ApiKeyManager: React.FC<Props> = ({
                   <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
                       <h4 className="font-bold text-sm text-slate-300 mb-2">TITLE / KEYWORD PREFERRED POOL ({Math.ceil(keys.length / 2)} keys)</h4>
                       <ul className="text-xs space-y-1">
-                          {keys.slice(0, Math.ceil(keys.length / 2)).map((k, idx) => (
-                              <li key={k.id ? `pool1-${k.id}-${idx}` : `pool1-${idx}`} className="flex justify-between">
+                          {keys.slice(0, Math.ceil(keys.length / 2)).map(k => (
+                              <li key={k.id} className="flex justify-between">
                                   <span className="text-slate-400">{k.label}</span>
                                   <span className={k.errorCount >= 20 ? 'text-red-400' : (k.cooldownUntil && k.cooldownUntil > now) ? 'text-amber-400' : 'text-emerald-400'}>
                                       {k.errorCount >= 20 ? 'Failed' : (k.cooldownUntil && k.cooldownUntil > now) ? 'Cooldown' : 'Healthy'}
@@ -750,8 +720,8 @@ export const ApiKeyManager: React.FC<Props> = ({
                   <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
                       <h4 className="font-bold text-sm text-slate-300 mb-2">CATEGORY PREFERRED POOL ({Math.floor(keys.length / 2)} keys)</h4>
                       <ul className="text-xs space-y-1">
-                          {keys.slice(Math.ceil(keys.length / 2)).map((k, idx) => (
-                              <li key={k.id ? `pool2-${k.id}-${idx}` : `pool2-${idx}`} className="flex justify-between">
+                          {keys.slice(Math.ceil(keys.length / 2)).map(k => (
+                              <li key={k.id} className="flex justify-between">
                                   <span className="text-slate-400">{k.label}</span>
                                   <span className={k.errorCount >= 20 ? 'text-red-400' : (k.cooldownUntil && k.cooldownUntil > now) ? 'text-amber-400' : 'text-emerald-400'}>
                                       {k.errorCount >= 20 ? 'Failed' : (k.cooldownUntil && k.cooldownUntil > now) ? 'Cooldown' : 'Healthy'}
@@ -803,7 +773,7 @@ export const ApiKeyManager: React.FC<Props> = ({
       {activeTab === 'health' && keys.length > 0 && (
           <div className="mt-4 pt-2">
               <div className="space-y-3">
-                  {keys.map((k, idx) => {
+                  {keys.map(k => {
                       const totalSuccess = Object.keys(k.usage).reduce((acc, key) => {
                           if (key !== 'date' && typeof (k.usage)[key] === 'number') {
                               return acc + (k.usage)[key];
@@ -821,7 +791,7 @@ export const ApiKeyManager: React.FC<Props> = ({
                       else if (health < 80) colorClass = "bg-amber-500";
 
                       return (
-                          <div key={k.id ? `health-${k.id}-${idx}` : `health-${idx}`} className="text-sm">
+                          <div key={k.id} className="text-sm">
                               <div className="flex justify-between items-center mb-1 px-1 text-xs">
                                   <div className="flex flex-col">
                                     <span className={`font-medium truncate max-w-[120px] ${isDead ? 'text-red-400' : 'text-slate-300'}`} title={k.label}>{k.label}</span>
