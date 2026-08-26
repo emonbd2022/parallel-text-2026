@@ -347,10 +347,6 @@ app.use(express.json({ limit: '50mb' }));
 
 // Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
 async function getRealKey(virtualKeyId: string): Promise<string> {
-    if (virtualKeyId && virtualKeyId.startsWith('AIza')) {
-        return virtualKeyId;
-    }
-    
     await syncCentralKeys();
     if (centralKeys.length > 0) {
         let index = -1;
