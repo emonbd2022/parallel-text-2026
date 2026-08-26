@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
 
@@ -414,20 +414,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   shouldUpdateDoc = true;
                 } else {
                   // Do NOT permanently block the account in Firestore.
-                  // Only restrict this specific unauthorized 3rd device session.
+                  // Just block this specific session/device.
+                  isBlocked = true;
                   deviceLimitReached = true;
                 }
               }
 
               if (shouldUpdateDoc) {
                 try {
-                  const updates: any = { deviceIds: dbDeviceIds, lastActiveAt: new Date().toISOString() };
+                  const updates: any = { deviceIds: dbDeviceIds };
                   if (isFirstAdmin && d.role !== 'admin') {
                     updates.role = 'admin';
                   }
                   if (isFirstAdmin && d.blocked) {
                     updates.blocked = false;
                   }
+                  // We removed updates.blocked = true here to prevent permanent lockouts
+                  // due to device limits. Admins can still manually block users.
                   await updateDoc(userRef, updates);
                   recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
                 } catch (e) {
@@ -520,45 +523,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 read: false,
               };
 
-              // Create initial user document in Firestore
-              const { deviceLimitReached: _dl, ...firestoreUserData } = newUserData;
-              await setDoc(userRef, {
-                ...firestoreUserData,
-                lastActiveAt: nowISO
-              });
+              // Atomic batch commit: guarantees both docs exist together without extra reads
+              const batch = writeBatch(db);
+              batch.set(userRef, newUserData);
+              batch.set(notifRef, notifData);
+              await batch.commit();
               recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');
-              console.log(`[Auth] Successfully registered user (${currentUser.uid}) in Firestore`);
+              recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
+              console.log(`[Auth] Atomically registered new user (${currentUser.uid}) and created admin notification (${notifId})`);
 
               setUserData(newUserData);
               saveUserDataToCache(newUserData);
-
-              // Non-blocking signup notification creation
-              try {
-                const notifId = `signup_${currentUser.uid}`;
-                const notifRef = doc(db, 'notifications', notifId);
-                const notifData: AppNotification = {
-                  id: notifId,
-                  targetUid: 'admin',
-                  type: 'signup',
-                  message: `New User Signup\nName: ${userName}\nEmail: ${userEmail}`,
-                  userName,
-                  userEmail,
-                  createdAt: nowISO,
-                  read: false,
-                };
-                await setDoc(notifRef, notifData);
-                recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
-              } catch (notifErr) {
-                console.warn("[Auth] Non-fatal: signup notification delivery error:", notifErr);
-              }
             }
           } catch (error: any) {
-            console.error("CRITICAL: Failed to initialize/fetch user in Firestore:", error);
+            console.error("CRITICAL: Failed to initialize new user and signup notification in Firestore:", error);
             if (error?.code) {
               console.error(`Firebase Error Code: ${error.code}, Message: ${error.message}`);
             }
-            // Clear stale ghost cache if Firestore document operation failed
-            localStorage.removeItem(`userCache_${currentUser.uid}`);
           }
         }
       } else {

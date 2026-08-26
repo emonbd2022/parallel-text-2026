@@ -6,7 +6,6 @@ import crypto from 'crypto';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from "@google/genai";
-import { DEFAULT_CENTRAL_KEYS } from './src/data/centralKeysData';
 
 dotenv.config();
 
@@ -26,26 +25,14 @@ export function encrypt(text: string) {
 }
 
 export function decrypt(encText: string) {
-    if (!encText) return '';
-    if (!encText.includes(':')) return encText;
-    const parts = encText.split(':');
-    if (parts.length < 3) return encText;
-    const [ivHex, authTagHex, encrypted] = parts;
-    if (!ivHex || !authTagHex || !encrypted) return encText;
-    try {
-        const iv = Buffer.from(ivHex, 'hex');
-        const authTag = Buffer.from(authTagHex, 'hex');
-        const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv);
-        decipher.setAuthTag(authTag);
-        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        return decrypted;
-    } catch (e) {
-        if (encText.length > 20 && !encText.includes(':')) {
-            return encText;
-        }
-        return '';
-    }
+    const [ivHex, authTagHex, encrypted] = encText.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv);
+    decipher.setAuthTag(authTag);
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
 }
 
 // In-memory cache of central keys
@@ -68,23 +55,14 @@ let centralKeyRefreshPromise: Promise<{ id: string; key: string }[]> | null = nu
 
 function loadStoredKeys(): StoredKey[] {
     try {
-        const locations = [
-            path.join(process.cwd(), 'central-keys.json'),
-            path.resolve('central-keys.json')
-        ];
-        for (const loc of locations) {
-            if (fs.existsSync(loc)) {
-                const data = fs.readFileSync(loc, 'utf8');
-                const parsed = JSON.parse(data);
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                    return parsed;
-                }
-            }
+        if (fs.existsSync(DATA_FILE)) {
+            const data = fs.readFileSync(DATA_FILE, 'utf8');
+            return JSON.parse(data);
         }
     } catch (e) {
         console.error("Error reading central-keys.json:", e);
     }
-    return DEFAULT_CENTRAL_KEYS || [];
+    return [];
 }
 
 function saveStoredKeys(keys: StoredKey[]) {
@@ -147,14 +125,14 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
             const contributorEmail = kf.contributorEmail?.stringValue || '';
             
             let contributorName = '';
-            if (rawContributorName && rawContributorName !== label && rawContributorName !== 'central' && rawContributorName !== 'anonymous' && rawContributorName !== 'Community Contributor') {
+            if (rawContributorName && rawContributorName !== label && rawContributorName !== 'central' && rawContributorName !== 'anonymous') {
                 contributorName = rawContributorName;
-            } else if (rawContributedBy && rawContributedBy !== label && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous' && rawContributedBy !== 'Community Contributor') {
+            } else if (rawContributedBy && rawContributedBy !== label && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous') {
                 contributorName = rawContributedBy;
             } else if (contributorEmail) {
                 contributorName = contributorEmail.split('@')[0];
             } else {
-                contributorName = label || 'Contributor';
+                contributorName = 'Community Contributor';
             }
             const contributedBy = contributorName;
 
@@ -210,10 +188,10 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
         const values = keys.map(k => ({
             mapValue: {
                 fields: {
-                    id: { stringValue: k.id || crypto.randomUUID() },
+                    id: { stringValue: k.id },
                     label: { stringValue: k.label || 'Central Key' },
-                    encryptedKey: { stringValue: k.encryptedKey || '' },
-                    keyHash: { stringValue: k.keyHash || '' },
+                    encryptedKey: { stringValue: k.encryptedKey },
+                    keyHash: { stringValue: k.keyHash },
                     enabled: { booleanValue: k.enabled !== false },
                     createdAt: { stringValue: k.createdAt || new Date().toISOString() },
                     contributedBy: { stringValue: k.contributedBy || 'central' },
@@ -304,20 +282,17 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                 saveStoredKeys(allStored);
             }
 
-            const active = allStored.filter(k => k.enabled !== false).map(data => {
+            const active = allStored.filter(k => k.enabled).map(data => {
                 let decryptedKey = '';
                 try {
-                    decryptedKey = decrypt(data.encryptedKey || (data as any).key);
+                    decryptedKey = decrypt(data.encryptedKey);
                 } catch (e) {
-                    if (data.encryptedKey && (data.encryptedKey.startsWith('AIza') || data.encryptedKey.startsWith('AQ.'))) {
+                    if (data.encryptedKey && data.encryptedKey.startsWith('AIza')) {
                         decryptedKey = data.encryptedKey;
                     }
                 }
-                if (!decryptedKey && (data as any).key) {
-                    decryptedKey = (data as any).key;
-                }
                 return { id: data.id, key: decryptedKey };
-            }).filter(k => k.key && k.key.length > 0);
+            }).filter(k => k.key.length > 0);
 
             centralKeys = active;
             lastCentralKeysFetchTime = Date.now();
@@ -345,37 +320,37 @@ const PORT = 3000;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
-async function getRealKey(virtualKeyId: string): Promise<string> {
-    await syncCentralKeys();
-    if (centralKeys.length > 0) {
-        let index = -1;
-        if (virtualKeyId) {
-            if (virtualKeyId.startsWith('central-')) {
-                const num = parseInt(virtualKeyId.split('-')[1], 10);
-                if (!isNaN(num) && num >= 0 && num < centralKeys.length) {
-                    index = num;
+async function startServer() {
+    await syncCentralKeys(); // Initial sync
+
+    // Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
+    async function getRealKey(virtualKeyId: string): Promise<string> {
+        await syncCentralKeys();
+        if (centralKeys.length > 0) {
+            let index = -1;
+            if (virtualKeyId) {
+                if (virtualKeyId.startsWith('central-')) {
+                    const num = parseInt(virtualKeyId.split('-')[1], 10);
+                    if (!isNaN(num) && num >= 0 && num < centralKeys.length) {
+                        index = num;
+                    }
+                }
+                if (index === -1) {
+                    const foundIdx = centralKeys.findIndex(k => k.id === virtualKeyId);
+                    if (foundIdx !== -1) index = foundIdx;
                 }
             }
-            if (index === -1) {
-                const foundIdx = centralKeys.findIndex(k => k.id === virtualKeyId);
-                if (foundIdx !== -1) index = foundIdx;
-            }
+            if (index === -1) index = 0;
+            return centralKeys[index % centralKeys.length].key;
         }
-        if (index === -1) index = 0;
-        return centralKeys[index % centralKeys.length].key;
+        if (process.env.GEMINI_API_KEY) {
+            return process.env.GEMINI_API_KEY;
+        }
+        throw new Error("No Central API keys available in pool. Please contribute an API key or switch to Local API mode.");
     }
-    if (process.env.GEMINI_API_KEY) {
-        return process.env.GEMINI_API_KEY;
-    }
-    throw new Error("No Central API keys available in server pool. Please add a key or try again.");
-}
 
-// Fire non-blocking initial central keys sync in background
-syncCentralKeys().catch(e => console.log("[Server] Background sync notice:", e));
-
-// Capacity endpoint for client
-app.get("/api/central-keys-capacity", (req, res) => {
+    // Capacity endpoint for client
+    app.get("/api/central-keys-capacity", (req, res) => {
         const stored = loadStoredKeys();
         const fallbackCount = process.env.GEMINI_API_KEY ? 1 : 0;
         const totalActive = centralKeys.length > 0 ? centralKeys.length : fallbackCount;
@@ -390,9 +365,7 @@ app.get("/api/central-keys-capacity", (req, res) => {
     // 1-Read Central API Keys Pool for Runtime Client Processing (Safe Virtual Node Handles Only)
     app.get("/api/central-keys-pool", async (req, res) => {
         try {
-            const authHeader = req.headers.authorization;
-            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-            await syncCentralKeys(false, idToken);
+            await syncCentralKeys(false);
 
             let poolKeys: { id: string; label: string; key: string }[] = [];
             if (centralKeys.length > 0) {
@@ -417,70 +390,13 @@ app.get("/api/central-keys-capacity", (req, res) => {
             });
         } catch (error: any) {
             console.error("Error fetching central keys pool:", error);
-            res.status(500).json({ success: false, error: "Failed to fetch central keys", details: String(error?.message || error), stack: String(error?.stack || ''), keys: [] });
-        }
-    });
-
-    // New endpoint to securely return node handles to eligible clients
-    app.post("/api/central-keys-pool-sync", async (req, res) => {
-        try {
-            const { localKeys, isAdmin, hasExplicitAdminGrant, forceRefresh } = req.body || {};
-            const isForceRefresh = forceRefresh === true || req.query.refresh === 'true';
-            
-            // Central API Eligibility Check
-            let isEligible = false;
-            if (isAdmin || hasExplicitAdminGrant) {
-                isEligible = true;
-            } else if (Array.isArray(localKeys)) {
-                const rawKeyList = Array.isArray(localKeys) ? localKeys : [];
-                const extractedKeys = rawKeyList
-                    .map((k: any) => typeof k === 'string' ? k.trim() : (typeof k?.key === 'string' ? k.key.trim() : ''))
-                    .filter(Boolean);
-                const uniqueKeys = new Set(extractedKeys.filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
-                if (uniqueKeys.size >= 8) {
-                    isEligible = true;
-                }
-            }
-
-            if (!isEligible) {
-                return res.status(403).json({ success: false, error: "Central API access requires at least 8 unique local API keys or Administrator approval.", keys: [] });
-            }
-
-            const authHeader = req.headers.authorization;
-            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-            await syncCentralKeys(isForceRefresh, idToken);
-
-            let poolKeys: { id: string; label: string; key: string }[] = [];
-            if (centralKeys.length > 0) {
-                // Return ANONYMOUS VIRTUAL HANDLES. Real decrypted keys NEVER touch the browser.
-                poolKeys = centralKeys.map((k, index) => ({
-                    id: `central-${index}`,
-                    label: `Central Pool Node ${index + 1}`,
-                    key: `central-${index}`
-                }));
-            } else if (process.env.GEMINI_API_KEY) {
-                poolKeys = [{
-                    id: 'central-0',
-                    label: 'Central Primary Node',
-                    key: 'central-0'
-                }];
-            }
-
-            res.json({
-                success: true,
-                keys: poolKeys,
-                count: poolKeys.length,
-                timestamp: Date.now()
-            });
-        } catch (error: any) {
-            console.error("Error fetching sync central keys pool:", error);
             res.status(500).json({ success: false, error: "Failed to fetch central keys", keys: [] });
         }
     });
 
     app.post("/api/central-generate", async (req, res) => {
         try {
-            const { items = [], config = {}, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            const { items, config, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
             const virtualKeyId = vId || nodeId;
             
             // Central API Eligibility Check
@@ -540,8 +456,8 @@ Return a strictly valid JSON array where each object contains:
             promptParts.push({ text: promptText });
 
             const response = await ai.models.generateContent({
-                model: config.model || 'gemini-2.0-flash',
-                contents: promptParts,
+                model: config.model,
+                contents: { parts: promptParts },
                 config: {
                     systemInstruction: systemInstruction,
                     responseMimeType: "application/json",
@@ -590,7 +506,7 @@ Return a strictly valid JSON array where each object contains:
             res.json(results);
         } catch (error: any) {
             console.error("Central API Error:", error);
-            res.status(500).json({ error: String(error?.message || error), stackString: String(error?.stack || '') });
+            res.status(500).json({ error: error.message || "Internal Server Error" });
         }
     });
 
@@ -682,8 +598,8 @@ Return a strictly valid JSON array where each object contains:
             });
 
             const response = await ai.models.generateContent({
-                model: model || 'gemini-2.0-flash',
-                contents: promptParts,
+                model: model,
+                contents: { parts: promptParts },
                 config: {
                     systemInstruction: systemInstruction,
                     responseMimeType: "application/json",
@@ -733,70 +649,59 @@ Return a strictly valid JSON array where each object contains:
     // Endpoint for users to automatically contribute keys to the central pool
     app.post("/api/collect-keys", async (req, res) => {
         try {
-            const { keys } = req.body || {};
-            if (!Array.isArray(keys)) return res.status(400).json({ success: false, error: "Expected array of keys" });
-
-            const authHeader = req.headers.authorization;
-            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            const { keys } = req.body;
+            if (!Array.isArray(keys)) return res.status(400).send("Expected array of keys");
 
             let added = 0;
-            let modified = false;
-            const firestoreKeys = await fetchKeysFromFirestore(idToken) || loadStoredKeys();
+            const storedKeys = loadStoredKeys();
             
-            for (const rawK of keys) {
-                if (!rawK) continue;
-                const rawVal = typeof rawK === 'string' ? rawK : (rawK.key || '');
-                if (typeof rawVal !== 'string') continue;
-                const keyVal = rawVal.trim();
-                if (keyVal.length < 10 || keyVal.startsWith('central-')) continue;
-
-                const labelVal = typeof rawK === 'object' && rawK?.label ? String(rawK.label) : 'User Contributed Key';
-                const contribName = typeof rawK === 'object' ? rawK.contributorName : '';
-                const contribBy = typeof rawK === 'object' ? rawK.contributedBy : '';
-                const contribEmail = typeof rawK === 'object' ? rawK.contributorEmail : '';
-
-                const keyHash = crypto.createHash('sha256').update(keyVal).digest('hex');
-                const existing = firestoreKeys.find(sk => sk && sk.keyHash === keyHash);
-                const exactContributor = (contribName || (contribBy && contribBy !== 'central' && contribBy !== 'anonymous' && contribBy !== 'Community Contributor' ? contribBy : '') || (contribEmail ? contribEmail.split('@')[0] : '') || '').trim() || 'Contributor';
-
+            for (const k of keys) {
+                if (!k.key) continue;
+                
+                const keyHash = crypto.createHash('sha256').update(k.key.trim()).digest('hex');
+                
+                const existing = storedKeys.find(sk => sk.keyHash === keyHash);
+                const exactContributor = (k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' ? k.contributedBy : '')).trim() || (k.contributorEmail ? k.contributorEmail.split('@')[0] : 'Community Contributor');
+                
                 if (existing) {
-                    if (exactContributor && exactContributor !== 'Contributor') {
-                        if (existing.contributorName !== exactContributor || existing.contributedBy !== exactContributor) {
-                            existing.contributorName = exactContributor;
-                            existing.contributedBy = exactContributor;
-                            modified = true;
-                        }
+                    // Update metadata if missing
+                    if (!existing.contributorName || existing.contributorName === 'central' || existing.contributorName === 'anonymous') {
+                        existing.contributorName = exactContributor;
                     }
-                    if (contribEmail && existing.contributorEmail !== contribEmail) {
-                        existing.contributorEmail = contribEmail;
-                        modified = true;
+                    if (!existing.contributedBy || existing.contributedBy === 'central' || existing.contributedBy === 'anonymous') {
+                        existing.contributedBy = exactContributor;
                     }
-                    continue; 
+                    if (!existing.contributorEmail && k.contributorEmail) {
+                        existing.contributorEmail = k.contributorEmail;
+                    }
+                    continue; // Skip duplicate
                 }
 
-                const encryptedKey = encrypt(keyVal);
-                firestoreKeys.push({
+                const encryptedKey = encrypt(k.key.trim());
+                storedKeys.push({
                     id: crypto.randomUUID(),
-                    label: labelVal,
+                    label: k.label || 'User Contributed Key',
                     encryptedKey,
                     keyHash,
                     enabled: true,
                     createdAt: new Date().toISOString(),
                     contributedBy: exactContributor,
                     contributorName: exactContributor,
-                    contributorEmail: contribEmail || ''
+                    contributorEmail: k.contributorEmail || ''
                 });
                 added++;
             }
-            if (added > 0 || modified) {
-                await saveKeysToFirestoreDocument(firestoreKeys, idToken);
-                saveStoredKeys(firestoreKeys);
+            if (added > 0) {
+                saveStoredKeys(storedKeys);
                 invalidateCentralCache();
+                const authHeader = req.headers.authorization;
+                const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+                await saveKeysToFirestoreDocument(storedKeys, idToken);
             }
-            res.json({ success: true, added, total: firestoreKeys.length });
+            res.json({ success: true, added, total: centralKeys.length });
         } catch (e: any) {
             console.error("Error collecting keys:", e);
-            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || '') });
+            res.status(500).send(e.message);
         }
     });
 
@@ -838,7 +743,7 @@ Return a strictly valid JSON array where each object contains:
 
             res.json({ id: newKey.id, label: newKey.label, enabled: true });
         } catch (e: any) {
-            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || "") });
+            res.status(500).send(e.message);
         }
     });
 
@@ -862,14 +767,14 @@ Return a strictly valid JSON array where each object contains:
 
                 const contributorEmail = data.contributorEmail || '';
                 let exactContributor = '';
-                if (data.contributorName && data.contributorName !== data.label && data.contributorName !== 'central' && data.contributorName !== 'anonymous' && data.contributorName !== 'Community Contributor') {
+                if (data.contributorName && data.contributorName !== data.label && data.contributorName !== 'central' && data.contributorName !== 'anonymous') {
                     exactContributor = data.contributorName;
-                } else if (data.contributedBy && data.contributedBy !== data.label && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous' && data.contributedBy !== 'Community Contributor') {
+                } else if (data.contributedBy && data.contributedBy !== data.label && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous') {
                     exactContributor = data.contributedBy;
                 } else if (contributorEmail) {
                     exactContributor = contributorEmail.split('@')[0];
                 } else {
-                    exactContributor = data.label || 'Contributor';
+                    exactContributor = 'Community Contributor';
                 }
 
                 return {
@@ -895,7 +800,7 @@ Return a strictly valid JSON array where each object contains:
                 version: 1
             });
         } catch (e: any) {
-            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || "") });
+            res.status(500).send(e.message);
         }
     });
 
@@ -923,14 +828,14 @@ Return a strictly valid JSON array where each object contains:
 
                 const contributorEmail = data.contributorEmail || '';
                 let exactContributor = '';
-                if (data.contributorName && data.contributorName !== data.label && data.contributorName !== 'central' && data.contributorName !== 'anonymous' && data.contributorName !== 'Community Contributor') {
+                if (data.contributorName && data.contributorName !== data.label && data.contributorName !== 'central' && data.contributorName !== 'anonymous') {
                     exactContributor = data.contributorName;
-                } else if (data.contributedBy && data.contributedBy !== data.label && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous' && data.contributedBy !== 'Community Contributor') {
+                } else if (data.contributedBy && data.contributedBy !== data.label && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous') {
                     exactContributor = data.contributedBy;
                 } else if (contributorEmail) {
                     exactContributor = contributorEmail.split('@')[0];
                 } else {
-                    exactContributor = data.label || 'Contributor';
+                    exactContributor = 'Community Contributor';
                 }
 
                 return {
@@ -955,7 +860,7 @@ Return a strictly valid JSON array where each object contains:
                 version: 1
             });
         } catch (e: any) {
-            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || "") });
+            res.status(500).send(e.message);
         }
     });
 
@@ -972,7 +877,7 @@ Return a strictly valid JSON array where each object contains:
 
             res.json({ success: true });
         } catch (e: any) {
-            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || "") });
+            res.status(500).send(e.message);
         }
     });
 
@@ -995,28 +900,19 @@ Return a strictly valid JSON array where each object contains:
         }
     });
 
-    app.use((err: any, req: any, res: any, next: any) => {
-        console.error("GLOBAL SERVER ERROR:", err);
-        res.status(500).json({ error: err.message || "Internal Server Error", stack: err.stack });
-    });
-
     // Catch-all for API endpoints to ensure API requests never fall back to index.html
-    app.all('/api/*all', (req, res) => {
+    app.all('/api/*', (req, res) => {
         res.status(404).json({ error: `Central API endpoint ${req.method} ${req.path} not found` });
     });
 
     // Vite middleware for development
     if (process.env.NODE_ENV !== "production") {
-        createViteServer({
-            root: process.cwd(),
+        const vite = await createViteServer({
             server: { middlewareMode: true },
             appType: "spa",
-        }).then(vite => {
-            app.use(vite.middlewares);
-        }).catch(err => {
-            console.error("Vite server error:", err);
         });
-    } else if (!process.env.VERCEL) {
+        app.use(vite.middlewares);
+    } else {
         const distPath = path.join(process.cwd(), 'dist');
         app.use(express.static(distPath));
         app.get('*all', (req, res) => {
@@ -1024,8 +920,9 @@ Return a strictly valid JSON array where each object contains:
         });
     }
 
-    if (!process.env.VERCEL) {
-        app.listen(PORT, "0.0.0.0", () => {
-            console.log(`Server running on http://0.0.0.0:${PORT}`);
-        });
-    }
+    app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on http://0.0.0.0:${PORT}`);
+    });
+}
+
+startServer();

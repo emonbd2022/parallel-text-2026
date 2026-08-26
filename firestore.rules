@@ -86,7 +86,7 @@ service cloud.firestore {
         );
 
       // Update: Enforces schema allowlist for ALL users.
-      // Normal users can ONLY update 'credits' (decrease/equal), 'totalProcessedImages' (increase/equal), 'deviceIds' (max 2 devices), and 'lastActiveAt'.
+      // Normal users can ONLY update 'credits' (decrease/equal) and 'totalProcessedImages' (increase/equal).
       allow update: if isAuthenticated() && 
         hasOnlyEssentialAccountFields() && 
         hasNoForbiddenLocalData() && 
@@ -94,7 +94,7 @@ service cloud.firestore {
           isAdmin() ||
           (
             request.auth.uid == userId &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages', 'deviceIds', 'lastActiveAt']) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages']) &&
             (
               !('credits' in request.resource.data.diff(resource.data).affectedKeys()) ||
               (
@@ -109,19 +109,6 @@ service cloud.firestore {
                 request.resource.data.totalProcessedImages is number &&
                 request.resource.data.totalProcessedImages >= resource.data.totalProcessedImages &&
                 request.resource.data.totalProcessedImages >= 0
-              )
-            ) &&
-            (
-              !('deviceIds' in request.resource.data.diff(resource.data).affectedKeys()) ||
-              (
-                request.resource.data.deviceIds is list &&
-                request.resource.data.deviceIds.size() <= 2
-              )
-            ) &&
-            (
-              !('lastActiveAt' in request.resource.data.diff(resource.data).affectedKeys()) ||
-              (
-                request.resource.data.lastActiveAt is string
               )
             )
           )
@@ -141,7 +128,7 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (isAdmin() || resource.data.targetUid == 'all');
 
       // Create: Enforces schema allowlist and prohibits local data.
-      // Admins can create. Newly registered users can create their own signup alert to admin.
+      // Admins can create. Newly registered users can ONLY create their own signup alert to admin.
       allow create: if isAuthenticated() &&
         hasOnlyNotificationFields() &&
         hasNoForbiddenLocalData() &&
@@ -151,8 +138,9 @@ service cloud.firestore {
           (isAdmin() && request.resource.data.targetUid in ['admin', 'all']) ||
           (
             request.resource.data.targetUid == 'admin' &&
-            notificationId.matches('^signup_' + request.auth.uid + '.*') &&
+            notificationId == ('signup_' + request.auth.uid) &&
             request.resource.data.type == 'signup' &&
+            request.resource.data.id == ('signup_' + request.auth.uid) &&
             request.resource.data.userName is string &&
             request.resource.data.userEmail is string &&
             request.resource.data.message is string &&
@@ -160,22 +148,10 @@ service cloud.firestore {
           )
         );
 
-      // Update: Restricted to administrators OR users re-sending their signup alert upon re-registration
-      allow update: if isAuthenticated() &&
-        hasOnlyNotificationFields() &&
-        hasNoForbiddenLocalData() &&
-        (
-          (isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) && request.resource.data.read is bool) ||
-          (
-            request.resource.data.targetUid == 'admin' &&
-            notificationId.matches('^signup_' + request.auth.uid + '.*') &&
-            request.resource.data.type == 'signup' &&
-            request.resource.data.userName is string &&
-            request.resource.data.userEmail is string &&
-            request.resource.data.message is string &&
-            request.resource.data.read == false
-          )
-        );
+      // Update: Restricted to administrators AND restricted to 'read' field only
+      allow update: if isAdmin() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) &&
+        request.resource.data.read is bool;
 
       // Delete: Strictly restricted to administrators
       allow delete: if isAdmin();
@@ -200,8 +176,11 @@ service cloud.firestore {
     // Client users retrieve anonymous virtual nodes via server-side cached registry.
     // =========================================================
     match /central_keys/{keyDocId} {
-      // Read & Write: Authenticated users can read encrypted registry metadata and contribute crowdsourced keys to central_keys/APIkeys
-      allow read, write: if isAuthenticated();
+      // Read: Authenticated users can read the single central registry document (encrypted/masked metadata)
+      allow read: if isAuthenticated();
+
+      // Write: Admin only (single document central_keys/APIkeys updated via server API / admin)
+      allow write: if isAdmin();
     }
 
     // =========================================================

@@ -17,13 +17,12 @@ export interface SyncResult {
 }
 
 /**
- * Calculates a stable fingerprint for a list of API keys, scoped to the user UID
+ * Calculates a stable fingerprint for a list of API keys
  */
-export function computeKeysFingerprint(keys: SyncKeyPayload[], userUid?: string): string {
-  const uidPrefix = userUid ? `${userUid}:::` : '';
+export function computeKeysFingerprint(keys: SyncKeyPayload[]): string {
   const normalized = keys
     .filter(k => k.key && !k.key.startsWith('central-') && k.key.trim().length > 0)
-    .map(k => `${uidPrefix}${k.label.trim()}:::${k.key.trim()}`)
+    .map(k => `${k.label.trim()}:::${k.key.trim()}`)
     .sort()
     .join('||');
   return normalized;
@@ -72,19 +71,18 @@ export async function syncLocalKeysToServer(
       return { success: true, added: 0, message: 'No valid local keys to sync' };
     }
 
-    const fingerprintKey = `last_synced_keys_fingerprint_${userUid || 'anonymous'}`;
-    const currentFingerprint = computeKeysFingerprint(realKeys, userUid);
-    const lastFingerprint = sessionStorage.getItem(fingerprintKey);
+    const currentFingerprint = computeKeysFingerprint(realKeys);
+    const lastFingerprint = sessionStorage.getItem('last_synced_keys_fingerprint');
 
     // If fingerprint is identical and not forced, do 0 reads and 0 writes
     if (!force && lastFingerprint === currentFingerprint) {
       return { success: true, added: 0, message: 'Keys already up to date' };
     }
 
-    // Sync keys to Firestore database and server pool
-    const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail, contributorName, force);
+    // Sync only new keys to Firestore database (1 write for diffs only)
+    const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail, contributorName);
 
-    sessionStorage.setItem(fingerprintKey, currentFingerprint);
+    sessionStorage.setItem('last_synced_keys_fingerprint', currentFingerprint);
 
     return {
       success: true,

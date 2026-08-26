@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Laptop } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
@@ -479,11 +479,6 @@ export const AdminDashboard: React.FC = () => {
       await deleteDoc(doc(db, 'users', uid));
       recordFirestoreWrite('users', 1, 'AdminDashboard:deleteUser');
 
-      // Also clean up any associated signup notification
-      try {
-        await deleteDoc(doc(db, 'notifications', `signup_${uid}`));
-      } catch {}
-
       // Remove from paginated state and sessionStorage cache
       setUsersByPage(prev => {
         const next = { ...prev };
@@ -620,9 +615,7 @@ export const AdminDashboard: React.FC = () => {
             role: raw.role || 'user',
             joinDate: raw.joinDate || raw.createdAt || new Date().toISOString(),
             createdAt: raw.createdAt || raw.joinDate || new Date().toISOString(),
-            photoURL: raw.photoURL || '',
-            deviceIds: Array.isArray(raw.deviceIds) ? raw.deviceIds.slice(0, 2) : [],
-            lastActiveAt: raw.lastActiveAt || null
+            photoURL: raw.photoURL || ''
           };
 
           batch.set(doc(db, 'users', d.id), cleanDoc);
@@ -775,14 +768,7 @@ export const AdminDashboard: React.FC = () => {
             </button>
 
             <button
-              onClick={() => {
-                sessionStorage.removeItem('adminCachedAllUsers');
-                sessionStorage.removeItem('adminCachedUsersByPage');
-                setAllUsers([]);
-                setUsersByPage({});
-                setLastVisibleByPage({});
-                setTimeout(() => fetchPage(1, true), 50);
-              }}
+              onClick={() => fetchPage(currentPage, true)}
               className="flex items-center gap-2 bg-slate-900/50 hover:bg-slate-800 border border-slate-800 rounded-xl px-4 py-2 text-sm font-bold text-slate-300 transition-colors"
             >
               <RefreshCw className="w-4 h-4 text-purple-400" />
@@ -957,7 +943,6 @@ export const AdminDashboard: React.FC = () => {
                       <th className="pb-3 font-semibold">Central API</th>
                       <th className="pb-3 font-semibold">Processed</th>
                       <th className="pb-3 font-semibold">Avg/Day</th>
-                      <th className="pb-3 font-semibold">Devices</th>
                       <th className="pb-3 font-semibold">Status</th>
                       <th className="pb-3 font-semibold text-right pr-3">Action</th>
                     </tr>
@@ -965,7 +950,7 @@ export const AdminDashboard: React.FC = () => {
                   <tbody className="divide-y divide-slate-800">
                     {(loading || isFetchingAllUsers) ? (
                       <tr>
-                        <td colSpan={11} className="py-12 text-center text-slate-400">
+                        <td colSpan={10} className="py-12 text-center text-slate-400">
                           <div className="flex flex-col items-center justify-center gap-3">
                             <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
                             <span className="text-sm font-medium">
@@ -975,7 +960,7 @@ export const AdminDashboard: React.FC = () => {
                         </td>
                       </tr>
                     ) : filteredUsers.length === 0 ? (
-                      <tr><td colSpan={11} className="py-8 text-center text-slate-500">No users found.</td></tr>
+                      <tr><td colSpan={10} className="py-8 text-center text-slate-500">No users found.</td></tr>
                     ) : (
                       filteredUsers.map((user, index) => {
                             const rank = viewMode === 'all' ? index + 1 : (currentPage - 1) * 5 + index + 1;
@@ -1092,31 +1077,6 @@ export const AdminDashboard: React.FC = () => {
                               {avgPerDay.toLocaleString()}/d
                             </td>
                             
-                            <td className="py-4">
-                              <div className="flex items-center gap-1.5">
-                                <span className={`text-xs px-2 py-0.5 rounded font-mono font-medium ${
-                                  (user.deviceIds?.length || 0) >= 2 
-                                    ? 'bg-amber-950/40 text-amber-300 border border-amber-800/40' 
-                                    : 'bg-slate-900 text-slate-300 border border-slate-800'
-                                }`}>
-                                  {user.deviceIds?.length || 0}/2
-                                </span>
-                                {(user.deviceIds?.length || 0) > 0 && (
-                                  <button
-                                    onClick={() => {
-                                      if (confirm(`Reset device registrations for ${user.name || user.email || 'user'}? This will allow them to login on new devices.`)) {
-                                        handleUpdateUser(user.uid, { deviceIds: [] });
-                                      }
-                                    }}
-                                    className="text-[10px] text-purple-400 hover:text-purple-300 hover:underline ml-1 cursor-pointer"
-                                    title="Reset devices limit for this user"
-                                  >
-                                    Reset
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-
                             <td className="py-4">
                                 <label className="flex items-center gap-2 cursor-pointer">
                                   <input 
@@ -1887,7 +1847,7 @@ export const AdminDashboard: React.FC = () => {
                                       if (email) {
                                         return email.split('@')[0];
                                       }
-                                      return key.label || 'User';
+                                      return 'Community Contributor';
                                     })()}
                                   </span>
                                 </span>
