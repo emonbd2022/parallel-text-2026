@@ -1,9 +1,9 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, auth } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Laptop } from 'lucide-react';
+import { EyeOff, Eye, Download, ShieldAlert, Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Laptop } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
@@ -97,6 +97,90 @@ export const AdminDashboard: React.FC = () => {
   const [addKeyError, setAddKeyError] = useState<string | null>(null);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [keySearchTerm, setKeySearchTerm] = useState('');
+
+  
+  const [centralModeEnabled, setCentralModeEnabled] = useState(true);
+  const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
+  const [isActionLoading, setIsActionLoading] = useState(false);
+  
+  useEffect(() => {
+      fetch('/api/admin/config').then(res => res.json()).then(data => {
+          if (data && data.centralModeEnabled !== undefined) setCentralModeEnabled(data.centralModeEnabled);
+      }).catch(e => console.error(e));
+  }, []);
+  
+  const handleToggleCentralMode = async () => {
+      const newVal = !centralModeEnabled;
+      setCentralModeEnabled(newVal);
+      try {
+          await fetch('/api/admin/config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ centralModeEnabled: newVal })
+          });
+      } catch (e) { console.error(e); }
+  };
+  
+  const handleClearAllKeys = async () => {
+      if (!window.confirm("Are you sure you want to permanently delete ALL Central API keys? This cannot be undone.")) return;
+      setIsActionLoading(true);
+      try {
+          const headers: Record<string, string> = {};
+          if (auth?.currentUser) {
+              headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+          }
+          await fetch('/api/admin/keys', { method: 'DELETE', headers });
+          await fetchCentralKeys(true);
+      } catch (e) { console.error(e); }
+      setIsActionLoading(false);
+  };
+  
+  const handleClearDuplicates = async () => {
+      setIsActionLoading(true);
+      try {
+          const headers: Record<string, string> = {};
+          if (auth?.currentUser) {
+              headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+          }
+          const res = await fetch('/api/admin/keys/deduplicate', { method: 'POST', headers });
+          const data = await res.json();
+          if (data.success) {
+              alert(`Cleared ${data.removedCount} duplicate keys. ${data.remainingCount} unique keys remain.`);
+          }
+          await fetchCentralKeys(true);
+      } catch (e) { console.error(e); }
+      setIsActionLoading(false);
+  };
+  
+  const handleExportKeys = () => {
+      const csvHeader = "ID,Label,MaskedKey,Contributor,Email,Status,Date Added\n";
+      const csvBody = centralKeys.map(k => `"${k.id}","${k.label}","${k.maskedKey}","${k.contributorName}","${k.contributorEmail || ''}","${k.enabled ? 'Enabled' : 'Disabled'}","${new Date(k.createdAt).toLocaleDateString()}"`).join('\n');
+      const blob = new Blob([csvHeader + csvBody], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'central-api-keys.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+  };
+  
+  const toggleRevealKey = async (id: string) => {
+      if (revealedKeys[id]) {
+          setRevealedKeys(prev => { const n = { ...prev }; delete n[id]; return n; });
+          return;
+      }
+      try {
+          const headers: Record<string, string> = {};
+          if (auth?.currentUser) {
+              headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+          }
+          const res = await fetch(`/api/admin/keys/${id}/reveal`, { headers });
+          const data = await res.json();
+          if (data.success && data.key) {
+              setRevealedKeys(prev => ({ ...prev, [id]: data.key }));
+          }
+      } catch (e) { console.error(e); }
+  };
 
   const fetchCentralKeys = async (forceRefresh = false) => {
     setLoadingKeys(true);
@@ -1706,7 +1790,35 @@ export const AdminDashboard: React.FC = () => {
                   <span>{showAddKeyForm ? 'Cancel' : 'Add API Key'}</span>
                 </button>
 
-                <button 
+                
+                <button
+                  type="button"
+                  onClick={handleExportKeys}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 cursor-pointer"
+                >
+                  <Download className="w-4 h-4 text-purple-400" />
+                  <span className="hidden sm:inline">Export</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearDuplicates}
+                  disabled={isActionLoading}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 disabled:opacity-50 cursor-pointer"
+                >
+                  {isActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4 text-amber-400" />}
+                  <span className="hidden sm:inline">Clear Duplicates</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearAllKeys}
+                  disabled={isActionLoading}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-rose-900/30 hover:bg-rose-900/50 text-rose-300 rounded-xl text-sm font-semibold transition-colors border border-rose-800/50 disabled:opacity-50 cursor-pointer"
+                >
+                  {isActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4 text-rose-400" />}
+                  <span className="hidden sm:inline">Clear All</span>
+                </button>
+
+                <button
                   onClick={() => fetchCentralKeys(true)}
                   disabled={loadingKeys}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 disabled:opacity-50 cursor-pointer"
@@ -1718,6 +1830,20 @@ export const AdminDashboard: React.FC = () => {
             </div>
 
             {/* Manual Add Key Form */}
+            
+            <div className="flex items-center justify-between p-4 bg-slate-900 border border-slate-800 rounded-2xl mb-4">
+               <div>
+                  <h4 className="text-white font-bold">Central API Mode</h4>
+                  <p className="text-slate-400 text-xs">Allow users to utilize the Central API pool when they lack keys.</p>
+               </div>
+               <button
+                  onClick={handleToggleCentralMode}
+                  className={`w-12 h-6 rounded-full relative transition-colors ${centralModeEnabled ? 'bg-purple-600' : 'bg-slate-700'}`}
+               >
+                  <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${centralModeEnabled ? 'translate-x-7' : 'translate-x-1'}`} />
+               </button>
+            </div>
+
             {showAddKeyForm && (
               <form onSubmit={handleAddCentralKey} className="p-5 bg-slate-950/70 border border-purple-500/30 rounded-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
                 <div className="flex items-center justify-between">
@@ -1854,11 +1980,21 @@ export const AdminDashboard: React.FC = () => {
                             <td className="p-4">
                               <div className="flex items-center gap-2">
                                 <span className="font-mono text-xs text-slate-300 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
-                                  {key.maskedKey || '••••••••'}
+                                  {revealedKeys[key.id] || key.maskedKey || '••••••••'}
                                 </span>
+                                
                                 <button
                                   type="button"
-                                  onClick={() => copyKeyIdentifier(key.id, key.maskedKey || key.id)}
+                                  onClick={() => toggleRevealKey(key.id)}
+                                  className="p-1 hover:bg-slate-800 text-slate-500 hover:text-slate-300 rounded transition-colors"
+                                  title={revealedKeys[key.id] ? "Hide Key" : "Reveal Key"}
+                                >
+                                  {revealedKeys[key.id] ? <EyeOff className="w-3.5 h-3.5 text-amber-400" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => copyKeyIdentifier(key.id, revealedKeys[key.id] || key.maskedKey || key.id)}
                                   className="p-1 hover:bg-slate-800 text-slate-500 hover:text-slate-300 rounded transition-colors"
                                   title="Copy Key Identifier"
                                 >

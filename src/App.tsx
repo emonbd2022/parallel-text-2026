@@ -114,19 +114,41 @@ export default function App() {
       const loaded = JSON.parse(localStorage.getItem(STORAGE_KEYS) || '[]');
       const currentSession = getUsageSessionId();
       
-      // Migration: Add usage if missing or reset if new session
-      return loaded.map((k: any) => {
+      const seenIds = new Set<string>();
+      const seenKeys = new Set<string>();
+      const sanitized: ApiKey[] = [];
+
+      for (const k of (Array.isArray(loaded) ? loaded : [])) {
+        if (!k || typeof k !== 'object') continue;
+        const keyStr = (k.key || '').trim();
+        let keyId = k.id ? String(k.id) : ('key_' + Math.random().toString(36).substring(2, 9));
+        
+        // If ID is already seen, reassign a unique one
+        if (seenIds.has(keyId)) {
+          keyId = `${keyId}_${Math.random().toString(36).substring(2, 7)}`;
+        }
+        seenIds.add(keyId);
+
+        // Deduplicate duplicate key values in local list
+        if (keyStr && seenKeys.has(keyStr)) {
+          continue;
+        }
+        if (keyStr) seenKeys.add(keyStr);
+
         let usage = k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
         if (usage.date !== currentSession) {
-            usage = { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
+          usage = { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
         }
-        return { 
-            ...k, 
-            cooldownUntil: undefined,
-            errorCount: 0, // Reset errors on reload to prevent permanent blocking
-            usage: usage
-        };
-      });
+        sanitized.push({
+          ...k,
+          id: keyId,
+          key: keyStr || k.key,
+          cooldownUntil: undefined,
+          errorCount: 0, // Reset errors on reload to prevent permanent blocking
+          usage: usage
+        });
+      }
+      return sanitized;
     } catch { return []; }
   });
 
@@ -734,23 +756,27 @@ export default function App() {
       if ((f.type.startsWith('image/') || f.name.toLowerCase().endsWith('.eps') || f.name.toLowerCase().endsWith('.svg')) && !existingNames.has(f.name)) {
         existingNames.add(f.name);
         newItems.push({
-        id: Math.random().toString(36).slice(2, 11),
-        file: f,
-        name: f.name,
-        size: f.size,
-        thumb: null,
-        blob: null,
-        status: 'pending',
-        attempts: 0,
-        title: '',
-        keywords: '',
-        failedKeyIds: []
-      });
+          id: 'item_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 11),
+          file: f,
+          name: f.name,
+          size: f.size,
+          thumb: null,
+          blob: null,
+          status: 'pending',
+          attempts: 0,
+          title: '',
+          keywords: '',
+          failedKeyIds: []
+        });
       }
     }
 
     if (newItems.length > 0) {
-      setItems(prev => [...prev, ...newItems]);
+      setItems(prev => {
+        const existingIds = new Set(prev.map(p => p.id));
+        const filteredNew = newItems.filter(ni => !existingIds.has(ni.id));
+        return [...prev, ...filteredNew];
+      });
 
       const compressQueue = [...newItems];
       const processCompression = async () => {

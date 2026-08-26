@@ -115,7 +115,7 @@ export async function syncUserKeysToFirestore(
 
     for (const item of validKeys) {
       const trimmedKey = item.key.trim();
-      const hash = await computeKeySha256(userUid ? `${userUid}:${trimmedKey}` : trimmedKey);
+      const hash = await computeKeySha256(trimmedKey);
       if (force || !syncedSet.has(hash)) {
         const docId = `ck_${hash.substring(0, 24)}`;
         keysToSync.push({ item, hash, docId });

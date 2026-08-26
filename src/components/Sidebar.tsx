@@ -119,21 +119,22 @@ export const Sidebar: React.FC<Props> = ({
                 localKeys={localKeys}
                 onAdd={(l, k) => {
                   const newKey: ApiKey = { 
-                    id: Math.random().toString(36), 
+                    id: 'key_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 9), 
                     label: l, 
                     key: k, 
                     errorCount: 0,
                     usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
                   };
-                  setKeys(prev => [...prev, newKey]);
                   if (setLocalKeys) {
-                    setLocalKeys(prev => [...prev, newKey]);
+                    setLocalKeys(prev => [...prev.filter(item => item.id !== newKey.id && item.key !== newKey.key), newKey]);
+                  } else {
+                    setKeys(prev => [...prev.filter(item => item.id !== newKey.id && item.key !== newKey.key), newKey]);
                   }
                 }}
                 onAddMultiple={(imported) => {
                   const currentSession = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' });
                   const newKeyObjects: ApiKey[] = imported.map((item, idx) => ({
-                    id: Math.random().toString(36).substring(2, 9) + Date.now().toString(36) + idx,
+                    id: 'key_' + Date.now().toString(36) + '_' + idx + '_' + Math.random().toString(36).substring(2, 9),
                     label: item.label,
                     key: item.key,
                     errorCount: 0,
@@ -150,15 +151,27 @@ export const Sidebar: React.FC<Props> = ({
                       flash_3_7: 0 
                     }
                   }));
-                  setKeys(prev => [...prev, ...newKeyObjects]);
                   if (setLocalKeys) {
-                    setLocalKeys(prev => [...prev, ...newKeyObjects]);
+                    setLocalKeys(prev => {
+                      const newKeysSet = new Set(newKeyObjects.map(nk => nk.key));
+                      const newIdsSet = new Set(newKeyObjects.map(nk => nk.id));
+                      const remaining = prev.filter(item => !newIdsSet.has(item.id) && !newKeysSet.has(item.key));
+                      return [...remaining, ...newKeyObjects];
+                    });
+                  } else {
+                    setKeys(prev => {
+                      const newKeysSet = new Set(newKeyObjects.map(nk => nk.key));
+                      const newIdsSet = new Set(newKeyObjects.map(nk => nk.id));
+                      const remaining = prev.filter(item => !newIdsSet.has(item.id) && !newKeysSet.has(item.key));
+                      return [...remaining, ...newKeyObjects];
+                    });
                   }
                 }}
                 onRemove={(id) => {
-                  setKeys(prev => prev.filter(k => k.id !== id));
                   if (setLocalKeys) {
                     setLocalKeys(prev => prev.filter(k => k.id !== id));
+                  } else {
+                    setKeys(prev => prev.filter(k => k.id !== id));
                   }
                 }}
                 onResetUsage={onResetUsage}
@@ -523,8 +536,8 @@ export const Sidebar: React.FC<Props> = ({
                     <p className="text-xs text-slate-500 text-center py-2">No exports yet</p>
                 ) : (
                     <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar pr-2">
-                        {history.map(rec => (
-                            <div key={rec.id} onClick={() => downloadHistoryCsv(rec)} className="flex justify-between items-center p-2 rounded-lg bg-slate-800/40 hover:bg-slate-800 cursor-pointer border border-transparent hover:border-purple-500/30 group">
+                        {history.map((rec, index) => (
+                            <div key={rec.id ? `hist-${rec.id}-${index}` : `hist-${index}`} onClick={() => downloadHistoryCsv(rec)} className="flex justify-between items-center p-2 rounded-lg bg-slate-800/40 hover:bg-slate-800 cursor-pointer border border-transparent hover:border-purple-500/30 group">
                                 <div className="flex flex-col">
                                     <span className="text-xs font-semibold text-slate-300">{new Date(rec.timestamp).toLocaleDateString()}</span>
                                     <span className="text-[10px] text-slate-500">{new Date(rec.timestamp).toLocaleTimeString()}</span>

@@ -404,7 +404,7 @@ export const ApiKeyManager: React.FC<Props> = ({
               {keys.length > 0 ? (
                 keys.map((node, index) => (
                   <div 
-                    key={node.id || index}
+                    key={node.id ? `central-node-${node.id}-${index}` : `central-node-${index}`}
                     className="p-2.5 bg-slate-900/60 rounded-xl border border-slate-800/80 flex items-center justify-between text-xs"
                   >
                     <div className="flex items-center gap-2.5">
@@ -583,7 +583,7 @@ export const ApiKeyManager: React.FC<Props> = ({
             <p className="text-xs text-slate-500 mt-1">Add a Gemini API key to start.</p>
           </div>
         )}
-        {keys.map((k) => {
+        {keys.map((k, index) => {
           const isCoolingDown = k.cooldownUntil && k.cooldownUntil > now;
           const remainingSecs = isCoolingDown ? Math.ceil((k.cooldownUntil! - now) / 1000) : 0;
           const isDead = k.errorCount >= 20; // Increased from 5
@@ -610,7 +610,7 @@ export const ApiKeyManager: React.FC<Props> = ({
           const health = Math.max(0, 100 - (k.errorCount * 5));
 
           return (
-            <div key={k.id} className={`flex items-center justify-between transition-colors p-3 rounded-xl border group relative
+            <div key={k.id ? `kitem-${k.id}-${index}` : `kitem-${index}`} className={`flex items-center justify-between transition-colors p-3 rounded-xl border group relative
               ${isDead ? 'bg-red-900/10 border-red-500/20' : 
                 isCoolingDown ? 'bg-amber-900/10 border-amber-500/20' : 
                 'bg-slate-800/40 hover:bg-slate-800/60 border-white/5'}`
@@ -707,8 +707,8 @@ export const ApiKeyManager: React.FC<Props> = ({
                   <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
                       <h4 className="font-bold text-sm text-slate-300 mb-2">TITLE / KEYWORD PREFERRED POOL ({Math.ceil(keys.length / 2)} keys)</h4>
                       <ul className="text-xs space-y-1">
-                          {keys.slice(0, Math.ceil(keys.length / 2)).map(k => (
-                              <li key={k.id} className="flex justify-between">
+                          {keys.slice(0, Math.ceil(keys.length / 2)).map((k, idx) => (
+                              <li key={k.id ? `pool1-${k.id}-${idx}` : `pool1-${idx}`} className="flex justify-between">
                                   <span className="text-slate-400">{k.label}</span>
                                   <span className={k.errorCount >= 20 ? 'text-red-400' : (k.cooldownUntil && k.cooldownUntil > now) ? 'text-amber-400' : 'text-emerald-400'}>
                                       {k.errorCount >= 20 ? 'Failed' : (k.cooldownUntil && k.cooldownUntil > now) ? 'Cooldown' : 'Healthy'}
@@ -720,8 +720,8 @@ export const ApiKeyManager: React.FC<Props> = ({
                   <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
                       <h4 className="font-bold text-sm text-slate-300 mb-2">CATEGORY PREFERRED POOL ({Math.floor(keys.length / 2)} keys)</h4>
                       <ul className="text-xs space-y-1">
-                          {keys.slice(Math.ceil(keys.length / 2)).map(k => (
-                              <li key={k.id} className="flex justify-between">
+                          {keys.slice(Math.ceil(keys.length / 2)).map((k, idx) => (
+                              <li key={k.id ? `pool2-${k.id}-${idx}` : `pool2-${idx}`} className="flex justify-between">
                                   <span className="text-slate-400">{k.label}</span>
                                   <span className={k.errorCount >= 20 ? 'text-red-400' : (k.cooldownUntil && k.cooldownUntil > now) ? 'text-amber-400' : 'text-emerald-400'}>
                                       {k.errorCount >= 20 ? 'Failed' : (k.cooldownUntil && k.cooldownUntil > now) ? 'Cooldown' : 'Healthy'}
@@ -773,7 +773,7 @@ export const ApiKeyManager: React.FC<Props> = ({
       {activeTab === 'health' && keys.length > 0 && (
           <div className="mt-4 pt-2">
               <div className="space-y-3">
-                  {keys.map(k => {
+                  {keys.map((k, idx) => {
                       const totalSuccess = Object.keys(k.usage).reduce((acc, key) => {
                           if (key !== 'date' && typeof (k.usage)[key] === 'number') {
                               return acc + (k.usage)[key];
@@ -791,7 +791,7 @@ export const ApiKeyManager: React.FC<Props> = ({
                       else if (health < 80) colorClass = "bg-amber-500";
 
                       return (
-                          <div key={k.id} className="text-sm">
+                          <div key={k.id ? `health-${k.id}-${idx}` : `health-${idx}`} className="text-sm">
                               <div className="flex justify-between items-center mb-1 px-1 text-xs">
                                   <div className="flex flex-col">
                                     <span className={`font-medium truncate max-w-[120px] ${isDead ? 'text-red-400' : 'text-slate-300'}`} title={k.label}>{k.label}</span>
