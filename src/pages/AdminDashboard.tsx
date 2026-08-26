@@ -882,8 +882,24 @@ export const AdminDashboard: React.FC = () => {
               Clean User Data
             </button>
 
+            <label className="flex items-center gap-2.5 cursor-pointer bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 shadow-lg" title="Toggle Central API access across the entire platform">
+                <input 
+                  type="checkbox" 
+                  checked={centralModeEnabled} 
+                  onChange={handleToggleCentralMode} 
+                  className="w-4 h-4 accent-purple-500 cursor-pointer" 
+                />
+                <span className="text-sm font-bold text-purple-300 flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5 text-purple-400" />
+                  Central Mode
+                </span>
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${centralModeEnabled ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
+                  {centralModeEnabled ? 'ON' : 'OFF'}
+                </span>
+            </label>
+
             <label className="flex items-center gap-2 cursor-pointer bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 shadow-lg">
-                <input type="checkbox" checked={maintenanceMode} onChange={toggleMaintenance} className="w-4 h-4 accent-red-500" />
+                <input type="checkbox" checked={maintenanceMode} onChange={toggleMaintenance} className="w-4 h-4 accent-red-500 cursor-pointer" />
                 <span className="text-sm font-bold text-red-400">Maintenance Mode</span>
             </label>
           </div>

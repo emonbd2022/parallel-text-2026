@@ -818,7 +818,15 @@ Return a strictly valid JSON array where each object contains:
                 const contribEmail = typeof rawK === 'object' ? rawK.contributorEmail : '';
 
                 const keyHash = crypto.createHash('sha256').update(keyVal).digest('hex');
-                const existing = firestoreKeys.find(sk => sk && sk.keyHash === keyHash);
+                const existing = firestoreKeys.find(sk => {
+                    if (!sk) return false;
+                    if (sk.keyHash && sk.keyHash === keyHash) return true;
+                    try {
+                        const decrypted = decrypt(sk.encryptedKey);
+                        if (decrypted && decrypted.trim() === keyVal) return true;
+                    } catch {}
+                    return false;
+                });
                 const exactContributor = (contribName || (contribBy && contribBy !== 'central' && contribBy !== 'anonymous' && contribBy !== 'Community Contributor' ? contribBy : '') || (contribEmail ? contribEmail.split('@')[0] : '') || '').trim() || 'Contributor';
 
                 if (existing) {
