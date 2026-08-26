@@ -34,7 +34,7 @@ export const ApiKeyManager: React.FC<Props> = ({
   onShowToast,
   onRefreshCentralKeys 
 }) => {
-  const { userData, user, setIsAuthModalOpen } = useAuth();
+  const { userData, user, setIsAuthModalOpen, centralModeEnabled } = useAuth();
   const [label, setLabel] = useState('');
   const [keyVal, setKeyVal] = useState('');
   const [showInput, setShowInput] = useState(false);
@@ -98,6 +98,10 @@ export const ApiKeyManager: React.FC<Props> = ({
 
   const handleModeChange = (mode: 'local' | 'central') => {
     if (mode === 'central') {
+      if (!centralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
+        if (onShowToast) onShowToast('Central Mode Disabled', 'Central mode is off by admin, use your API.');
+        return;
+      }
       if (!user && !userData) {
         if (onShowToast) onShowToast('Login Required', 'You must log in to access the Central API pool.');
         setIsAuthModalOpen(true);
@@ -289,8 +293,21 @@ export const ApiKeyManager: React.FC<Props> = ({
         </button>
       </div>
 
+      {/* Central Mode Disabled Notice */}
+      {!centralModeEnabled && !isAdmin && !hasExplicitAdminGrant && (
+        <div className="mb-6 p-4 bg-red-950/30 border border-red-500/30 rounded-xl text-xs">
+          <div className="flex items-center gap-2 font-bold text-red-400 text-sm mb-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            Central Mode Disabled
+          </div>
+          <p className="text-slate-300 text-xs">
+            Central mode is off by admin, use your API.
+          </p>
+        </div>
+      )}
+
       {/* Central Unlock Progress / Notice */}
-      {!isEligibleForCentral && apiMode !== 'central' && (
+      {(centralModeEnabled || isAdmin || hasExplicitAdminGrant) && !isEligibleForCentral && apiMode !== 'central' && (
         <div className="mb-6 p-4 bg-gradient-to-r from-purple-950/30 via-slate-900 to-slate-900 border border-purple-500/30 rounded-xl text-xs space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-bold text-purple-300 text-sm">
