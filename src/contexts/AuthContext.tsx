@@ -414,23 +414,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   shouldUpdateDoc = true;
                 } else {
                   // Do NOT permanently block the account in Firestore.
-                  // Just block this specific session/device.
-                  isBlocked = true;
+                  // Only restrict this specific unauthorized 3rd device session.
                   deviceLimitReached = true;
                 }
               }
 
               if (shouldUpdateDoc) {
                 try {
-                  const updates: any = { deviceIds: dbDeviceIds };
+                  const updates: any = { deviceIds: dbDeviceIds, lastActiveAt: new Date().toISOString() };
                   if (isFirstAdmin && d.role !== 'admin') {
                     updates.role = 'admin';
                   }
                   if (isFirstAdmin && d.blocked) {
                     updates.blocked = false;
                   }
-                  // We removed updates.blocked = true here to prevent permanent lockouts
-                  // due to device limits. Admins can still manually block users.
                   await updateDoc(userRef, updates);
                   recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
                 } catch (e) {
@@ -524,8 +521,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               };
 
               // Atomic batch commit: guarantees both docs exist together without extra reads
+              const { deviceLimitReached: _dl, ...firestoreUserData } = newUserData;
               const batch = writeBatch(db);
-              batch.set(userRef, newUserData);
+              batch.set(userRef, {
+                ...firestoreUserData,
+                lastActiveAt: nowISO
+              });
               batch.set(notifRef, notifData);
               await batch.commit();
               recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');

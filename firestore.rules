@@ -86,7 +86,7 @@ service cloud.firestore {
         );
 
       // Update: Enforces schema allowlist for ALL users.
-      // Normal users can ONLY update 'credits' (decrease/equal) and 'totalProcessedImages' (increase/equal).
+      // Normal users can ONLY update 'credits' (decrease/equal), 'totalProcessedImages' (increase/equal), 'deviceIds' (max 2 devices), and 'lastActiveAt'.
       allow update: if isAuthenticated() && 
         hasOnlyEssentialAccountFields() && 
         hasNoForbiddenLocalData() && 
@@ -94,7 +94,7 @@ service cloud.firestore {
           isAdmin() ||
           (
             request.auth.uid == userId &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages']) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages', 'deviceIds', 'lastActiveAt']) &&
             (
               !('credits' in request.resource.data.diff(resource.data).affectedKeys()) ||
               (
@@ -109,6 +109,19 @@ service cloud.firestore {
                 request.resource.data.totalProcessedImages is number &&
                 request.resource.data.totalProcessedImages >= resource.data.totalProcessedImages &&
                 request.resource.data.totalProcessedImages >= 0
+              )
+            ) &&
+            (
+              !('deviceIds' in request.resource.data.diff(resource.data).affectedKeys()) ||
+              (
+                request.resource.data.deviceIds is list &&
+                request.resource.data.deviceIds.size() <= 2
+              )
+            ) &&
+            (
+              !('lastActiveAt' in request.resource.data.diff(resource.data).affectedKeys()) ||
+              (
+                request.resource.data.lastActiveAt is string
               )
             )
           )
