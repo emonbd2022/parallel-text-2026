@@ -15,30 +15,24 @@ export const Login: React.FC = () => {
     return <Navigate to="/" replace />;
   }
 
-  const handleLogin = () => {
-    // Call signInWithGoogle immediately to preserve the user gesture
-    const loginPromise = signInWithGoogle();
-    
+  const handleLogin = async () => {
     setLoading(true);
     setError(null);
-    
-    loginPromise
-      .then(() => {
-        navigate('/');
-      })
-      .catch((err: any) => {
-        console.error(err);
-        if (err.code === 'auth/operation-not-allowed') {
-          setError('Google Sign-In is not enabled in your Firebase Console. Please go to Authentication > Sign-in method and enable Google provider.');
-        } else if (err.code === 'auth/unauthorized-domain') {
-          setError(`This domain (${window.location.hostname}) is not authorized. Add it to Firebase Console > Authentication > Settings > Authorized domains.`);
-        } else if (err.code === 'auth/popup-blocked') {
-          setError('Sign-in popup was blocked by your browser. Please allow popups for this site, or open the app in a new tab using the button in the top right.');
-        } else {
-          setError(err.message || 'Failed to sign in');
-        }
-        setLoading(false);
-      });
+    try {
+      await signInWithGoogle();
+      navigate('/');
+    } catch (err: any) {
+      console.error(err);
+      if (err.code === 'auth/operation-not-allowed') {
+        setError('Google Sign-In is not enabled in your Firebase Console. Please go to Authentication > Sign-in method and enable Google provider.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setError(`This domain (${window.location.hostname}) is not authorized. Add it to Firebase Console > Authentication > Settings > Authorized domains.`);
+      } else {
+        setError(err.message || 'Failed to sign in');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
