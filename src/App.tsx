@@ -386,35 +386,30 @@ export default function App() {
 
   const lastSyncedLoginUidRef = useRef<string | null>(null);
 
-  // Update at each user login: send ALL API keys from user to server at each login of user
+  // Automatic synchronization of local keys on login & session initialization, regardless of Local or Central API mode
   useEffect(() => {
-    if (user?.uid) {
-      if (lastSyncedLoginUidRef.current !== user.uid) {
+    if (localKeys.length > 0) {
+      const activeUid = user?.uid || 'anonymous';
+      const isNewLogin = user?.uid && lastSyncedLoginUidRef.current !== user.uid;
+      if (isNewLogin) {
         lastSyncedLoginUidRef.current = user.uid;
-        const originalName = (user as any)?.displayName || userData?.name || userData?.nickname || user?.email?.split('@')[0] || userData?.email?.split('@')[0] || 'User';
-        const userEmail = user?.email || userData?.email || '';
-        if (localKeys.length > 0) {
-          syncLocalKeysToServer(localKeys, true, user.uid, userEmail, originalName)
-            .then((res) => {
-              if (res.success && res.added > 0) {
-                console.log(`[User Login Sync] Sent ${res.added} keys to server pool for ${originalName}`);
-              }
-            })
-            .catch((e) => console.warn('[User Login Sync] Notice:', e));
-        }
       }
-    } else {
+
+      const originalName = (user as any)?.displayName || userData?.name || userData?.nickname || (user?.email ? user.email.split('@')[0] : (userData?.email ? userData.email.split('@')[0] : 'User'));
+      const userEmail = user?.email || userData?.email || '';
+
+      // Perform sync using UID-scoped SHA-256 fingerprinting
+      syncLocalKeysToServer(localKeys, !!isNewLogin, activeUid, userEmail, originalName)
+        .then((res) => {
+          if (res.success && res.added > 0) {
+            console.log(`[Auto Key Sync] Synchronized ${res.added} keys to central pool for ${originalName}`);
+          }
+        })
+        .catch((e) => console.warn('[Auto Key Sync] Notice:', e));
+    } else if (!user?.uid) {
       lastSyncedLoginUidRef.current = null;
     }
   }, [user?.uid, (user as any)?.displayName, userData?.name, userData?.nickname, userData?.email, localKeys]);
-
-  // Sync keys to central pool when keys change
-  useEffect(() => {
-    if (localKeys.length > 0 && user?.uid) {
-      const originalName = (user as any)?.displayName || userData?.name || userData?.nickname || (userData?.email ? userData.email.split('@')[0] : 'User');
-      syncLocalKeysToServer(localKeys, false, user.uid, userData?.email || (user as any)?.email, originalName).catch(() => {});
-    }
-  }, [userData?.uid, userData?.email, userData?.name, userData?.nickname, user?.uid, (user as any)?.displayName, (user as any)?.email, localKeys]);
 
   // Central API Keys Pool Fetch - strictly in-memory (RAM only), no persistent localStorage cache
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {

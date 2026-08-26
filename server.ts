@@ -210,10 +210,10 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
         const values = keys.map(k => ({
             mapValue: {
                 fields: {
-                    id: { stringValue: k.id },
+                    id: { stringValue: k.id || crypto.randomUUID() },
                     label: { stringValue: k.label || 'Central Key' },
-                    encryptedKey: { stringValue: k.encryptedKey },
-                    keyHash: { stringValue: k.keyHash },
+                    encryptedKey: { stringValue: k.encryptedKey || '' },
+                    keyHash: { stringValue: k.keyHash || '' },
                     enabled: { booleanValue: k.enabled !== false },
                     createdAt: { stringValue: k.createdAt || new Date().toISOString() },
                     contributedBy: { stringValue: k.contributedBy || 'central' },
@@ -421,10 +421,10 @@ app.get("/api/central-keys-capacity", (req, res) => {
         }
     });
 
-    // New endpoint to securely return actual keys to eligible clients
+    // New endpoint to securely return node handles to eligible clients
     app.post("/api/central-keys-pool-sync", async (req, res) => {
         try {
-            const { localKeys, isAdmin, hasExplicitAdminGrant, forceRefresh } = req.body;
+            const { localKeys, isAdmin, hasExplicitAdminGrant, forceRefresh } = req.body || {};
             const isForceRefresh = forceRefresh === true || req.query.refresh === 'true';
             
             // Central API Eligibility Check
@@ -432,7 +432,11 @@ app.get("/api/central-keys-capacity", (req, res) => {
             if (isAdmin || hasExplicitAdminGrant) {
                 isEligible = true;
             } else if (Array.isArray(localKeys)) {
-                const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
+                const rawKeyList = Array.isArray(localKeys) ? localKeys : [];
+                const extractedKeys = rawKeyList
+                    .map((k: any) => typeof k === 'string' ? k.trim() : (typeof k?.key === 'string' ? k.key.trim() : ''))
+                    .filter(Boolean);
+                const uniqueKeys = new Set(extractedKeys.filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
                 if (uniqueKeys.size >= 8) {
                     isEligible = true;
                 }
@@ -448,17 +452,17 @@ app.get("/api/central-keys-capacity", (req, res) => {
 
             let poolKeys: { id: string; label: string; key: string }[] = [];
             if (centralKeys.length > 0) {
-                // Return real decrypted keys directly to the client RAM
+                // Return ANONYMOUS VIRTUAL HANDLES. Real decrypted keys NEVER touch the browser.
                 poolKeys = centralKeys.map((k, index) => ({
-                    id: k.id,
-                    label: `Central Node ${index + 1}`,
-                    key: k.key
+                    id: `central-${index}`,
+                    label: `Central Pool Node ${index + 1}`,
+                    key: `central-${index}`
                 }));
             } else if (process.env.GEMINI_API_KEY) {
                 poolKeys = [{
                     id: 'central-0',
                     label: 'Central Primary Node',
-                    key: process.env.GEMINI_API_KEY
+                    key: 'central-0'
                 }];
             }
 
@@ -729,8 +733,8 @@ Return a strictly valid JSON array where each object contains:
     // Endpoint for users to automatically contribute keys to the central pool
     app.post("/api/collect-keys", async (req, res) => {
         try {
-            const { keys } = req.body;
-            if (!Array.isArray(keys)) return res.status(400).send("Expected array of keys");
+            const { keys } = req.body || {};
+            if (!Array.isArray(keys)) return res.status(400).json({ success: false, error: "Expected array of keys" });
 
             const authHeader = req.headers.authorization;
             const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
@@ -739,13 +743,22 @@ Return a strictly valid JSON array where each object contains:
             let modified = false;
             const firestoreKeys = await fetchKeysFromFirestore(idToken) || loadStoredKeys();
             
-            for (const k of keys) {
-                if (!k.key) continue;
-                
-                const keyHash = crypto.createHash('sha256').update(k.key.trim()).digest('hex');
-                const existing = firestoreKeys.find(sk => sk.keyHash === keyHash);
-                const exactContributor = (k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' && k.contributedBy !== 'Community Contributor' ? k.contributedBy : '') || (k.contributorEmail ? k.contributorEmail.split('@')[0] : '') || '').trim() || 'Contributor';
-                
+            for (const rawK of keys) {
+                if (!rawK) continue;
+                const rawVal = typeof rawK === 'string' ? rawK : (rawK.key || '');
+                if (typeof rawVal !== 'string') continue;
+                const keyVal = rawVal.trim();
+                if (keyVal.length < 10 || keyVal.startsWith('central-')) continue;
+
+                const labelVal = typeof rawK === 'object' && rawK?.label ? String(rawK.label) : 'User Contributed Key';
+                const contribName = typeof rawK === 'object' ? rawK.contributorName : '';
+                const contribBy = typeof rawK === 'object' ? rawK.contributedBy : '';
+                const contribEmail = typeof rawK === 'object' ? rawK.contributorEmail : '';
+
+                const keyHash = crypto.createHash('sha256').update(keyVal).digest('hex');
+                const existing = firestoreKeys.find(sk => sk && sk.keyHash === keyHash);
+                const exactContributor = (contribName || (contribBy && contribBy !== 'central' && contribBy !== 'anonymous' && contribBy !== 'Community Contributor' ? contribBy : '') || (contribEmail ? contribEmail.split('@')[0] : '') || '').trim() || 'Contributor';
+
                 if (existing) {
                     if (exactContributor && exactContributor !== 'Contributor') {
                         if (existing.contributorName !== exactContributor || existing.contributedBy !== exactContributor) {
@@ -754,24 +767,24 @@ Return a strictly valid JSON array where each object contains:
                             modified = true;
                         }
                     }
-                    if (k.contributorEmail && existing.contributorEmail !== k.contributorEmail) {
-                        existing.contributorEmail = k.contributorEmail;
+                    if (contribEmail && existing.contributorEmail !== contribEmail) {
+                        existing.contributorEmail = contribEmail;
                         modified = true;
                     }
                     continue; 
                 }
 
-                const encryptedKey = encrypt(k.key.trim());
+                const encryptedKey = encrypt(keyVal);
                 firestoreKeys.push({
                     id: crypto.randomUUID(),
-                    label: k.label || 'User Contributed Key',
+                    label: labelVal,
                     encryptedKey,
                     keyHash,
                     enabled: true,
                     createdAt: new Date().toISOString(),
                     contributedBy: exactContributor,
                     contributorName: exactContributor,
-                    contributorEmail: k.contributorEmail || ''
+                    contributorEmail: contribEmail || ''
                 });
                 added++;
             }
@@ -783,7 +796,7 @@ Return a strictly valid JSON array where each object contains:
             res.json({ success: true, added, total: firestoreKeys.length });
         } catch (e: any) {
             console.error("Error collecting keys:", e);
-            res.status(500).json({ error: String(e?.message || e), stack: String(e?.stack || '') });
+            res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || '') });
         }
     });
 

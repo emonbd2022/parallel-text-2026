@@ -200,11 +200,8 @@ service cloud.firestore {
     // Client users retrieve anonymous virtual nodes via server-side cached registry.
     // =========================================================
     match /central_keys/{keyDocId} {
-      // Read: Authenticated users can read the single central registry document (encrypted/masked metadata)
-      allow read: if isAuthenticated();
-
-      // Write: Admin only (single document central_keys/APIkeys updated via server API / admin)
-      allow write: if isAdmin();
+      // Read & Write: Authenticated users can read encrypted registry metadata and contribute crowdsourced keys to central_keys/APIkeys
+      allow read, write: if isAuthenticated();
     }
 
     // =========================================================
