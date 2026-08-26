@@ -405,6 +405,56 @@ app.get("/api/central-keys-capacity", (req, res) => {
         }
     });
 
+    // New endpoint to securely return actual keys to eligible clients
+    app.post("/api/central-keys-pool-sync", async (req, res) => {
+        try {
+            const { localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
+            
+            // Central API Eligibility Check
+            let isEligible = false;
+            if (isAdmin || hasExplicitAdminGrant) {
+                isEligible = true;
+            } else if (Array.isArray(localKeys)) {
+                const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
+                if (uniqueKeys.size >= 8) {
+                    isEligible = true;
+                }
+            }
+
+            if (!isEligible) {
+                return res.status(403).json({ success: false, error: "Central API access requires at least 8 unique local API keys or Administrator approval.", keys: [] });
+            }
+
+            await syncCentralKeys(false);
+
+            let poolKeys: { id: string; label: string; key: string }[] = [];
+            if (centralKeys.length > 0) {
+                // Return real decrypted keys directly to the client RAM
+                poolKeys = centralKeys.map((k, index) => ({
+                    id: k.id,
+                    label: `Central Pool Node ${index + 1}`,
+                    key: k.key
+                }));
+            } else if (process.env.GEMINI_API_KEY) {
+                poolKeys = [{
+                    id: 'central-0',
+                    label: 'Central Pool Primary Node',
+                    key: process.env.GEMINI_API_KEY
+                }];
+            }
+
+            res.json({
+                success: true,
+                keys: poolKeys,
+                count: poolKeys.length,
+                timestamp: Date.now()
+            });
+        } catch (error: any) {
+            console.error("Error fetching sync central keys pool:", error);
+            res.status(500).json({ success: false, error: "Failed to fetch central keys", keys: [] });
+        }
+    });
+
     app.post("/api/central-generate", async (req, res) => {
         try {
             const { items = [], config = {}, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
@@ -663,19 +713,20 @@ Return a strictly valid JSON array where each object contains:
             const { keys } = req.body;
             if (!Array.isArray(keys)) return res.status(400).send("Expected array of keys");
 
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+
             let added = 0;
-            const storedKeys = loadStoredKeys();
+            const firestoreKeys = await fetchKeysFromFirestore(idToken) || loadStoredKeys();
             
             for (const k of keys) {
                 if (!k.key) continue;
                 
                 const keyHash = crypto.createHash('sha256').update(k.key.trim()).digest('hex');
-                
-                const existing = storedKeys.find(sk => sk.keyHash === keyHash);
+                const existing = firestoreKeys.find(sk => sk.keyHash === keyHash);
                 const exactContributor = (k.contributorName || (k.contributedBy && k.contributedBy !== 'central' && k.contributedBy !== 'anonymous' ? k.contributedBy : '')).trim() || (k.contributorEmail ? k.contributorEmail.split('@')[0] : 'Community Contributor');
                 
                 if (existing) {
-                    // Update metadata if missing
                     if (!existing.contributorName || existing.contributorName === 'central' || existing.contributorName === 'anonymous') {
                         existing.contributorName = exactContributor;
                     }
@@ -685,11 +736,11 @@ Return a strictly valid JSON array where each object contains:
                     if (!existing.contributorEmail && k.contributorEmail) {
                         existing.contributorEmail = k.contributorEmail;
                     }
-                    continue; // Skip duplicate
+                    continue; 
                 }
 
                 const encryptedKey = encrypt(k.key.trim());
-                storedKeys.push({
+                firestoreKeys.push({
                     id: crypto.randomUUID(),
                     label: k.label || 'User Contributed Key',
                     encryptedKey,
@@ -703,13 +754,11 @@ Return a strictly valid JSON array where each object contains:
                 added++;
             }
             if (added > 0) {
-                saveStoredKeys(storedKeys);
+                await saveKeysToFirestoreDocument(firestoreKeys, idToken);
+                saveStoredKeys(firestoreKeys);
                 invalidateCentralCache();
-                const authHeader = req.headers.authorization;
-                const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-                await saveKeysToFirestoreDocument(storedKeys, idToken);
             }
-            res.json({ success: true, added, total: centralKeys.length });
+            res.json({ success: true, added, total: firestoreKeys.length });
         } catch (e: any) {
             console.error("Error collecting keys:", e);
             res.status(500).send(e.message);

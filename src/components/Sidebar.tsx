@@ -21,6 +21,7 @@ interface Props {
   onResetUsage: (id: string) => void;
   onResetAll?: () => void;
   onShowToast?: (title: string, message: string) => void;
+  onRefreshCentralKeys?: () => void;
 }
 
 export const Sidebar: React.FC<Props> = ({ 
@@ -40,7 +41,8 @@ export const Sidebar: React.FC<Props> = ({
   onViewStats,
   onResetUsage,
   onResetAll,
-  onShowToast
+  onShowToast,
+  onRefreshCentralKeys
 }) => {
   
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
@@ -110,6 +112,7 @@ export const Sidebar: React.FC<Props> = ({
         <div className="w-[100vw] sm:w-[33.333vw] min-w-[360px] max-w-[600px] h-full flex flex-col">
           <div className="flex-1 overflow-y-auto px-8 pt-24 pb-8 custom-scrollbar space-y-6">
             <ApiKeyManager 
+                onRefreshCentralKeys={onRefreshCentralKeys}
                 apiMode={config.apiMode || 'local'}
                 onChangeApiMode={(mode) => setConfig(prev => ({ ...prev, apiMode: mode }))}
                 keys={keys}

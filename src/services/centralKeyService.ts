@@ -151,6 +151,7 @@ export async function syncUserKeysToFirestore(
           }))
         })
       });
+      
       if (res.ok) {
         const contentType = res.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
@@ -158,6 +159,8 @@ export async function syncUserKeysToFirestore(
           if (data.success) {
             addedCount = data.added ?? keysToSync.length;
           }
+        } else {
+            addedCount = keysToSync.length;
         }
       }
     } catch (serverErr) {

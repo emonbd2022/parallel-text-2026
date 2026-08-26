@@ -18,6 +18,7 @@ interface Props {
   onResetUsage: (id: string) => void;
   onResetAll?: () => void;
   onShowToast?: (title: string, message: string) => void;
+  onRefreshCentralKeys?: () => void;
 }
 
 export const ApiKeyManager: React.FC<Props> = ({ 
@@ -30,7 +31,8 @@ export const ApiKeyManager: React.FC<Props> = ({
   onRemove, 
   onResetUsage, 
   onResetAll,
-  onShowToast 
+  onShowToast,
+  onRefreshCentralKeys 
 }) => {
   const { userData, user, setIsAuthModalOpen } = useAuth();
   const [label, setLabel] = useState('');
@@ -339,6 +341,17 @@ export const ApiKeyManager: React.FC<Props> = ({
                   </p>
                 </div>
               </div>
+              {onRefreshCentralKeys && (
+                <button
+                  type="button"
+                  onClick={onRefreshCentralKeys}
+                  title="Force refresh central pool keys from server"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-800/80 hover:bg-slate-700 text-xs font-semibold text-slate-300 transition-colors border border-slate-700 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-purple-400" />
+                  Refresh
+                </button>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3 mb-4">

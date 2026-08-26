@@ -15,6 +15,7 @@ import { db } from './lib/firebase';
 import { doc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
+import { getEncryptedCentralKeys, saveEncryptedCentralKeys } from './services/centralKeyCacheService';
 import { recordFirestoreWrite } from './utils/firestoreAudit';
 
 
@@ -389,44 +390,51 @@ export default function App() {
     }
   }, [userData?.uid, userData?.email, userData?.name, userData?.nickname, localKeys]);
 
-  // 1-Read Central API Keys Pool Fetch (In-memory ONLY, never persisted to localStorage)
+  // Central API Keys Pool Fetch with secure encrypted localStorage cache
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
-    // 1. Fetch from Firestore (Direct 1-read connection that works on Vercel, Netlify, and production domains)
     try {
-      const fsKeys = await fetchCentralKeysFromFirestore(forceRefresh);
-      const validFsKeys = fsKeys.filter(
-        k => k.enabled !== false && k.key && (k.key.startsWith('central-') || k.key.trim().length > 5)
-      );
-
-      if (validFsKeys.length > 0) {
-        const currentSession = getUsageSessionId();
-        const pool: ApiKey[] = validFsKeys.map((k, idx) => ({
-          id: k.id || `central-${idx}`,
-          label: `Central Pool Node ${idx + 1}`, // Anonymous node label - NEVER expose contributor labels
-          key: k.key.trim(), // Stored ONLY in React memory state, NEVER in localStorage
-          errorCount: 0,
-          usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
-        }));
-        setCentralKeys(pool);
-        return pool;
+      const currentSession = getUsageSessionId();
+      
+      // 1. Check local encrypted cache first
+      if (!forceRefresh) {
+        const cached = getEncryptedCentralKeys();
+        if (cached && cached.keys && cached.keys.length > 0) {
+          const pool: ApiKey[] = cached.keys.map((k, idx) => ({
+            id: k.id || `central-${idx}`,
+            label: `Central Pool Node ${idx + 1}`,
+            key: k.key, // Extracted from encrypted cache into RAM
+            errorCount: 0,
+            usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+          }));
+          setCentralKeys(pool);
+          return pool;
+        }
       }
-    } catch (e) {
-      console.warn("Firestore central keys pool fetch notice:", e);
-    }
 
-    // 2. Server endpoint fallback (when running with backend API / dev environment)
-    try {
-      const res = await fetch('/api/central-keys-pool');
+      // 2. Fetch fresh real keys from backend sync endpoint
+      const res = await fetch('/api/central-keys-pool-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          localKeys: localKeys.map(k => k.key), 
+          isAdmin: userData?.role === 'admin' || userData?.role === 'superadmin',
+          hasExplicitAdminGrant: false // can add this if needed
+        })
+      });
+
       if (res.ok) {
         const contentType = res.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const data = await res.json();
           if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
-            const currentSession = getUsageSessionId();
+            
+            // Save to encrypted local storage cache
+            saveEncryptedCentralKeys(data.keys);
+
             const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
               id: k.id || `central-${idx}`,
-              label: `Central Pool Node ${idx + 1}`, // Anonymous node label
-              key: k.key, // Strictly kept in RAM state - NEVER saved to localStorage
+              label: `Central Pool Node ${idx + 1}`,
+              key: k.key, // Load into RAM
               errorCount: 0,
               usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
             }));
@@ -436,7 +444,7 @@ export default function App() {
         }
       }
     } catch (e) {
-      console.warn("Central keys pool server fetch notice:", e);
+      console.warn("Central keys pool sync notice:", e);
     }
     return [];
   };
@@ -1878,6 +1886,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
          onResetUsage={handleResetUsage}
          onResetAll={handleResetAllUsage}
          onShowToast={showNotification}
+         onRefreshCentralKeys={() => fetchCentralKeysPool(true)}
       />
 
       <main 
