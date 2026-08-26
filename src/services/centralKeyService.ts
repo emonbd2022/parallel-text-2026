@@ -139,29 +139,38 @@ export async function syncUserKeysToFirestore(
         } catch {}
       }
 
-      const res = await fetch('/api/collect-keys', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          keys: keysToSync.map(k => ({
-            label: k.item.label || 'User Contributed Key',
-            key: k.item.key,
-            contributorName: derivedContributor,
-            contributedBy: derivedContributor,
-            contributorEmail: userEmail || ''
-          }))
-        })
-      });
-      
-      if (res.ok) {
-        const contentType = res.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const data = await res.json();
-          if (data.success) {
-            addedCount = data.added ?? keysToSync.length;
+      // Batch keys in chunks of 25 to ensure smooth processing
+      const BATCH_SIZE = 25;
+      for (let i = 0; i < keysToSync.length; i += BATCH_SIZE) {
+        const chunk = keysToSync.slice(i, i + BATCH_SIZE);
+        try {
+          const res = await fetch('/api/collect-keys', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              keys: chunk.map(k => ({
+                label: k.item.label || 'User Contributed Key',
+                key: k.item.key,
+                contributorName: derivedContributor,
+                contributedBy: derivedContributor,
+                contributorEmail: userEmail || ''
+              }))
+            })
+          });
+          
+          if (res.ok) {
+            const contentType = res.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+              const data = await res.json();
+              if (data.success) {
+                addedCount += (data.added ?? chunk.length);
+              }
+            } else {
+              addedCount += chunk.length;
+            }
           }
-        } else {
-            addedCount = keysToSync.length;
+        } catch (chunkErr) {
+          console.warn('[Central Key Service] Chunk collect notice:', chunkErr);
         }
       }
     } catch (serverErr) {

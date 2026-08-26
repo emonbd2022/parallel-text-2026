@@ -11,22 +11,55 @@ import { DEFAULT_CENTRAL_KEYS } from './src/data/centralKeysData';
 dotenv.config();
 
 const DATA_FILE = path.join(process.cwd(), 'central-keys.json');
+const CONFIG_FILE = path.join(process.cwd(), 'central-config.json');
+
+export let globalCentralModeEnabled = true;
+
+function loadConfig() {
+    try {
+        if (fs.existsSync(CONFIG_FILE)) {
+            const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+            if (data.centralModeEnabled !== undefined) {
+                globalCentralModeEnabled = !!data.centralModeEnabled;
+            }
+        }
+    } catch (e) {
+        console.warn("[Server] loadConfig notice:", e);
+    }
+}
+
+function saveConfig() {
+    try {
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify({ centralModeEnabled: globalCentralModeEnabled }, null, 2));
+    } catch (e) {
+        console.warn("[Server] saveConfig notice (safe for read-only environments):", e);
+    }
+}
+
+// Initialize config immediately on module load
+loadConfig();
 
 const SECRET_KEY = process.env.CENTRAL_API_SECRET_KEY || 'development_secret_key_needs_32_bytes!';
 // Ensure it's exactly 32 bytes
 const keyBuffer = crypto.createHash('sha256').update(SECRET_KEY).digest();
 
-export function encrypt(text: string) {
-    const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv('aes-256-gcm', keyBuffer, iv);
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    const authTag = cipher.getAuthTag().toString('hex');
-    return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+export function encrypt(text: string): string {
+    if (!text || typeof text !== 'string') return '';
+    try {
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', keyBuffer, iv);
+        let encrypted = cipher.update(text, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        const authTag = cipher.getAuthTag().toString('hex');
+        return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+    } catch (err) {
+        console.warn("[Server] Encryption error:", err);
+        return '';
+    }
 }
 
-export function decrypt(encText: string) {
-    if (!encText) return '';
+export function decrypt(encText: string): string {
+    if (!encText || typeof encText !== 'string') return '';
     if (!encText.includes(':')) return encText;
     const parts = encText.split(':');
     if (parts.length < 3) return encText;
@@ -859,8 +892,16 @@ Return a strictly valid JSON array where each object contains:
                 added++;
             }
             if (added > 0 || modified) {
-                await saveKeysToFirestoreDocument(firestoreKeys, idToken);
-                saveStoredKeys(firestoreKeys);
+                try {
+                    await saveKeysToFirestoreDocument(firestoreKeys, idToken);
+                } catch (fsErr) {
+                    console.warn("[Server] saveKeysToFirestoreDocument notice in collect-keys:", fsErr);
+                }
+                try {
+                    saveStoredKeys(firestoreKeys);
+                } catch (fileErr) {
+                    console.warn("[Server] saveStoredKeys notice in collect-keys:", fileErr);
+                }
                 invalidateCentralCache();
             }
             res.json({ success: true, added, total: firestoreKeys.length });
@@ -993,31 +1034,14 @@ Return a strictly valid JSON array where each object contains:
         }
     });
 
-    let globalCentralModeEnabled = true;
-    const CONFIG_FILE = path.join(process.cwd(), 'central-config.json');
-    function loadConfig() {
-        try {
-            if (fs.existsSync(CONFIG_FILE)) {
-                const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-                if (data.centralModeEnabled !== undefined) globalCentralModeEnabled = data.centralModeEnabled;
-            }
-        } catch (e) {}
-    }
-    function saveConfig() {
-        try {
-            fs.writeFileSync(CONFIG_FILE, JSON.stringify({ centralModeEnabled: globalCentralModeEnabled }));
-        } catch (e) {}
-    }
-    loadConfig();
-
-app.get("/api/admin/config", (req, res) => res.json({ centralModeEnabled: globalCentralModeEnabled }));
-app.post("/api/admin/config", (req, res) => {
-     if (req.body.centralModeEnabled !== undefined) {
-         globalCentralModeEnabled = !!req.body.centralModeEnabled;
-         saveConfig();
-     }
-     res.json({ success: true, centralModeEnabled: globalCentralModeEnabled });
-});
+    app.get("/api/admin/config", (req, res) => res.json({ centralModeEnabled: globalCentralModeEnabled }));
+    app.post("/api/admin/config", (req, res) => {
+         if (req.body && req.body.centralModeEnabled !== undefined) {
+             globalCentralModeEnabled = !!req.body.centralModeEnabled;
+             saveConfig();
+         }
+         res.json({ success: true, centralModeEnabled: globalCentralModeEnabled });
+    });
 
 app.post("/api/admin/keys/deduplicate", async (req, res) => {
     try {

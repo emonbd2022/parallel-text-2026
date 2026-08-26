@@ -1,6 +1,6 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
+import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
 import { EyeOff, Eye, Download, ShieldAlert, Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Laptop, Mail } from 'lucide-react';
@@ -103,23 +103,70 @@ export const AdminDashboard: React.FC = () => {
   const [centralModeEnabled, setCentralModeEnabled] = useState(true);
   const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
   const [isActionLoading, setIsActionLoading] = useState(false);
+  const [isTogglingCentralMode, setIsTogglingCentralMode] = useState(false);
   
   useEffect(() => {
-      fetch('/api/admin/config').then(res => res.json()).then(data => {
-          if (data && data.centralModeEnabled !== undefined) setCentralModeEnabled(data.centralModeEnabled);
-      }).catch(e => console.error(e));
+      // 1. Fetch from server API
+      fetch('/api/admin/config')
+        .then(res => res.json())
+        .then(data => {
+            if (data && data.centralModeEnabled !== undefined) {
+              setCentralModeEnabled(data.centralModeEnabled === true);
+            }
+        })
+        .catch(e => console.warn("[AdminDashboard] Server config fetch notice:", e));
+
+      // 2. Also check Firestore settings/general if available
+      if (db) {
+        getDoc(doc(db, 'settings', 'general'))
+          .then(docSnap => {
+            if (docSnap.exists() && docSnap.data()?.centralModeEnabled !== undefined) {
+              setCentralModeEnabled(docSnap.data().centralModeEnabled === true);
+            }
+          })
+          .catch(e => console.warn("[AdminDashboard] Firestore general settings fetch notice:", e));
+      }
   }, []);
   
   const handleToggleCentralMode = async () => {
+      if (isTogglingCentralMode) return;
       const newVal = !centralModeEnabled;
       setCentralModeEnabled(newVal);
+      setIsTogglingCentralMode(true);
+      
       try {
+          let idToken: string | undefined;
+          if (auth?.currentUser) {
+            try {
+              idToken = await auth.currentUser.getIdToken();
+            } catch {}
+          }
+
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
           await fetch('/api/admin/config', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers,
               body: JSON.stringify({ centralModeEnabled: newVal })
           });
-      } catch (e) { console.error(e); }
+      } catch (e) { 
+          console.error("Error updating server central mode config:", e); 
+      }
+
+      // Also persist to Firestore settings/general
+      if (db) {
+          try {
+              await setDoc(doc(db, 'settings', 'general'), {
+                  centralModeEnabled: newVal,
+                  updatedAt: new Date().toISOString()
+              }, { merge: true });
+              recordFirestoreWrite('settings', 1, 'AdminDashboard:setCentralMode');
+          } catch (fsErr) {
+              console.warn("Could not sync centralModeEnabled to Firestore settings:", fsErr);
+          }
+      }
+      setIsTogglingCentralMode(false);
   };
   
   const handleClearAllKeys = async () => {

@@ -136,6 +136,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const isMaint = docSnap.data()?.maintenanceMode === true;
           setMaintenanceMode(isMaint);
           try { localStorage.setItem('maintenanceMode', String(isMaint)); } catch {}
+
+          if (docSnap.data()?.centralModeEnabled !== undefined) {
+            try { localStorage.setItem('centralModeEnabled', String(docSnap.data()?.centralModeEnabled === true)); } catch {}
+          }
         }
       })
       .catch((err) => {
