@@ -76,7 +76,7 @@ function loadStoredKeys(): StoredKey[] {
             if (fs.existsSync(loc)) {
                 const data = fs.readFileSync(loc, 'utf8');
                 const parsed = JSON.parse(data);
-                if (Array.isArray(parsed) && parsed.length > 0) {
+                if (Array.isArray(parsed)) {
                     return parsed;
                 }
             }
@@ -147,14 +147,14 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
             const contributorEmail = kf.contributorEmail?.stringValue || '';
             
             let contributorName = '';
-            if (rawContributorName && rawContributorName !== label && rawContributorName !== 'central' && rawContributorName !== 'anonymous' && rawContributorName !== 'Community Contributor') {
+            if (rawContributorName && rawContributorName !== 'central' && rawContributorName !== 'anonymous') {
                 contributorName = rawContributorName;
-            } else if (rawContributedBy && rawContributedBy !== label && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous' && rawContributedBy !== 'Community Contributor') {
+            } else if (rawContributedBy && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous') {
                 contributorName = rawContributedBy;
             } else if (contributorEmail) {
                 contributorName = contributorEmail.split('@')[0];
             } else {
-                contributorName = label || 'Contributor';
+                contributorName = 'Community Contributor';
             }
             const contributedBy = contributorName;
 
@@ -1062,10 +1062,14 @@ app.delete("/api/admin/keys", async (req, res) => {
         const authHeader = req.headers.authorization;
         const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
         saveStoredKeys([]);
+        centralKeys = [];
+        lastCentralKeysFetchTime = Date.now();
         invalidateCentralCache();
         await saveKeysToFirestoreDocument([], idToken);
-        res.json({ success: true });
+        console.log('[Server] Successfully purged all central API keys across server, memory, and database.');
+        res.json({ success: true, count: 0 });
     } catch (e) {
+        console.error('[Server] Error purging central API keys:', e);
         res.status(500).json({ error: String(e) });
     }
 });
@@ -1089,6 +1093,43 @@ app.get("/api/admin/keys/:id/reveal", async (req, res) => {
         let decryptedKey = '';
         try { decryptedKey = decrypt(sk.encryptedKey); } catch (e) { decryptedKey = sk.encryptedKey; }
         res.json({ success: true, key: decryptedKey });
+    } catch (e) {
+        res.status(500).json({ error: String(e) });
+    }
+});
+
+app.get("/api/admin/keys/export", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+        const firestoreFetched = await fetchKeysFromFirestore(idToken);
+        const fileKeys = loadStoredKeys();
+        let storedKeys = firestoreFetched !== null && firestoreFetched.length > 0 ? firestoreFetched : fileKeys;
+        if (firestoreFetched !== null && firestoreFetched.length >= 0) {
+            const keyMap = new Map();
+            for (const fk of fileKeys) { keyMap.set(fk.keyHash || fk.id, fk); }
+            for (const fsk of firestoreFetched) { keyMap.set(fsk.keyHash || fsk.id, fsk); }
+            storedKeys = Array.from(keyMap.values());
+        }
+
+        const lines = ["api label, api key"];
+        for (const sk of storedKeys) {
+            let decryptedKey = '';
+            try {
+                decryptedKey = decrypt(sk.encryptedKey);
+            } catch (e) {
+                decryptedKey = sk.encryptedKey;
+            }
+            const cleanKey = (decryptedKey || '').trim();
+            if (cleanKey) {
+                const label = (sk.label || 'API Key').replace(/[\r\n,]/g, ' ').trim();
+                lines.push(`${label}, ${cleanKey}`);
+            }
+        }
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename="central-api-keys.csv"');
+        res.send(lines.join('\n'));
     } catch (e) {
         res.status(500).json({ error: String(e) });
     }
@@ -1131,14 +1172,14 @@ app.get("/api/admin/keys", async (req, res) => {
 
                 const contributorEmail = data.contributorEmail || '';
                 let exactContributor = '';
-                if (data.contributorName && data.contributorName !== data.label && data.contributorName !== 'central' && data.contributorName !== 'anonymous' && data.contributorName !== 'Community Contributor') {
+                if (data.contributorName && data.contributorName !== 'central' && data.contributorName !== 'anonymous') {
                     exactContributor = data.contributorName;
-                } else if (data.contributedBy && data.contributedBy !== data.label && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous' && data.contributedBy !== 'Community Contributor') {
+                } else if (data.contributedBy && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous') {
                     exactContributor = data.contributedBy;
                 } else if (contributorEmail) {
                     exactContributor = contributorEmail.split('@')[0];
                 } else {
-                    exactContributor = data.label || 'Contributor';
+                    exactContributor = 'Community Contributor';
                 }
 
                 return {
@@ -1149,7 +1190,7 @@ app.get("/api/admin/keys", async (req, res) => {
                     createdAt: data.createdAt,
                     contributedBy: exactContributor,
                     contributorName: exactContributor,
-                    contributorEmail: data.contributorEmail
+                    contributorEmail: data.contributorEmail || ''
                 };
             });
             const activeKeys = keys.filter(k => k.enabled).length;

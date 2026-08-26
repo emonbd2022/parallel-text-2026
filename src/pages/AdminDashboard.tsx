@@ -3,12 +3,13 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { EyeOff, Eye, Download, ShieldAlert, Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Laptop } from 'lucide-react';
+import { EyeOff, Eye, Download, ShieldAlert, Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Laptop, Mail } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
   toggleCentralKeyStatus, 
   deleteCentralKeyFromFirestore,
+  clearAllCentralKeysFromDatabase,
   CentralKeyRecord 
 } from '../services/centralKeyService';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
@@ -122,17 +123,17 @@ export const AdminDashboard: React.FC = () => {
   };
   
   const handleClearAllKeys = async () => {
-      if (!window.confirm("Are you sure you want to permanently delete ALL Central API keys? This cannot be undone.")) return;
+      if (!window.confirm("Are you sure you want to permanently delete ALL Central API keys? This will clear all keys from both the server and database.")) return;
       setIsActionLoading(true);
       try {
-          const headers: Record<string, string> = {};
-          if (auth?.currentUser) {
-              headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
-          }
-          await fetch('/api/admin/keys', { method: 'DELETE', headers });
+          await clearAllCentralKeysFromDatabase();
+          setCentralKeys([]);
           await fetchCentralKeys(true);
-      } catch (e) { console.error(e); }
-      setIsActionLoading(false);
+      } catch (e) {
+          console.error("Error clearing all central keys:", e);
+      } finally {
+          setIsActionLoading(false);
+      }
   };
   
   const handleClearDuplicates = async () => {
@@ -152,16 +153,30 @@ export const AdminDashboard: React.FC = () => {
       setIsActionLoading(false);
   };
   
-  const handleExportKeys = () => {
-      const csvHeader = "ID,Label,MaskedKey,Contributor,Email,Status,Date Added\n";
-      const csvBody = centralKeys.map(k => `"${k.id}","${k.label}","${k.maskedKey}","${k.contributorName}","${k.contributorEmail || ''}","${k.enabled ? 'Enabled' : 'Disabled'}","${new Date(k.createdAt).toLocaleDateString()}"`).join('\n');
-      const blob = new Blob([csvHeader + csvBody], { type: 'text/csv' });
+  const handleExportKeys = async () => {
+    setIsActionLoading(true);
+    try {
+      const headers: Record<string, string> = {};
+      if (auth?.currentUser) {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      }
+      const res = await fetch('/api/admin/keys/export', { headers });
+      if (!res.ok) {
+        throw new Error('Failed to export keys from server');
+      }
+      const csvText = await res.text();
+      const blob = new Blob([csvText], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = 'central-api-keys.csv';
       a.click();
       URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to export real API keys.');
+    }
+    setIsActionLoading(false);
   };
   
   const toggleRevealKey = async (id: string) => {
@@ -2023,30 +2038,34 @@ export const AdminDashboard: React.FC = () => {
                               </div>
                             </td>
 
-                            <td className="p-4 text-xs text-slate-300">
-                              <div className="flex flex-col gap-0.5">
-                                <span className="font-semibold text-purple-300 inline-flex items-center gap-1.5">
-                                  <User className="w-3 h-3 text-purple-400 shrink-0" />
-                                  <span className="truncate max-w-[170px]">
+                            <td className="p-4 text-xs">
+                              <div className="flex flex-col gap-1">
+                                <div className="font-semibold text-slate-100 flex items-center gap-1.5 text-sm">
+                                  <User className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                  <span className="truncate max-w-[220px]" title={key.contributorName || key.contributedBy || 'User'}>
                                     {(() => {
-                                      const email = key.contributorEmail || '';
-                                      if (key.contributorName && key.contributorName !== key.label && key.contributorName !== 'central' && key.contributorName !== 'anonymous') {
-                                        return key.contributorName;
+                                      const name = (key.contributorName || key.contributedBy || '').trim();
+                                      if (name && name !== 'central' && name !== 'anonymous' && name !== 'Community Contributor') {
+                                        return name;
                                       }
-                                      if (key.contributedBy && key.contributedBy !== key.label && key.contributedBy !== 'central' && key.contributedBy !== 'anonymous') {
-                                        return key.contributedBy;
+                                      if (key.contributorEmail) {
+                                        return key.contributorEmail.split('@')[0];
                                       }
-                                      if (email) {
-                                        return email.split('@')[0];
-                                      }
-                                      return key.label || 'User';
+                                      return 'Community Contributor';
                                     })()}
                                   </span>
-                                </span>
-                                {key.contributorEmail && (
-                                  <span className="text-[10px] text-slate-500 font-mono truncate max-w-[170px]">
-                                    {key.contributorEmail}
-                                  </span>
+                                </div>
+                                {key.contributorEmail ? (
+                                  <div className="flex items-center gap-1 text-[11px] text-purple-300 font-mono pl-5">
+                                    <Mail className="w-3 h-3 text-purple-400/80 shrink-0" />
+                                    <span className="truncate max-w-[220px]" title={key.contributorEmail}>
+                                      {key.contributorEmail}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div className="text-[10px] text-slate-500 italic pl-5">
+                                    No email attached
+                                  </div>
                                 )}
                               </div>
                             </td>

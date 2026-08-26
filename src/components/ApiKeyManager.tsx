@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Key, Upload, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw, LogIn, AlertTriangle, Loader2 } from 'lucide-react';
+import { Key, Upload, Download, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw, LogIn, AlertTriangle, Loader2 } from 'lucide-react';
 import { ApiKey } from '../types';
 import { parseApiKeysCsv, CsvParseResult } from '../utils/csvKeyParser';
 import { ImportCsvModal } from './ImportCsvModal';
@@ -228,6 +228,25 @@ export const ApiKeyManager: React.FC<Props> = ({
     setIsCsvModalOpen(false);
     setCsvParseResult(null);
     setCsvFileName('');
+  };
+
+  const handleExportLocalKeys = () => {
+    if (!keys || keys.length === 0) return;
+    const lines = ["api label, api key"];
+    keys.forEach(k => {
+      const label = (k.label || 'API Key').replace(/[\r\n,]/g, ' ').trim();
+      const cleanKey = (k.key || '').trim();
+      if (cleanKey) {
+        lines.push(`${label}, ${cleanKey}`);
+      }
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'api_keys.csv';
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const toggleVisibility = (id: string) => {
@@ -485,6 +504,17 @@ export const ApiKeyManager: React.FC<Props> = ({
                   <Upload className="w-3.5 h-3.5 text-purple-400" />
                   Import CSV
                 </button>
+                {keys.length > 0 && (
+                  <button 
+                    type="button"
+                    onClick={handleExportLocalKeys}
+                    title="Export API keys to CSV"
+                    className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 hover:border-slate-600 shadow-sm flex items-center gap-1.5 cursor-pointer active:scale-95"
+                  >
+                    <Download className="w-3.5 h-3.5 text-purple-400" />
+                    Export CSV
+                  </button>
+                )}
                 <input 
                   type="file"
                   ref={fileInputRef}
