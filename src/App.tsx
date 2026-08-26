@@ -418,6 +418,11 @@ export default function App() {
 
   // Central API Keys Pool Fetch - strictly in-memory (RAM only), no persistent localStorage cache
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
+    // If not a forced refresh and central keys are already pulled into RAM in this session, skip redundant pull
+    if (!forceRefresh && centralKeys.length > 0) {
+      return centralKeys;
+    }
+
     try {
       const currentSession = getUsageSessionId();
       clearEncryptedCentralKeys(); // Purge any legacy cache from local storage
@@ -461,7 +466,7 @@ export default function App() {
             if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
               const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
                 id: k.id || `central-${idx}`,
-                label: k.label || `Central Pool Node ${idx + 1}`,
+                label: `Central Node ${idx + 1}`,
                 key: k.key, // Held strictly in memory
                 errorCount: 0,
                 usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
@@ -491,7 +496,7 @@ export default function App() {
                 }
                 return {
                   id: k.id || `central-${idx}`,
-                  label: k.label || `Central Pool Node ${idx + 1}`,
+                  label: `Central Node ${idx + 1}`,
                   key: realKey
                 };
               });
@@ -499,7 +504,7 @@ export default function App() {
               if (decrypted.length > 0) {
                 const pool: ApiKey[] = decrypted.map((k, idx) => ({
                   id: k.id || `central-${idx}`,
-                  label: k.label,
+                  label: `Central Node ${idx + 1}`,
                   key: k.key,
                   errorCount: 0,
                   usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
@@ -523,7 +528,7 @@ export default function App() {
           }
           return {
             id: k.id || `central-${idx}`,
-            label: k.label || `Central Pool Node ${idx + 1}`,
+            label: `Central Node ${idx + 1}`,
             key: realKey
           };
         });
@@ -531,7 +536,7 @@ export default function App() {
         if (decryptedInitial.length > 0) {
           const pool: ApiKey[] = decryptedInitial.map((k, idx) => ({
             id: k.id || `central-${idx}`,
-            label: k.label,
+            label: `Central Node ${idx + 1}`,
             key: k.key,
             errorCount: 0,
             usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
@@ -566,12 +571,14 @@ export default function App() {
     }
   };
 
-  // Fetch fresh central keys pool whenever user selects or activates Central API mode
+  // Pull central keys into RAM once per session when user selects Central API mode (ignored if already in memory)
   useEffect(() => {
     if (config.apiMode === 'central') {
-      fetchCentralKeysPool(true);
+      if (centralKeys.length === 0) {
+        fetchCentralKeysPool(false);
+      }
     }
-  }, [config.apiMode]);
+  }, [config.apiMode, centralKeys.length]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));

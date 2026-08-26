@@ -451,13 +451,13 @@ app.get("/api/central-keys-capacity", (req, res) => {
                 // Return real decrypted keys directly to the client RAM
                 poolKeys = centralKeys.map((k, index) => ({
                     id: k.id,
-                    label: `Central Pool Node ${index + 1}`,
+                    label: `Central Node ${index + 1}`,
                     key: k.key
                 }));
             } else if (process.env.GEMINI_API_KEY) {
                 poolKeys = [{
                     id: 'central-0',
-                    label: 'Central Pool Primary Node',
+                    label: 'Central Primary Node',
                     key: process.env.GEMINI_API_KEY
                 }];
             }
