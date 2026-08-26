@@ -99,65 +99,6 @@ function extractCleanKeys(localKeys: any): Set<string> {
     return new Set(extracted);
 }
 
-function deduplicateCentralKeys(storedKeys: StoredKey[]): { deduped: StoredKey[]; removedCount: number } {
-    if (!Array.isArray(storedKeys) || storedKeys.length === 0) {
-        return { deduped: [], removedCount: 0 };
-    }
-    const uniqueMap = new Map<string, StoredKey>();
-    let removedCount = 0;
-
-    for (const sk of storedKeys) {
-        if (!sk) continue;
-        let rawVal = '';
-        try {
-            rawVal = decrypt(sk.encryptedKey || (sk as any).key);
-        } catch {
-            rawVal = sk.encryptedKey || (sk as any).key || '';
-        }
-        rawVal = (rawVal || '').trim();
-
-        // Check deduplication key: use clean rawVal if available, else keyHash, else sk.id
-        const dedupKey = rawVal && rawVal.length > 15 ? rawVal : (sk.keyHash || sk.id);
-
-        if (!dedupKey) {
-            removedCount++;
-            continue;
-        }
-
-        if (!uniqueMap.has(dedupKey)) {
-            // Ensure encryptedKey is valid and keyHash is computed
-            const cloned: StoredKey = { ...sk };
-            if (rawVal && rawVal.length > 15) {
-                if (!cloned.encryptedKey || !cloned.encryptedKey.includes(':')) {
-                    cloned.encryptedKey = encrypt(rawVal);
-                }
-                if (!cloned.keyHash) {
-                    cloned.keyHash = crypto.createHash('sha256').update(rawVal).digest('hex');
-                }
-            }
-            uniqueMap.set(dedupKey, cloned);
-        } else {
-            // Duplicate found! Automatically delete and merge richest contributor metadata
-            removedCount++;
-            const existing = uniqueMap.get(dedupKey)!;
-            if (sk.contributorName && (!existing.contributorName || existing.contributorName === 'Community Contributor' || existing.contributorName === 'User')) {
-                existing.contributorName = sk.contributorName;
-            }
-            if (sk.contributedBy && (!existing.contributedBy || existing.contributedBy === 'central' || existing.contributedBy === 'anonymous')) {
-                existing.contributedBy = sk.contributedBy;
-            }
-            if (sk.contributorEmail && !existing.contributorEmail) {
-                existing.contributorEmail = sk.contributorEmail;
-            }
-            if (sk.label && sk.label !== 'User Contributed Key' && sk.label !== 'Central Key' && existing.label === 'Central Key') {
-                existing.label = sk.label;
-            }
-        }
-    }
-
-    return { deduped: Array.from(uniqueMap.values()), removedCount };
-}
-
 // In-memory cache of central keys
 interface StoredKey {
     id: string;
@@ -415,16 +356,11 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
             }
 
             const allStored = Array.from(keyMap.values());
-            const { deduped: cleanStored, removedCount } = deduplicateCentralKeys(allStored);
-            if (removedCount > 0) {
-                console.log(`[Server] Automatically deleted ${removedCount} duplicate API keys from server pool.`);
-                saveStoredKeys(cleanStored);
-                saveKeysToFirestoreDocument(cleanStored, idToken).catch(() => {});
-            } else if (cleanStored.length > 0) {
-                saveStoredKeys(cleanStored);
+            if (allStored.length > 0) {
+                saveStoredKeys(allStored);
             }
 
-            const active = cleanStored.filter(k => k.enabled !== false).map(data => {
+            const active = allStored.filter(k => k.enabled !== false).map(data => {
                 let decryptedKey = '';
                 try {
                     decryptedKey = decrypt(data.encryptedKey || (data as any).key);
@@ -527,9 +463,6 @@ app.get("/api/central-keys-capacity", async (req, res) => {
     // 1-Read Central API Keys Pool for Runtime Client Processing (Safe Virtual Node Handles Only)
     app.get("/api/central-keys-pool", async (req, res) => {
         try {
-            if (!globalCentralModeEnabled) {
-                return res.status(403).json({ success: false, error: "Central mode is off by admin, use your API.", keys: [] });
-            }
             const authHeader = req.headers.authorization;
             const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
             await syncCentralKeys(false, idToken);
@@ -567,10 +500,6 @@ app.get("/api/central-keys-capacity", async (req, res) => {
             const { localKeys, isAdmin, hasExplicitAdminGrant, forceRefresh } = req.body || {};
             const isForceRefresh = forceRefresh === true || req.query.refresh === 'true';
             
-            if (!globalCentralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
-                return res.status(403).json({ success: false, error: "Central mode is off by admin, use your API.", keys: [] });
-            }
-
             // Central API Eligibility Check
             let isEligible = false;
             if (isAdmin || hasExplicitAdminGrant) {
@@ -582,6 +511,15 @@ app.get("/api/central-keys-capacity", async (req, res) => {
                 }
             }
 
+
+            if (!globalCentralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
+                const isJson = res.json !== undefined;
+                if (isJson) {
+                    return res.status(403).json({ success: false, error: "Central API Mode is currently disabled by the administrator.", keys: [] });
+                } else {
+                    throw new Error("Central API Mode is currently disabled by the administrator.");
+                }
+            }
             if (!isEligible) {
                 return res.status(403).json({ success: false, error: "Central API access requires at least 8 unique local API keys or Administrator approval.", keys: [] });
             }
@@ -623,10 +561,6 @@ app.get("/api/central-keys-capacity", async (req, res) => {
             const { items = [], config = {}, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
             const virtualKeyId = vId || nodeId;
             
-            if (!globalCentralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
-                return res.status(403).json({ success: false, error: "Central mode is off by admin, use your API." });
-            }
-
             // Central API Eligibility Check
             let isEligible = false;
             if (isAdmin || hasExplicitAdminGrant) {
@@ -637,8 +571,16 @@ app.get("/api/central-keys-capacity", async (req, res) => {
                     isEligible = true;
                 }
             }
+            if (!globalCentralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
+                const isJson = res.json !== undefined;
+                if (isJson) {
+                    return res.status(403).json({ success: false, error: "Central API Mode is currently disabled by the administrator.", keys: [] });
+                } else {
+                    throw new Error("Central API Mode is currently disabled by the administrator.");
+                }
+            }
             if (!isEligible) {
-                return res.status(403).json({ success: false, error: "Central API access requires at least 8 unique local API keys or Administrator approval." });
+                throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
             }
 
             const apiKey = await getRealKey(virtualKeyId);
@@ -743,10 +685,6 @@ Return a strictly valid JSON array where each object contains:
             const { items, model, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = req.body;
             const virtualKeyId = vId || nodeId;
             
-            if (!globalCentralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
-                return res.status(403).json({ success: false, error: "Central mode is off by admin, use your API." });
-            }
-
             // Central API Eligibility Check
             let isEligible = false;
             if (isAdmin || hasExplicitAdminGrant) {
@@ -757,8 +695,16 @@ Return a strictly valid JSON array where each object contains:
                     isEligible = true;
                 }
             }
+            if (!globalCentralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
+                const isJson = res.json !== undefined;
+                if (isJson) {
+                    return res.status(403).json({ success: false, error: "Central API Mode is currently disabled by the administrator.", keys: [] });
+                } else {
+                    throw new Error("Central API Mode is currently disabled by the administrator.");
+                }
+            }
             if (!isEligible) {
-                return res.status(403).json({ success: false, error: "Central API access requires at least 8 unique local API keys or Administrator approval." });
+                throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
             }
 
             const apiKey = await getRealKey(virtualKeyId);
@@ -964,24 +910,20 @@ Return a strictly valid JSON array where each object contains:
                 });
                 added++;
             }
-
-            // Always run automated server-side deduplication
-            const { deduped: finalCleanKeys, removedCount: autoPrunedDuplicates } = deduplicateCentralKeys(firestoreKeys);
-
-            if (added > 0 || modified || autoPrunedDuplicates > 0) {
+            if (added > 0 || modified) {
                 try {
-                    await saveKeysToFirestoreDocument(finalCleanKeys, idToken);
+                    await saveKeysToFirestoreDocument(firestoreKeys, idToken);
                 } catch (fsErr) {
                     console.warn("[Server] saveKeysToFirestoreDocument notice in collect-keys:", fsErr);
                 }
                 try {
-                    saveStoredKeys(finalCleanKeys);
+                    saveStoredKeys(firestoreKeys);
                 } catch (fileErr) {
                     console.warn("[Server] saveStoredKeys notice in collect-keys:", fileErr);
                 }
                 invalidateCentralCache();
             }
-            res.json({ success: true, added, total: finalCleanKeys.length, prunedDuplicates: autoPrunedDuplicates });
+            res.json({ success: true, added, total: firestoreKeys.length });
         } catch (e: any) {
             console.error("Error collecting keys:", e);
             res.status(500).json({ success: false, error: String(e?.message || e), stack: String(e?.stack || '') });
@@ -1032,11 +974,10 @@ Return a strictly valid JSON array where each object contains:
                 contributorEmail: contributorEmail || 'admin'
             };
             storedKeys.push(newKey);
-            const { deduped: dedupedKeys } = deduplicateCentralKeys(storedKeys);
-            saveStoredKeys(dedupedKeys);
+            saveStoredKeys(storedKeys);
             
             invalidateCentralCache();
-            await saveKeysToFirestoreDocument(dedupedKeys, idToken);
+            await saveKeysToFirestoreDocument(storedKeys, idToken);
 
             res.json({ id: newKey.id, label: newKey.label, enabled: true });
         } catch (e: any) {
@@ -1062,14 +1003,9 @@ Return a strictly valid JSON array where each object contains:
                 }
                 storedKeys = Array.from(keyMap.values());
             }
-            const { deduped: dedupedKeys, removedCount: autoPruned } = deduplicateCentralKeys(storedKeys);
-            if (autoPruned > 0) {
-                saveStoredKeys(dedupedKeys);
-                saveKeysToFirestoreDocument(dedupedKeys, idToken).catch(() => {});
-            }
-            dedupedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
             
-            const keys = dedupedKeys.map(data => {
+            const keys = storedKeys.map(data => {
                 let maskedKey = '••••••••';
                 try {
                     const decrypted = decrypt(data.encryptedKey);
@@ -1143,7 +1079,18 @@ app.post("/api/admin/keys/deduplicate", async (req, res) => {
             storedKeys = Array.from(keyMap.values());
         }
 
-        const { deduped: dedupedKeys, removedCount } = deduplicateCentralKeys(storedKeys);
+        const uniqueMap = new Map();
+        let removedCount = 0;
+        for (const sk of storedKeys) {
+            let rawVal = '';
+            try { rawVal = decrypt(sk.encryptedKey); } catch(e) { rawVal = sk.encryptedKey; }
+            if (!uniqueMap.has(rawVal)) {
+                uniqueMap.set(rawVal, sk);
+            } else {
+                removedCount++;
+            }
+        }
+        const dedupedKeys = Array.from(uniqueMap.values());
         saveStoredKeys(dedupedKeys);
         invalidateCentralCache();
         await saveKeysToFirestoreDocument(dedupedKeys, idToken);

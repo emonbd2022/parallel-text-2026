@@ -42,8 +42,6 @@ interface AuthContextType {
   setUserData: React.Dispatch<React.SetStateAction<UserData | null>>;
   maintenanceMode: boolean;
   setMaintenanceMode: React.Dispatch<React.SetStateAction<boolean>>;
-  centralModeEnabled: boolean;
-  setCentralModeEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   notifications: AppNotification[];
   setNotifications: React.Dispatch<React.SetStateAction<AppNotification[]>>;
   deleteNotification: (id: string, globalDelete?: boolean) => Promise<void>;
@@ -57,8 +55,6 @@ const AuthContext = createContext<AuthContextType>({
   setUserData: () => {},
   maintenanceMode: false,
   setMaintenanceMode: () => {},
-  centralModeEnabled: true,
-  setCentralModeEnabled: () => {},
   notifications: [],
   setNotifications: () => {},
   deleteNotification: async () => {},
@@ -103,13 +99,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return false;
     }
   });
-  const [centralModeEnabled, setCentralModeEnabled] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('centralModeEnabled') !== 'false';
-    } catch {
-      return true;
-    }
-  });
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
     try {
       const activeUid = cachedData?.uid;
@@ -131,31 +120,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     notificationsRef.current = notifications;
   }, [notifications]);
 
-  // Periodic and on-mount sync for global centralModeEnabled
-  useEffect(() => {
-    const fetchServerConfig = () => {
-      fetch('/api/admin/config')
-        .then(res => {
-          const contentType = res.headers.get('content-type');
-          if (res.ok && contentType && contentType.includes('application/json')) {
-            return res.json();
-          }
-          return null;
-        })
-        .then(data => {
-          if (data && typeof data.centralModeEnabled === 'boolean') {
-            setCentralModeEnabled(data.centralModeEnabled);
-            try { localStorage.setItem('centralModeEnabled', String(data.centralModeEnabled)); } catch {}
-          }
-        })
-        .catch(() => {});
-    };
-
-    fetchServerConfig();
-    window.addEventListener('focus', fetchServerConfig);
-    return () => window.removeEventListener('focus', fetchServerConfig);
-  }, []);
-
   // Guard to ensure strictly 1 real-time Firestore fetch occurs after each page reload/initial auth per UID
   const checkedUserUidRef = useRef<string | null>(null);
   const fetchedSettingsRef = useRef<boolean>(false);
@@ -174,9 +138,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           try { localStorage.setItem('maintenanceMode', String(isMaint)); } catch {}
 
           if (docSnap.data()?.centralModeEnabled !== undefined) {
-            const isCentral = docSnap.data()?.centralModeEnabled === true;
-            setCentralModeEnabled(isCentral);
-            try { localStorage.setItem('centralModeEnabled', String(isCentral)); } catch {}
+            try { localStorage.setItem('centralModeEnabled', String(docSnap.data()?.centralModeEnabled === true)); } catch {}
           }
         }
       })
@@ -619,7 +581,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, centralModeEnabled, setCentralModeEnabled, notifications, setNotifications, deleteNotification, logout }}>
+    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, notifications, setNotifications, deleteNotification, logout }}>
       {!loading && children}
     </AuthContext.Provider>
   );
