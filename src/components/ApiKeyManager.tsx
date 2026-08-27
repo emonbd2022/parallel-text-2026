@@ -34,7 +34,7 @@ export const ApiKeyManager: React.FC<Props> = ({
   onShowToast,
   onRefreshCentralKeys
 }) => {
-  const { userData, user, setIsAuthModalOpen } = useAuth();
+  const { userData, user, setIsAuthModalOpen, centralModeEnabled } = useAuth();
   const [label, setLabel] = useState('');
   const [keyVal, setKeyVal] = useState('');
   const [showInput, setShowInput] = useState(false);
@@ -62,13 +62,25 @@ export const ApiKeyManager: React.FC<Props> = ({
   const localKeysCount = sourceLocalKeys.filter(k => !k.key.startsWith('central-')).length;
 
   // Central API eligibility:
-  // 1. Admin users retain access regardless of key count.
-  // 2. Admin-granted accounts (userData?.centralApiAccess === true) retain access.
-  // 3. Any logged-in user with >= 8 UNIQUE local keys is automatically unlocked (0 admin approval needed).
-  const isAdmin = userData?.role === 'admin';
+  // 1. If admin disabled Central Mode globally, access is locked for normal users.
+  // 2. Admin users retain access regardless of lock.
+  // 3. Admin-granted accounts (userData?.centralApiAccess === true) retain access.
+  // 4. Any logged-in user with >= 8 UNIQUE local keys is automatically unlocked when mode is enabled.
+  const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+  const isCentralDisabledForUser = centralModeEnabled === false && !isAdmin;
   const hasExplicitAdminGrant = userData?.centralApiAccess === true;
   const hasEightKeysUnlocked = Boolean((user || userData) && uniqueLocalKeysCount >= 8);
-  const isEligibleForCentral = Boolean(isAdmin || hasExplicitAdminGrant || hasEightKeysUnlocked);
+  const isEligibleForCentral = isAdmin || (!isCentralDisabledForUser && Boolean(hasExplicitAdminGrant || hasEightKeysUnlocked));
+
+  // Auto-revert normal users to Local API mode if admin turns off Central Mode while Central mode is active
+  useEffect(() => {
+    if (centralModeEnabled === false && apiMode === 'central' && !isAdmin) {
+      onChangeApiMode('local');
+      if (onShowToast) {
+        onShowToast('Central API Locked', 'Central API mode has been disabled by the administrator. Switched to Local API mode.');
+      }
+    }
+  }, [centralModeEnabled, apiMode, onChangeApiMode, onShowToast, isAdmin]);
 
   // Update time for cooldown countdowns
   useEffect(() => {
@@ -87,6 +99,10 @@ export const ApiKeyManager: React.FC<Props> = ({
 
   const handleModeChange = (mode: 'local' | 'central') => {
     if (mode === 'central') {
+      if (centralModeEnabled === false && !isAdmin) {
+        if (onShowToast) onShowToast('Central API Locked', 'Central API mode has been disabled by the administrator.');
+        return;
+      }
       if (!user && !userData) {
         if (onShowToast) onShowToast('Login Required', 'You must log in to access the Central API pool.');
         setIsAuthModalOpen(true);
@@ -240,12 +256,19 @@ export const ApiKeyManager: React.FC<Props> = ({
           className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
             apiMode === 'central' 
               ? 'bg-purple-600/20 text-purple-400 shadow-sm border border-purple-500/30' 
-              : isEligibleForCentral 
-                ? 'text-slate-400 hover:text-slate-300' 
-                : 'text-slate-500 opacity-80 hover:text-slate-400'
+              : isCentralDisabledForUser
+                ? 'text-slate-500 opacity-60 hover:text-slate-400 cursor-not-allowed bg-slate-900/40'
+                : isEligibleForCentral 
+                  ? 'text-slate-400 hover:text-slate-300' 
+                  : 'text-slate-500 opacity-80 hover:text-slate-400'
           }`}
         >
-          {isEligibleForCentral ? (
+          {isCentralDisabledForUser ? (
+            <>
+              <Lock className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              <span className="text-rose-300/80">Central API Locked</span>
+            </>
+          ) : isEligibleForCentral ? (
             <>
               <Zap className="w-4 h-4 text-purple-400 shrink-0" />
               <span>Central API — Blazing Fast</span>
@@ -259,8 +282,26 @@ export const ApiKeyManager: React.FC<Props> = ({
         </button>
       </div>
 
+      {/* Central Mode Disabled by Admin Banner */}
+      {isCentralDisabledForUser && (
+        <div className="mb-6 p-4 bg-gradient-to-r from-rose-950/30 via-slate-900 to-slate-900 border border-rose-500/30 rounded-xl text-xs space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 font-bold text-rose-300 text-sm">
+              <Lock className="w-4 h-4 text-rose-400 shrink-0" />
+              Central API Mode Locked
+            </div>
+            <span className="text-[11px] font-mono font-bold bg-rose-500/20 text-rose-300 px-2.5 py-0.5 rounded-full border border-rose-500/30">
+              Disabled by Admin
+            </span>
+          </div>
+          <p className="text-slate-300 text-xs leading-relaxed">
+            Central API mode is currently turned off by the system administrator. All operations will process using your configured <strong>Local API keys</strong>.
+          </p>
+        </div>
+      )}
+
       {/* Central Unlock Progress / Notice */}
-      {!isEligibleForCentral && apiMode !== 'central' && (
+      {!isCentralDisabledForUser && !isEligibleForCentral && apiMode !== 'central' && (
         <div className="mb-6 p-4 bg-gradient-to-r from-purple-950/30 via-slate-900 to-slate-900 border border-purple-500/30 rounded-xl text-xs space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-bold text-purple-300 text-sm">

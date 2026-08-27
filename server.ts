@@ -236,6 +236,26 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
     }
 }
 
+// In-memory mutex for Central Keys modification to prevent race conditions (overwriting)
+let centralKeysLock = Promise.resolve();
+
+async function withCentralKeysLock<T>(task: () => Promise<T>): Promise<T> {
+    let releaseLock!: () => void;
+    const nextLock = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+    });
+    
+    const previousLock = centralKeysLock;
+    centralKeysLock = nextLock;
+
+    try {
+        await previousLock;
+        return await task();
+    } finally {
+        releaseLock();
+    }
+}
+
 /**
  * Saves all central keys to the single Firestore document central_keys/APIkeys
  */
@@ -452,11 +472,13 @@ async function getRealKey(virtualKeyId: string): Promise<string> {
 const apiRouter = express.Router();
 
 // Capacity endpoint for client
-apiRouter.get("/central-keys-capacity", (req, res) => {
+apiRouter.get("/central-keys-capacity", async (req, res) => {
+    const settings = await fetchSettingsFromFirestore();
     const stored = loadStoredKeys();
     const fallbackCount = process.env.GEMINI_API_KEY ? 1 : 0;
     const totalActive = centralKeys.length > 0 ? centralKeys.length : fallbackCount;
     res.json({ 
+        centralModeEnabled: settings.centralModeEnabled,
         capacity: totalActive,
         activeCount: centralKeys.length,
         totalCount: stored.length,
@@ -490,12 +512,25 @@ async function fetchSettingsFromFirestore(): Promise<{ centralModeEnabled: boole
 apiRouter.get("/central-keys-pool", async (req, res) => {
     try {
         const settings = await fetchSettingsFromFirestore();
-        if (!settings.centralModeEnabled) {
+        const authHeader = req.headers.authorization;
+        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+        let isRequesterAdmin = false;
+        if (idToken) {
+            try {
+                const parts = idToken.split('.');
+                if (parts.length === 3) {
+                    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+                    if (payload.email === 'reactoremon2022@gmail.com' || payload.email === 'titaniumfact97@gmail.com' || payload.role === 'admin' || payload.admin === true) {
+                        isRequesterAdmin = true;
+                    }
+                }
+            } catch {}
+        }
+
+        if (!settings.centralModeEnabled && !isRequesterAdmin) {
             return res.status(403).json({ success: false, error: "Central Mode is disabled by administrator.", keys: [], count: 0 });
         }
 
-        const authHeader = req.headers.authorization;
-        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
         const isForce = req.query.refresh === 'true';
         await syncCentralKeys(isForce, idToken);
 
@@ -532,6 +567,11 @@ apiRouter.post("/central-keys-pool-sync", async (req, res) => {
         const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
         const { localKeys, isAdmin, hasExplicitAdminGrant, forceRefresh } = body;
         const isForceRefresh = forceRefresh === true || req.query.refresh === 'true';
+
+        const settings = await fetchSettingsFromFirestore();
+        if (!settings.centralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
+            return res.status(403).json({ success: false, error: "Central Mode is disabled by administrator.", keys: [], count: 0 });
+        }
         
         // Central API Eligibility Check
         let isEligible = false;
@@ -586,14 +626,14 @@ apiRouter.post("/central-keys-pool-sync", async (req, res) => {
 
 apiRouter.post("/central-generate", async (req, res) => {
     try {
-        const settings = await fetchSettingsFromFirestore();
-        if (!settings.centralModeEnabled) {
-            throw new Error("Central Mode is disabled by administrator.");
-        }
-
         const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
         const { items = [], config = {}, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = body;
         const virtualKeyId = vId || nodeId;
+
+        const settings = await fetchSettingsFromFirestore();
+        if (!settings.centralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
+            throw new Error("Central Mode is disabled by administrator.");
+        }
         
         // Central API Eligibility Check
         let isEligible = false;
@@ -708,14 +748,14 @@ Return a strictly valid JSON array where each object contains:
 
 apiRouter.post("/central-category", async (req, res) => {
     try {
-        const settings = await fetchSettingsFromFirestore();
-        if (!settings.centralModeEnabled) {
-            throw new Error("Central Mode is disabled by administrator.");
-        }
-
         const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
         const { items, model, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = body;
         const virtualKeyId = vId || nodeId;
+
+        const settings = await fetchSettingsFromFirestore();
+        if (!settings.centralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
+            throw new Error("Central Mode is disabled by administrator.");
+        }
         
         // Central API Eligibility Check
         let isEligible = false;
@@ -850,169 +890,198 @@ Return a strictly valid JSON array where each object contains:
 
 // Endpoint for users to automatically contribute keys to the central pool
 apiRouter.post("/collect-keys", async (req, res) => {
-    try {
-        const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-        const { keys } = body;
-        if (!Array.isArray(keys)) return res.status(400).json({ success: false, error: "Expected array of keys" });
+    withCentralKeysLock(async () => {
+        try {
+            const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+            const { keys } = body;
+            if (!Array.isArray(keys)) return res.status(400).json({ success: false, error: "Expected array of keys" });
 
-        const authHeader = req.headers.authorization;
-        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
 
-        let added = 0;
-        let modified = false;
-        const firestoreKeys = await fetchKeysFromFirestore(idToken) || (isProductionEnv() ? [] : loadStoredKeys());
-        
-        for (const rawK of keys) {
-            if (!rawK) continue;
-            const rawVal = typeof rawK === 'string' ? rawK : (rawK.key || '');
-            if (typeof rawVal !== 'string') continue;
-            const keyVal = rawVal.trim();
-            if (keyVal.length < 10 || keyVal.startsWith('central-')) continue;
+            let added = 0;
+            let modified = false;
+            let firestoreKeys = await fetchKeysFromFirestore(idToken);
+            
+            if (firestoreKeys === null) {
+                return res.status(503).json({ success: false, error: "Database temporarily unavailable, could not safely append keys." });
+            }
+            
+            for (const rawK of keys) {
+                if (!rawK) continue;
+                const rawVal = typeof rawK === 'string' ? rawK : (rawK.key || '');
+                if (typeof rawVal !== 'string') continue;
+                const keyVal = rawVal.trim();
+                if (keyVal.length < 10 || keyVal.startsWith('central-')) continue;
 
-            const labelVal = typeof rawK === 'object' && rawK?.label ? String(rawK.label) : 'User Contributed Key';
-            const contribName = typeof rawK === 'object' ? rawK.contributorName : '';
-            const contribBy = typeof rawK === 'object' ? rawK.contributedBy : '';
-            const contribEmail = typeof rawK === 'object' ? rawK.contributorEmail : '';
+                const labelVal = typeof rawK === 'object' && rawK?.label ? String(rawK.label) : 'User Contributed Key';
+                const contribName = typeof rawK === 'object' ? rawK.contributorName : '';
+                const contribBy = typeof rawK === 'object' ? rawK.contributedBy : '';
+                const contribEmail = typeof rawK === 'object' ? rawK.contributorEmail : '';
 
-            // Plaintext value deduplication
-            const isDuplicate = firestoreKeys.some(sk => {
-                const decrypted = decrypt(sk.encryptedKey) || (sk as any).key || '';
-                return decrypted.trim() === keyVal;
-            });
-
-            const exactContributor = (contribName || (contribBy && contribBy !== 'central' && contribBy !== 'anonymous' && contribBy !== 'Community Contributor' ? contribBy : '') || (contribEmail ? contribEmail.split('@')[0] : '') || '').trim() || 'Contributor';
-
-            if (isDuplicate) {
-                const existing = firestoreKeys.find(sk => {
+                // Plaintext value deduplication
+                const isDuplicate = firestoreKeys.some(sk => {
                     const decrypted = decrypt(sk.encryptedKey) || (sk as any).key || '';
                     return decrypted.trim() === keyVal;
                 });
-                if (existing) {
-                    if (exactContributor && exactContributor !== 'Contributor') {
-                        if (existing.contributorName !== exactContributor || existing.contributedBy !== exactContributor) {
-                            existing.contributorName = exactContributor;
-                            existing.contributedBy = exactContributor;
+
+                const exactContributor = (contribName || (contribBy && contribBy !== 'central' && contribBy !== 'anonymous' && contribBy !== 'Community Contributor' ? contribBy : '') || (contribEmail ? contribEmail.split('@')[0] : '') || '').trim() || 'Contributor';
+
+                if (isDuplicate) {
+                    const existing = firestoreKeys.find(sk => {
+                        const decrypted = decrypt(sk.encryptedKey) || (sk as any).key || '';
+                        return decrypted.trim() === keyVal;
+                    });
+                    if (existing) {
+                        if (exactContributor && exactContributor !== 'Contributor') {
+                            if (existing.contributorName !== exactContributor || existing.contributedBy !== exactContributor) {
+                                existing.contributorName = exactContributor;
+                                existing.contributedBy = exactContributor;
+                                modified = true;
+                            }
+                        }
+                        if (contribEmail && existing.contributorEmail !== contribEmail) {
+                            existing.contributorEmail = contribEmail;
                             modified = true;
                         }
                     }
-                    if (contribEmail && existing.contributorEmail !== contribEmail) {
-                        existing.contributorEmail = contribEmail;
-                        modified = true;
-                    }
+                    continue; 
                 }
-                continue; 
+
+                const encryptedKey = encrypt(keyVal);
+                const keyHash = crypto.createHash('sha256').update(keyVal).digest('hex');
+                firestoreKeys.push({
+                    id: crypto.randomUUID(),
+                    label: labelVal,
+                    encryptedKey,
+                    keyHash,
+                    enabled: true,
+                    createdAt: new Date().toISOString(),
+                    contributedBy: exactContributor,
+                    contributorName: exactContributor,
+                    contributorEmail: contribEmail || ''
+                });
+                added++;
             }
 
-            const encryptedKey = encrypt(keyVal);
-            const keyHash = crypto.createHash('sha256').update(keyVal).digest('hex');
-            firestoreKeys.push({
+            const deduplicated = deduplicateKeysByValue(firestoreKeys);
+
+            console.log(`📥 [Server /api/collect-keys] Processed user keys: Received: ${keys.length}, Added: +${added}, Total in pool: ${deduplicated.length}`);
+
+            if (added > 0 || modified) {
+                const saveSuccess = await saveKeysToFirestoreDocument(deduplicated, idToken);
+                if (!saveSuccess) {
+                    return res.status(500).json({ success: false, error: "Failed to save keys to database." });
+                }
+                saveStoredKeys(deduplicated);
+                invalidateCentralCache();
+            }
+            res.json({ success: true, added, total: deduplicated.length });
+        } catch (e: any) {
+            console.error("Error collecting keys:", e);
+            res.status(500).json({ success: false, error: String(e?.message || e) });
+        }
+    });
+});
+
+// Admin endpoints to manage Central Keys
+apiRouter.post("/admin/keys", async (req, res) => {
+    withCentralKeysLock(async () => {
+        try {
+            const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+            const { label, key, contributorName, contributedBy, contributorEmail } = body;
+            if (!label || !key) return res.status(400).send("Label and key required");
+            
+            const cleanKey = key.trim();
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+
+            const fetchedKeys = await fetchKeysFromFirestore(idToken);
+            if (fetchedKeys === null) {
+                return res.status(503).json({ success: false, error: "Database temporarily unavailable, could not safely add key." });
+            }
+            const currentFirestoreKeys = fetchedKeys;
+            
+            // Plaintext value duplicate check
+            const isDuplicate = currentFirestoreKeys.some(sk => {
+                const dec = decrypt(sk.encryptedKey) || (sk as any).key || '';
+                return dec.trim() === cleanKey;
+            });
+
+            if (isDuplicate) {
+                return res.status(400).json({ error: "An API key with this exact value already exists in the central database." });
+            }
+
+            const encryptedKey = encrypt(cleanKey);
+            const keyHash = crypto.createHash('sha256').update(cleanKey).digest('hex');
+            const exactContributor = (contributorName || contributedBy || '').trim() || (contributorEmail ? contributorEmail.split('@')[0] : '') || 'Admin';
+
+            const newKey: StoredKey = {
                 id: crypto.randomUUID(),
-                label: labelVal,
+                label: label.trim(),
                 encryptedKey,
                 keyHash,
                 enabled: true,
                 createdAt: new Date().toISOString(),
                 contributedBy: exactContributor,
                 contributorName: exactContributor,
-                contributorEmail: contribEmail || ''
-            });
-            added++;
-        }
+                contributorEmail: contributorEmail || 'admin'
+            };
 
-        const deduplicated = deduplicateKeysByValue(firestoreKeys);
-
-        console.log(`📥 [Server /api/collect-keys] Processed user keys: Received: ${keys.length}, Added: +${added}, Total in pool: ${deduplicated.length}`);
-
-        if (added > 0 || modified) {
-            await saveKeysToFirestoreDocument(deduplicated, idToken);
+            currentFirestoreKeys.push(newKey);
+            const deduplicated = deduplicateKeysByValue(currentFirestoreKeys);
+            
+            const saveSuccess = await saveKeysToFirestoreDocument(deduplicated, idToken);
+            if (!saveSuccess) {
+                return res.status(500).json({ success: false, error: "Failed to save key to database." });
+            }
+            
             saveStoredKeys(deduplicated);
             invalidateCentralCache();
+
+            res.json({ id: newKey.id, label: newKey.label, enabled: true });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: String(e?.message || e) });
         }
-        res.json({ success: true, added, total: deduplicated.length });
-    } catch (e: any) {
-        console.error("Error collecting keys:", e);
-        res.status(500).json({ success: false, error: String(e?.message || e) });
-    }
-});
-
-// Admin endpoints to manage Central Keys
-apiRouter.post("/admin/keys", async (req, res) => {
-    try {
-        const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-        const { label, key, contributorName, contributedBy, contributorEmail } = body;
-        if (!label || !key) return res.status(400).send("Label and key required");
-        
-        const cleanKey = key.trim();
-        const authHeader = req.headers.authorization;
-        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-
-        const currentFirestoreKeys = await fetchKeysFromFirestore(idToken) || (isProductionEnv() ? [] : loadStoredKeys());
-        
-        // Plaintext value duplicate check
-        const isDuplicate = currentFirestoreKeys.some(sk => {
-            const dec = decrypt(sk.encryptedKey) || (sk as any).key || '';
-            return dec.trim() === cleanKey;
-        });
-
-        if (isDuplicate) {
-            return res.status(400).json({ error: "An API key with this exact value already exists in the central database." });
-        }
-
-        const encryptedKey = encrypt(cleanKey);
-        const keyHash = crypto.createHash('sha256').update(cleanKey).digest('hex');
-        const exactContributor = (contributorName || contributedBy || '').trim() || (contributorEmail ? contributorEmail.split('@')[0] : '') || 'Admin';
-
-        const newKey: StoredKey = {
-            id: crypto.randomUUID(),
-            label: label.trim(),
-            encryptedKey,
-            keyHash,
-            enabled: true,
-            createdAt: new Date().toISOString(),
-            contributedBy: exactContributor,
-            contributorName: exactContributor,
-            contributorEmail: contributorEmail || 'admin'
-        };
-
-        currentFirestoreKeys.push(newKey);
-        const deduplicated = deduplicateKeysByValue(currentFirestoreKeys);
-        saveStoredKeys(deduplicated);
-        invalidateCentralCache();
-        await saveKeysToFirestoreDocument(deduplicated, idToken);
-
-        res.json({ id: newKey.id, label: newKey.label, enabled: true });
-    } catch (e: any) {
-        res.status(500).json({ success: false, error: String(e?.message || e) });
-    }
+    });
 });
 
 // Explicit deduplication endpoint for Admin
 apiRouter.post("/admin/keys/deduplicate", async (req, res) => {
-    try {
-        const authHeader = req.headers.authorization;
-        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-        invalidateCentralCache();
-        const firestoreKeys = await fetchKeysFromFirestore(idToken) || [];
-        const originalCount = firestoreKeys.length;
-        const deduplicated = deduplicateKeysByValue(firestoreKeys);
-        const removedCount = originalCount - deduplicated.length;
-
-        if (removedCount > 0) {
-            await saveKeysToFirestoreDocument(deduplicated, idToken);
-            saveStoredKeys(deduplicated);
+    withCentralKeysLock(async () => {
+        try {
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
             invalidateCentralCache();
-            await syncCentralKeys(true, idToken);
-        }
+            const fetchedKeys = await fetchKeysFromFirestore(idToken);
+            if (fetchedKeys === null) {
+                return res.status(503).json({ success: false, error: "Database temporarily unavailable." });
+            }
+            const firestoreKeys = fetchedKeys;
+            const originalCount = firestoreKeys.length;
+            const deduplicated = deduplicateKeysByValue(firestoreKeys);
+            const removedCount = originalCount - deduplicated.length;
 
-        res.json({
-            success: true,
-            originalCount,
-            deduplicatedCount: deduplicated.length,
-            removedCount
-        });
-    } catch (e: any) {
-        res.status(500).json({ success: false, error: String(e?.message || e) });
-    }
+            if (removedCount > 0) {
+                const saveSuccess = await saveKeysToFirestoreDocument(deduplicated, idToken);
+                if (!saveSuccess) {
+                    return res.status(500).json({ success: false, error: "Failed to save deduplicated keys." });
+                }
+                saveStoredKeys(deduplicated);
+                invalidateCentralCache();
+                await syncCentralKeys(true, idToken);
+            }
+
+            res.json({
+                success: true,
+                originalCount,
+                deduplicatedCount: deduplicated.length,
+                removedCount
+            });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: String(e?.message || e) });
+        }
+    });
 });
 
 apiRouter.post("/admin/keys/refresh", async (req, res) => {
@@ -1137,21 +1206,24 @@ apiRouter.get("/admin/keys", async (req, res) => {
 });
 
 apiRouter.delete("/admin/keys", async (req, res) => {
-    try {
-        const authHeader = req.headers.authorization;
-        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-        // Verify admin access via Firestore write
-        const storedKeys: StoredKey[] = [];
-        saveStoredKeys(storedKeys);
-        invalidateCentralCache();
-        const success = await saveKeysToFirestoreDocument(storedKeys, idToken);
-        if (!success && idToken) {
-           return res.status(403).json({ success: false, error: "Unauthorized" });
+    withCentralKeysLock(async () => {
+        try {
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            // Verify admin access via Firestore write
+            const storedKeys: StoredKey[] = [];
+            
+            const success = await saveKeysToFirestoreDocument(storedKeys, idToken);
+            if (!success && idToken) {
+               return res.status(403).json({ success: false, error: "Unauthorized" });
+            }
+            saveStoredKeys(storedKeys);
+            invalidateCentralCache();
+            res.json({ success: true });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: String(e?.message || e) });
         }
-        res.json({ success: true });
-    } catch (e: any) {
-        res.status(500).json({ success: false, error: String(e?.message || e) });
-    }
+    });
 });
 
 apiRouter.get("/admin/keys/export-csv", async (req, res) => {
@@ -1237,40 +1309,61 @@ apiRouter.get("/admin/keys/reveal", async (req, res) => {
 });
 
 apiRouter.delete("/admin/keys/:id", async (req, res) => {
-    try {
-        const authHeader = req.headers.authorization;
-        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-        let storedKeys = await fetchKeysFromFirestore(idToken) || (isProductionEnv() ? [] : loadStoredKeys());
-        storedKeys = storedKeys.filter(k => k.id !== req.params.id);
-        saveStoredKeys(storedKeys);
-        
-        invalidateCentralCache();
-        await saveKeysToFirestoreDocument(storedKeys, idToken);
+    withCentralKeysLock(async () => {
+        try {
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            const fetchedKeys = await fetchKeysFromFirestore(idToken);
+            if (fetchedKeys === null) {
+                return res.status(503).json({ success: false, error: "Database temporarily unavailable." });
+            }
+            let storedKeys = fetchedKeys;
+            storedKeys = storedKeys.filter(k => k.id !== req.params.id);
+            
+            const saveSuccess = await saveKeysToFirestoreDocument(storedKeys, idToken);
+            if (!saveSuccess) {
+                return res.status(500).json({ success: false, error: "Failed to save to database." });
+            }
+            
+            saveStoredKeys(storedKeys);
+            invalidateCentralCache();
 
-        res.json({ success: true });
-    } catch (e: any) {
-        res.status(500).json({ success: false, error: String(e?.message || e) });
-    }
+            res.json({ success: true });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: String(e?.message || e) });
+        }
+    });
 });
 
 apiRouter.patch("/admin/keys/:id", async (req, res) => {
-    try {
-        const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-        const { enabled } = body;
-        const authHeader = req.headers.authorization;
-        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-        const storedKeys = await fetchKeysFromFirestore(idToken) || (isProductionEnv() ? [] : loadStoredKeys());
-        const key = storedKeys.find(k => k.id === req.params.id);
-        if (key) {
-            key.enabled = enabled;
-            saveStoredKeys(storedKeys);
-            invalidateCentralCache();
-            await saveKeysToFirestoreDocument(storedKeys, idToken);
+    withCentralKeysLock(async () => {
+        try {
+            const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+            const { enabled } = body;
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            const fetchedKeys = await fetchKeysFromFirestore(idToken);
+            if (fetchedKeys === null) {
+                return res.status(503).json({ success: false, error: "Database temporarily unavailable." });
+            }
+            const storedKeys = fetchedKeys;
+            const key = storedKeys.find(k => k.id === req.params.id);
+            if (key) {
+                key.enabled = enabled;
+                
+                const saveSuccess = await saveKeysToFirestoreDocument(storedKeys, idToken);
+                if (!saveSuccess) {
+                    return res.status(500).json({ success: false, error: "Failed to save to database." });
+                }
+                
+                saveStoredKeys(storedKeys);
+                invalidateCentralCache();
+            }
+            res.json({ success: true });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
         }
-        res.json({ success: true });
-    } catch (e: any) {
-        res.status(500).json({ error: e.message });
-    }
+    });
 });
 
 // Mount the API Router under /api

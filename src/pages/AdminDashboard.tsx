@@ -17,7 +17,7 @@ import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAud
 type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active';
 
 export const AdminDashboard: React.FC = () => {
-  const { userData: currentAdmin, maintenanceMode, setMaintenanceMode, notifications, setNotifications, deleteNotification } = useAuth();
+  const { userData: currentAdmin, maintenanceMode, setMaintenanceMode, centralModeEnabled, setCentralModeEnabled, notifications, setNotifications, deleteNotification } = useAuth();
   
   // Dashboard Tabs: 'users' | 'notifications'
   const [activeTab, setActiveTab] = useState<'users' | 'notifications' | 'keys'>('users');
@@ -163,23 +163,6 @@ export const AdminDashboard: React.FC = () => {
 
   const [isDeduplicating, setIsDeduplicating] = useState(false);
   const [dedupResult, setDedupResult] = useState<string | null>(null);
-  
-  const [centralModeEnabled, setCentralModeEnabled] = useState(true);
-
-  useEffect(() => {
-      const fetchSettings = async () => {
-          try {
-              const docSnap = await getDoc(doc(db, 'settings', 'general'));
-              if (docSnap.exists()) {
-                  const data = docSnap.data();
-                  if (typeof data.centralModeEnabled === 'boolean') {
-                      setCentralModeEnabled(data.centralModeEnabled);
-                  }
-              }
-          } catch(e) {}
-      };
-      fetchSettings();
-  }, []);
 
   const toggleCentralMode = async () => {
       const newMode = !centralModeEnabled;

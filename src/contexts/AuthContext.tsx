@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
 
@@ -42,6 +42,8 @@ interface AuthContextType {
   setUserData: React.Dispatch<React.SetStateAction<UserData | null>>;
   maintenanceMode: boolean;
   setMaintenanceMode: React.Dispatch<React.SetStateAction<boolean>>;
+  centralModeEnabled: boolean;
+  setCentralModeEnabled: React.Dispatch<React.SetStateAction<boolean>>;
   notifications: AppNotification[];
   setNotifications: React.Dispatch<React.SetStateAction<AppNotification[]>>;
   deleteNotification: (id: string, globalDelete?: boolean) => Promise<void>;
@@ -55,6 +57,8 @@ const AuthContext = createContext<AuthContextType>({
   setUserData: () => {},
   maintenanceMode: false,
   setMaintenanceMode: () => {},
+  centralModeEnabled: true,
+  setCentralModeEnabled: () => {},
   notifications: [],
   setNotifications: () => {},
   deleteNotification: async () => {},
@@ -99,6 +103,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return false;
     }
   });
+  const [centralModeEnabled, setCentralModeEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('centralModeEnabled') !== 'false';
+    } catch {
+      return true;
+    }
+  });
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
     try {
       const activeUid = cachedData?.uid;
@@ -122,26 +133,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Guard to ensure strictly 1 real-time Firestore fetch occurs after each page reload/initial auth per UID
   const checkedUserUidRef = useRef<string | null>(null);
-  const fetchedSettingsRef = useRef<boolean>(false);
   const hasFetchedAdminNotifsRef = useRef<boolean>(false);
 
   useEffect(() => {
-    if (!user || fetchedSettingsRef.current || !db) return;
-    fetchedSettingsRef.current = true;
-
-    getDoc(doc(db, 'settings', 'general'))
-      .then((docSnap) => {
-        recordFirestoreRead('settings', 1, 'AuthContext:getSettings');
-        if (docSnap.exists()) {
-          const isMaint = docSnap.data()?.maintenanceMode === true;
-          setMaintenanceMode(isMaint);
-          try { localStorage.setItem('maintenanceMode', String(isMaint)); } catch {}
+    // 1. Initial server-side query fallback
+    fetch('/api/central-keys-capacity')
+      .then(r => r.json())
+      .then(data => {
+        if (typeof data.centralModeEnabled === 'boolean') {
+          setCentralModeEnabled(data.centralModeEnabled);
+          try { localStorage.setItem('centralModeEnabled', String(data.centralModeEnabled)); } catch {}
         }
       })
-      .catch((err) => {
-        console.warn("Could not check maintenance mode settings:", err);
+      .catch(() => {});
+
+    // 2. Real-time Firestore snapshot listener for instant admin toggle reaction
+    if (!db) return;
+    try {
+      const unsub = onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (typeof data?.maintenanceMode === 'boolean') {
+            setMaintenanceMode(data.maintenanceMode);
+            try { localStorage.setItem('maintenanceMode', String(data.maintenanceMode)); } catch {}
+          }
+          if (typeof data?.centralModeEnabled === 'boolean') {
+            setCentralModeEnabled(data.centralModeEnabled);
+            try { localStorage.setItem('centralModeEnabled', String(data.centralModeEnabled)); } catch {}
+          }
+        }
+      }, (err) => {
+        console.warn("Snapshot settings notice:", err);
       });
-  }, [user]);
+      return () => unsub();
+    } catch (e) {
+      console.warn("Could not attach settings snapshot listener:", e);
+    }
+  }, []);
 
   // Whenever userData changes, keep cache continuously updated
   useEffect(() => {
@@ -558,7 +586,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, notifications, setNotifications, deleteNotification, logout }}>
+    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, centralModeEnabled, setCentralModeEnabled, notifications, setNotifications, deleteNotification, logout }}>
       {!loading && children}
     </AuthContext.Provider>
   );

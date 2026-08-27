@@ -100,7 +100,7 @@ const getCategoryId = (categoryName?: string) => {
 import { useNavigate } from 'react-router-dom';
 
 export default function App() {
-  const { user, userData, setUserData } = useAuth();
+  const { user, userData, setUserData, centralModeEnabled } = useAuth();
   const navigate = useNavigate();
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -405,6 +405,14 @@ export default function App() {
 
   // Central API Keys Pool Fetch - strictly in-memory (RAM only), no persistent localStorage cache
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
+    const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+
+    // If not admin and central mode is locked by administrator, restrict regular users from accessing
+    if (centralModeEnabled === false && !isAdmin) {
+      console.log('🔒 [Central API Pool] Central mode is locked for users by administrator.');
+      return [];
+    }
+
     // If not a forced refresh and central keys are already pulled into RAM in this session, skip redundant pull
     if (!forceRefresh && centralKeys.length > 0) {
       console.log('⚡ [Central API Pool] Central keys already loaded in memory session cache:', centralKeys.length);
@@ -506,14 +514,24 @@ export default function App() {
     }
   };
 
+  // Auto-switch regular users to Local API mode if admin locks/turns off Central Mode
+  useEffect(() => {
+    const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+    if (centralModeEnabled === false && config.apiMode === 'central' && !isAdmin) {
+      setConfig(prev => ({ ...prev, apiMode: 'local' }));
+      showNotification('Central API Locked', 'Central API mode has been disabled by the administrator. Switched to Local API mode.');
+    }
+  }, [centralModeEnabled, config.apiMode, userData?.role, user?.email]);
+
   // Pull central keys into RAM once per session when user selects Central API mode (ignored if already in memory)
   useEffect(() => {
-    if (config.apiMode === 'central') {
+    const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+    if (config.apiMode === 'central' && (centralModeEnabled !== false || isAdmin)) {
       if (centralKeys.length === 0) {
         fetchCentralKeysPool(false);
       }
     }
-  }, [config.apiMode, centralKeys.length]);
+  }, [config.apiMode, centralKeys.length, centralModeEnabled, userData?.role, user?.email]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(history));
