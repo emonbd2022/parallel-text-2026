@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useRef } from 'r
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
-import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
+import { recordFirestoreRead, recordFirestoreWrite, recordDuplicatePrevented, recordSessionHit } from '../utils/firestoreAudit';
 
 export interface UserData {
   uid: string;
@@ -89,6 +89,11 @@ const saveUserDataToCache = (data: UserData) => {
     }
   } catch {}
 };
+
+// Module-level deduplication single-flight locks & session registers
+const checkedUidsInSession = new Set<string>();
+let inFlightUserDocPromise: Promise<void> | null = null;
+let inFlightNotifsPromise: Promise<void> | null = null;
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const cachedData = getUserDataFromCache();
@@ -178,15 +183,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [userData]);
 
-  // One-shot fetch notifications strictly once per session
+  // One-shot fetch notifications strictly once per session with single-flight locking
   useEffect(() => {
     if (!userData || !db || hasFetchedAdminNotifsRef.current) return;
     
-    // Check session cache to avoid repeating query on route changes / component remounts
+    // Check session cache to avoid repeating query on route changes / component remounts / React StrictMode
     const sessionKey = `notifsFetched_${userData.uid}`;
     const sessionFetched = sessionStorage.getItem(sessionKey) === 'true';
     if (sessionFetched) {
       hasFetchedAdminNotifsRef.current = true;
+      recordSessionHit('notifications');
       try {
         const dismissedNotifs = [
           ...JSON.parse(localStorage.getItem(`dismissedNotifs_${userData.uid}`) || '[]'),
@@ -202,40 +208,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
       } catch {}
+      return;
+    }
+
+    if (inFlightNotifsPromise) {
+      recordDuplicatePrevented('notifications', 'In-flight notification request shared');
+      return;
     }
 
     hasFetchedAdminNotifsRef.current = true;
     try { sessionStorage.setItem(sessionKey, 'true'); } catch {}
 
-    const queries = [];
-    
-    if (userData.role === 'admin') {
-      queries.push(query(
-        collection(db, 'notifications'),
-        where('targetUid', '==', 'admin'),
-        orderBy('createdAt', 'desc'),
-        limit(5)
-      ));
-    }
-    
-    queries.push(query(
-        collection(db, 'notifications'),
-        where('targetUid', '==', 'all'),
-        orderBy('createdAt', 'desc'),
-        limit(5)
-    ));
+    const targetUid = userData.uid;
+    const targetRole = userData.role;
 
-    Promise.all(queries.map(q => getDocs(q).then(snap => {
-        recordFirestoreRead('notifications', snap.docs.length || 1, 'AuthContext:getNotifications');
-        return snap;
-    }).catch(e => {
-        console.error("Failed to fetch notification query:", e);
-        return { docs: [] } as any;
-    })))
-      .then((results) => {
+    inFlightNotifsPromise = (async () => {
+      try {
+        const queries = [];
+        
+        if (targetRole === 'admin') {
+          queries.push(query(
+            collection(db, 'notifications'),
+            where('targetUid', '==', 'admin'),
+            orderBy('createdAt', 'desc'),
+            limit(5)
+          ));
+        }
+        
+        queries.push(query(
+            collection(db, 'notifications'),
+            where('targetUid', '==', 'all'),
+            orderBy('createdAt', 'desc'),
+            limit(5)
+        ));
+
+        const results = await Promise.all(queries.map(q => getDocs(q).then(snap => {
+            recordFirestoreRead('notifications', snap.docs.length || 1, 'AuthContext:getNotifications');
+            return snap;
+        }).catch(e => {
+            console.error("Failed to fetch notification query:", e);
+            return { docs: [] } as any;
+        })));
+
         const dismissedNotifs: string[] = [
-          ...JSON.parse(localStorage.getItem(`dismissedNotifs_${userData.uid}`) || '[]'),
-          ...JSON.parse(localStorage.getItem(`dismissedGlobalNotifs_${userData.uid}`) || '[]')
+          ...JSON.parse(localStorage.getItem(`dismissedNotifs_${targetUid}`) || '[]'),
+          ...JSON.parse(localStorage.getItem(`dismissedGlobalNotifs_${targetUid}`) || '[]')
         ];
         
         let allFetched: AppNotification[] = [];
@@ -243,7 +260,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             snap.docs.forEach(d => {
                 const data = d.data();
                 const notifId = data.id || d.id;
-                // Exclude if it's a notification that user/admin already dismissed locally
                 if (dismissedNotifs.includes(notifId)) return;
                 
                 allFetched.push({
@@ -271,16 +287,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
           const sorted = combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
           try { 
-            localStorage.setItem(`cachedNotifs_${userData.uid}`, JSON.stringify(sorted));
-            localStorage.setItem(`localNotifications_${userData.uid}`, JSON.stringify(sorted));
+            localStorage.setItem(`cachedNotifs_${targetUid}`, JSON.stringify(sorted));
+            localStorage.setItem(`localNotifications_${targetUid}`, JSON.stringify(sorted));
           } catch {}
           return sorted;
         });
-      })
-      .catch((err) => {
+      } catch (err) {
         console.error("CRITICAL: Could not load notifications from Firestore:", err);
-      });
-  }, [userData]);
+      } finally {
+        inFlightNotifsPromise = null;
+      }
+    })();
+  }, [userData?.uid, userData?.role]);
 
   useEffect(() => {
     try {
@@ -288,7 +306,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.setItem(`localNotifications_${userData.uid}`, JSON.stringify(notifications));
       }
     } catch {}
-  }, [notifications, userData]);
+  }, [notifications, userData?.uid]);
 
   const deletingNotifIdsRef = useRef<Set<string>>(new Set());
 
@@ -368,7 +386,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {
       console.warn("Sign out error:", e);
     }
-    // Explicitly preserve userCache_{uid}, cachedUserData, configuration, and apiKeys in localStorage!
     setUser(null);
     setUserData(null);
     setNotifications([]);
@@ -379,6 +396,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       sessionStorage.removeItem('notifsFetched');
       if (userData?.uid) {
         sessionStorage.removeItem(`notifsFetched_${userData.uid}`);
+        sessionStorage.removeItem(`userDocChecked_${userData.uid}`);
       }
     } catch {}
   };
@@ -399,195 +417,197 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setUserData(localCached);
         }
 
-        // Step 2: Exactly ONE Firestore check per user session/reload
-        if (checkedUserUidRef.current !== currentUser.uid && db) {
+        const isAlreadyChecked = checkedUidsInSession.has(currentUser.uid) || sessionStorage.getItem(`userDocChecked_${currentUser.uid}`) === 'true';
+
+        // Step 2: Exactly ONE Firestore check per user session/reload with single-flight locking
+        if (!isAlreadyChecked && db) {
+          checkedUidsInSession.add(currentUser.uid);
+          try { sessionStorage.setItem(`userDocChecked_${currentUser.uid}`, 'true'); } catch {}
           checkedUserUidRef.current = currentUser.uid;
 
-          try {
-            const userRef = doc(db, 'users', currentUser.uid);
-            const docSnap = await getDoc(userRef);
-            recordFirestoreRead('users', 1, 'AuthContext:getUserDoc');
-            
-            if (docSnap.exists()) {
-              const d = docSnap.data();
-
-              // Device ID Policy Enforcement
-              let deviceId = localStorage.getItem('deviceId');
-              if (!deviceId) {
-                deviceId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-                localStorage.setItem('deviceId', deviceId);
-              }
-
-              let dbDeviceIds = Array.isArray(d.deviceIds) ? [...d.deviceIds] : [];
-              let shouldUpdateDoc = false;
-              const isFirstAdmin = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
-              let role = d.role || (isFirstAdmin ? 'admin' : 'user');
-              let isBlocked = !!d.blocked;
-              let deviceLimitReached = false;
-
-              // Auto-unblock hardcoded admins affected by the previous device limit bug
-              if (isFirstAdmin && isBlocked) {
-                isBlocked = false;
-                shouldUpdateDoc = true;
-              }
-
-              if (isFirstAdmin && d.role !== 'admin') {
-                role = 'admin';
-                shouldUpdateDoc = true;
-              }
-
-              if (role !== 'admin' && !dbDeviceIds.includes(deviceId)) {
-                if (dbDeviceIds.length < 2) {
-                  dbDeviceIds.push(deviceId);
-                  shouldUpdateDoc = true;
-                } else {
-                  // Do NOT permanently block the account in Firestore.
-                  // Just block this specific session/device.
-                  isBlocked = true;
-                  deviceLimitReached = true;
-                }
-              }
-
-              if (shouldUpdateDoc) {
-                try {
-                  const updates: any = { deviceIds: dbDeviceIds };
-                  if (isFirstAdmin && d.role !== 'admin') {
-                    updates.role = 'admin';
-                  }
-                  if (isFirstAdmin && d.blocked) {
-                    updates.blocked = false;
-                  }
-                  // We removed updates.blocked = true here to prevent permanent lockouts
-                  // due to device limits. Admins can still manually block users.
-                  await updateDoc(userRef, updates);
-                  recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
-                } catch (e) {
-                  console.error('Failed to update user doc', e);
-                }
-              }
-
-              const isFirstUser = isFirstAdmin;
-              const serverData: UserData = {
-                uid: currentUser.uid,
-                email: d.email || currentUser.email || '',
-                name: d.name || currentUser.displayName || '',
-                photoURL: d.photoURL || currentUser.photoURL || '',
-                nickname: d.nickname || currentUser.displayName?.split(' ')[0] || 'User',
-                credits: typeof d.credits === 'number' ? d.credits : 100,
-                unlimited: !!d.unlimited,
-                totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
-                joinDate: d.joinDate || new Date().toISOString(),
-                blocked: isBlocked,
-                role: d.role === 'admin' ? 'admin' : (isFirstUser ? 'admin' : 'user'),
-                plan: d.plan || 'free',
-                planStartDate: d.planStartDate,
-                planEndDate: d.planEndDate,
-                deviceIds: dbDeviceIds,
-                centralApiAccess: d.role === 'admin' || isFirstUser ? true : Boolean(d.centralApiAccess),
-                deviceLimitReached,
-              };
-
-              // Update state & cache if data is changed or freshly fetched
-              setUserData(prev => {
-                const isDifferent = !prev || 
-                  prev.uid !== serverData.uid ||
-                  prev.credits !== serverData.credits ||
-                  prev.totalProcessedImages !== serverData.totalProcessedImages ||
-                  prev.plan !== serverData.plan ||
-                  prev.blocked !== serverData.blocked ||
-                  prev.nickname !== serverData.nickname ||
-                  prev.role !== serverData.role ||
-                  prev.unlimited !== serverData.unlimited ||
-                  prev.centralApiAccess !== serverData.centralApiAccess ||
-                  prev.deviceLimitReached !== serverData.deviceLimitReached;
-
-                if (isDifferent) {
-                  saveUserDataToCache(serverData);
-                  return serverData;
-                }
-                return prev;
-              });
-            } else {
-              // Genuinely NEW user: create initial user document and admin notification atomically in ONE writeBatch
-              const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
-              const userName = currentUser.displayName || 'User';
-              const userEmail = currentUser.email || '';
-              const nowISO = new Date().toISOString();
-
-              let deviceId = localStorage.getItem('deviceId');
-              if (!deviceId) {
-                deviceId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-                localStorage.setItem('deviceId', deviceId);
-              }
-
-              const newUserData: UserData = {
-                uid: currentUser.uid,
-                email: userEmail,
-                name: userName,
-                photoURL: currentUser.photoURL || '',
-                nickname: userName.split(' ')[0] || 'User',
-                credits: 100,
-                unlimited: false,
-                totalProcessedImages: 0,
-                joinDate: nowISO,
-                blocked: false,
-                role: isFirstUser ? 'admin' : 'user',
-                plan: 'free',
-                deviceIds: [deviceId],
-                centralApiAccess: isFirstUser ? true : false,
-                deviceLimitReached: false,
-              };
-
-              const notifId = `signup_${currentUser.uid}`;
-              const notifRef = doc(db, 'notifications', notifId);
-              const notifData: AppNotification = {
-                id: notifId,
-                targetUid: 'admin',
-                type: 'signup',
-                message: `New User Signup\nName: ${userName}\nEmail: ${userEmail}`,
-                userName,
-                userEmail,
-                createdAt: nowISO,
-                read: false,
-              };
-
-              // Atomic batch commit: guarantees both docs exist together without extra reads
-              const batch = writeBatch(db);
-              batch.set(userRef, newUserData);
-              batch.set(notifRef, notifData);
-              await batch.commit();
-              recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');
-              recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
-              console.log(`[Auth] Atomically registered new user (${currentUser.uid}) and created admin notification (${notifId})`);
-
-              setUserData(newUserData);
-              saveUserDataToCache(newUserData);
-            }
-          } catch (error: any) {
-            console.error("CRITICAL: Failed to initialize new user and signup notification in Firestore:", error);
-            if (error?.code) {
-              console.error(`Firebase Error Code: ${error.code}, Message: ${error.message}`);
-            }
+          if (inFlightUserDocPromise) {
+            recordDuplicatePrevented('user_profile', 'Shared in-flight user profile request');
+            return;
           }
+
+          inFlightUserDocPromise = (async () => {
+            try {
+              const userRef = doc(db, 'users', currentUser.uid);
+              const docSnap = await getDoc(userRef);
+              recordFirestoreRead('users', 1, 'AuthContext:getUserDoc');
+              
+              if (docSnap.exists()) {
+                const d = docSnap.data();
+
+                // Device ID Policy Enforcement
+                let deviceId = localStorage.getItem('deviceId');
+                if (!deviceId) {
+                  deviceId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+                  localStorage.setItem('deviceId', deviceId);
+                }
+
+                let dbDeviceIds = Array.isArray(d.deviceIds) ? [...d.deviceIds] : [];
+                let shouldUpdateDoc = false;
+                const isFirstAdmin = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+                let role = d.role || (isFirstAdmin ? 'admin' : 'user');
+                let isBlocked = !!d.blocked;
+                let deviceLimitReached = false;
+
+                // Auto-unblock hardcoded admins affected by the previous device limit bug
+                if (isFirstAdmin && isBlocked) {
+                  isBlocked = false;
+                  shouldUpdateDoc = true;
+                }
+
+                if (isFirstAdmin && d.role !== 'admin') {
+                  role = 'admin';
+                  shouldUpdateDoc = true;
+                }
+
+                if (role !== 'admin' && !dbDeviceIds.includes(deviceId)) {
+                  if (dbDeviceIds.length < 2) {
+                    dbDeviceIds.push(deviceId);
+                    shouldUpdateDoc = true;
+                  } else {
+                    isBlocked = true;
+                    deviceLimitReached = true;
+                  }
+                }
+
+                if (shouldUpdateDoc) {
+                  try {
+                    const updates: any = { deviceIds: dbDeviceIds };
+                    if (isFirstAdmin && d.role !== 'admin') {
+                      updates.role = 'admin';
+                    }
+                    if (isFirstAdmin && d.blocked) {
+                      updates.blocked = false;
+                    }
+                    await updateDoc(userRef, updates);
+                    recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
+                  } catch (e) {
+                    console.error('Failed to update user doc', e);
+                  }
+                }
+
+                const isFirstUser = isFirstAdmin;
+                const serverData: UserData = {
+                  uid: currentUser.uid,
+                  email: d.email || currentUser.email || '',
+                  name: d.name || currentUser.displayName || '',
+                  photoURL: d.photoURL || currentUser.photoURL || '',
+                  nickname: d.nickname || currentUser.displayName?.split(' ')[0] || 'User',
+                  credits: typeof d.credits === 'number' ? d.credits : 100,
+                  unlimited: !!d.unlimited,
+                  totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
+                  joinDate: d.joinDate || new Date().toISOString(),
+                  blocked: isBlocked,
+                  role: d.role === 'admin' ? 'admin' : (isFirstUser ? 'admin' : 'user'),
+                  plan: d.plan || 'free',
+                  planStartDate: d.planStartDate,
+                  planEndDate: d.planEndDate,
+                  deviceIds: dbDeviceIds,
+                  centralApiAccess: d.role === 'admin' || isFirstUser ? true : Boolean(d.centralApiAccess),
+                  deviceLimitReached,
+                };
+
+                // Update state & cache if data is changed or freshly fetched
+                setUserData(prev => {
+                  const isDifferent = !prev || 
+                    prev.uid !== serverData.uid ||
+                    prev.credits !== serverData.credits ||
+                    prev.totalProcessedImages !== serverData.totalProcessedImages ||
+                    prev.plan !== serverData.plan ||
+                    prev.blocked !== serverData.blocked ||
+                    prev.nickname !== serverData.nickname ||
+                    prev.role !== serverData.role ||
+                    prev.unlimited !== serverData.unlimited ||
+                    prev.centralApiAccess !== serverData.centralApiAccess ||
+                    prev.deviceLimitReached !== serverData.deviceLimitReached;
+
+                  if (isDifferent) {
+                    saveUserDataToCache(serverData);
+                    return serverData;
+                  }
+                  return prev;
+                });
+              } else {
+                // Genuinely NEW user: create initial user document and admin notification atomically in ONE writeBatch
+                const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+                const userName = currentUser.displayName || 'User';
+                const userEmail = currentUser.email || '';
+                const nowISO = new Date().toISOString();
+
+                let deviceId = localStorage.getItem('deviceId');
+                if (!deviceId) {
+                  deviceId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+                  localStorage.setItem('deviceId', deviceId);
+                }
+
+                const newUserData: UserData = {
+                  uid: currentUser.uid,
+                  email: userEmail,
+                  name: userName,
+                  photoURL: currentUser.photoURL || '',
+                  nickname: userName.split(' ')[0] || 'User',
+                  credits: 100,
+                  unlimited: false,
+                  totalProcessedImages: 0,
+                  joinDate: nowISO,
+                  blocked: false,
+                  role: isFirstUser ? 'admin' : 'user',
+                  plan: 'free',
+                  deviceIds: [deviceId],
+                  centralApiAccess: isFirstUser ? true : false,
+                  deviceLimitReached: false,
+                };
+
+                const notifId = `signup_${currentUser.uid}`;
+                const notifRef = doc(db, 'notifications', notifId);
+                const notifData: AppNotification = {
+                  id: notifId,
+                  targetUid: 'admin',
+                  type: 'signup',
+                  message: `New User Signup\nName: ${userName}\nEmail: ${userEmail}`,
+                  userName,
+                  userEmail,
+                  createdAt: nowISO,
+                  read: false,
+                };
+
+                // Atomic batch commit: guarantees both docs exist together without extra reads
+                const batch = writeBatch(db);
+                batch.set(userRef, newUserData);
+                batch.set(notifRef, notifData);
+                await batch.commit();
+                recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');
+                recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
+
+                saveUserDataToCache(newUserData);
+                setUserData(newUserData);
+              }
+            } catch (err) {
+              console.error('Failed to load/initialize user data from Firestore:', err);
+            } finally {
+              inFlightUserDocPromise = null;
+            }
+          })();
+        } else if (isAlreadyChecked) {
+          recordSessionHit('user_profile');
         }
       } else {
-        // User logged out: Reset current user state but keep persisted cache in localStorage
         setUser(null);
         setUserData(null);
-        setNotifications([]);
-        checkedUserUidRef.current = null;
       }
       setLoading(false);
     });
 
-    return () => {
-      unsubscribe();
-    };
+    return () => unsubscribe();
   }, []);
 
   return (
     <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, centralModeEnabled, setCentralModeEnabled, notifications, setNotifications, deleteNotification, logout }}>
-      {!loading && children}
+      {children}
     </AuthContext.Provider>
   );
 };

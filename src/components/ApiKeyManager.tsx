@@ -1,3 +1,4 @@
+import { auth } from '../lib/firebase';
 import React, { useState, useEffect, useRef } from 'react';
 import { Key, Upload, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw, LogIn, AlertTriangle, Loader2 } from 'lucide-react';
 import { ApiKey } from '../types';
@@ -51,6 +52,42 @@ export const ApiKeyManager: React.FC<Props> = ({
   const [csvFileName, setCsvFileName] = useState('');
   const [csvErrorMsg, setCsvErrorMsg] = useState<string | null>(null);
 
+  const [centralUsage, setCentralUsage] = React.useState<any>(null);
+  const [fetchingUsage, setFetchingUsage] = React.useState(false);
+
+  const fetchCentralUsage = React.useCallback(async () => {
+    if (!auth?.currentUser) return;
+    setFetchingUsage(true);
+    try {
+      const token = await auth.currentUser.getIdToken();
+      const sourceLocalKeys = localKeys && localKeys.length > 0 ? localKeys : keys;
+      const apiKeys = sourceLocalKeys.map(k => k.key);
+      const res = await fetch('/api/central-usage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ localKeys: apiKeys })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCentralUsage(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch central usage', e);
+    } finally {
+      setFetchingUsage(false);
+    }
+  }, [localKeys, keys]);
+
+  React.useEffect(() => {
+    if (apiMode === 'central') {
+      fetchCentralUsage();
+    }
+  }, [apiMode, fetchCentralUsage]);
+
+
   // Derive unique local API keys via fingerprint / unique key set (0 Firestore reads/writes)
   const sourceLocalKeys = localKeys && localKeys.length > 0 ? localKeys : keys;
   const uniqueLocalKeySet = new Set(
@@ -65,11 +102,11 @@ export const ApiKeyManager: React.FC<Props> = ({
   // 1. If admin disabled Central Mode globally, access is locked for normal users.
   // 2. Admin users retain access regardless of lock.
   // 3. Admin-granted accounts (userData?.centralApiAccess === true) retain access.
-  // 4. Any logged-in user with >= 4 UNIQUE local keys is automatically unlocked when mode is enabled.
+  // 4. Any logged-in user with >= 1 UNIQUE local key is automatically unlocked when mode is enabled.
   const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
   const isCentralDisabledForUser = centralModeEnabled === false && !isAdmin;
   const hasExplicitAdminGrant = userData?.centralApiAccess === true;
-  const hasEightKeysUnlocked = Boolean((user || userData) && uniqueLocalKeysCount >= 4);
+  const hasEightKeysUnlocked = Boolean((user || userData) && uniqueLocalKeysCount >= 1);
   const isEligibleForCentral = isAdmin || (!isCentralDisabledForUser && Boolean(hasExplicitAdminGrant || hasEightKeysUnlocked));
 
   // Auto-revert normal users to Local API mode if admin turns off Central Mode while Central mode is active
@@ -112,7 +149,7 @@ export const ApiKeyManager: React.FC<Props> = ({
         if (onShowToast) {
           onShowToast(
             'Central API Locked', 
-            `You must have at least 4 unique API keys added locally to unlock Central API mode. (Currently: ${uniqueLocalKeysCount}/4 unique keys)`
+            `You must have at least 1 valid API key added locally to unlock Central API mode. (Currently: ${uniqueLocalKeysCount}/1 key)`
           );
         }
         return;
@@ -276,7 +313,7 @@ export const ApiKeyManager: React.FC<Props> = ({
           ) : (
             <>
               <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span>Requires 4 keys ({uniqueLocalKeysCount}/4)</span>
+              <span>Requires 1 key (${uniqueLocalKeysCount}/1)</span>
             </>
           )}
         </button>
@@ -300,41 +337,52 @@ export const ApiKeyManager: React.FC<Props> = ({
         </div>
       )}
 
+      {/* Central API Usage / Status */}
+      {apiMode === 'central' && centralUsage && (
+        <div className="mb-6 p-4 bg-gradient-to-r from-purple-950/30 via-slate-900 to-slate-900 border border-purple-500/30 rounded-xl space-y-4 shadow-lg shadow-purple-900/20">
+          <div className="flex justify-between items-center pb-3 border-b border-purple-500/20">
+             <div className="font-bold text-purple-100 text-sm flex items-center gap-2">
+                 <Zap className="w-4 h-4 text-purple-400 shrink-0" /> Central API Available
+             </div>
+             <button onClick={fetchCentralUsage} className="text-xs text-purple-400/80 hover:text-purple-300 transition-colors">
+                 {fetchingUsage ? 'Refreshing...' : 'Refresh'}
+             </button>
+          </div>
+          
+          <div className="flex flex-col gap-1.5 items-center justify-center py-2">
+             <div className="text-3xl font-black text-white tracking-tight">
+                 {centralUsage.remainingImages} <span className="text-base font-semibold text-purple-300/80">images remaining</span>
+             </div>
+             <div className="text-sm font-medium text-slate-400 bg-slate-900/50 px-3 py-1 rounded-full border border-slate-700/50">
+                 {centralUsage.remainingRequests} / {centralUsage.limitRequests} requests available
+             </div>
+          </div>
+          
+          <div className="text-xs font-mono font-medium text-purple-200/90 bg-purple-950/40 p-2.5 rounded-lg border border-purple-500/20 text-center shadow-inner">
+             {centralUsage.localKeyCount} Local API Key{centralUsage.localKeyCount === 1 ? '' : 's'} × 50 Images = {centralUsage.limitImages} Images/day
+          </div>
+          
+          <div className="text-[11px] text-slate-300 flex justify-between items-center pt-3 border-t border-purple-500/20">
+             <span className="font-medium text-purple-200/70">Need more Central API capacity?</span>
+             <span className="text-emerald-400 font-bold cursor-pointer hover:text-emerald-300 hover:underline transition-all flex items-center gap-1" onClick={() => { onChangeApiMode('local'); setShowInput(true); }}>
+                 Add 2 more API keys <span className="text-emerald-500/50">→</span> +100 images/day
+             </span>
+          </div>
+        </div>
+      )}
+      
       {/* Central Unlock Progress / Notice */}
       {!isCentralDisabledForUser && !isEligibleForCentral && apiMode !== 'central' && (
         <div className="mb-6 p-4 bg-gradient-to-r from-purple-950/30 via-slate-900 to-slate-900 border border-purple-500/30 rounded-xl text-xs space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-bold text-purple-300 text-sm">
               <Zap className="w-4 h-4 text-purple-400 shrink-0" />
-              Central API Auto-Unlock
+              Central API Mode
             </div>
-            <span className="text-[11px] font-mono font-bold bg-purple-500/20 text-purple-300 px-2.5 py-0.5 rounded-full border border-purple-500/30">
-              {uniqueLocalKeysCount} / 4 Unique Keys
-            </span>
           </div>
-
           <p className="text-slate-300 text-xs leading-relaxed">
-            Add at least <strong>4 unique, valid Gemini API keys</strong> to your local pool to automatically unlock the shared, high-speed Central API pool. No admin approval required.
+            Add at least <strong>1 valid Gemini API key</strong> to your local pool to use the Central API.
           </p>
-
-          {/* Visual Progress Bar */}
-          <div className="space-y-1.5">
-            <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-700/50">
-              <div 
-                className="h-full bg-gradient-to-r from-amber-500 via-purple-500 to-emerald-500 transition-all duration-500 ease-out"
-                style={{ width: `${Math.min(100, (uniqueLocalKeysCount / 4) * 100)}%` }}
-              />
-            </div>
-            <div className="flex justify-between items-center text-[11px] text-slate-400">
-              <span>
-                {uniqueLocalKeysCount >= 4 
-                  ? 'Goal reached! Central API unlocked.' 
-                  : `${4 - uniqueLocalKeysCount} more unique key${4 - uniqueLocalKeysCount === 1 ? '' : 's'} needed`}
-              </span>
-              <span>Goal: 4 Keys</span>
-            </div>
-          </div>
-
           <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-xs">
             <span className="text-slate-400 flex items-center gap-1.5">
               Account Status: {!user && !userData ? (
@@ -353,11 +401,7 @@ export const ApiKeyManager: React.FC<Props> = ({
               >
                 <LogIn className="w-3.5 h-3.5" /> Login Required
               </button>
-            ) : (
-              <span className="text-amber-400 flex items-center gap-1 text-[11px]">
-                <Lock className="w-3 h-3" /> Unlocks at 4 keys
-              </span>
-            )}
+            ) : null}
           </div>
         </div>
       )}

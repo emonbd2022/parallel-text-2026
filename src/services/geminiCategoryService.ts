@@ -1,3 +1,4 @@
+import { auth } from '../lib/firebase';
 import { GoogleGenAI, Type } from '@google/genai';
 
 const AUTHORITATIVE_CATEGORIES = [
@@ -37,7 +38,11 @@ export const generateCategoriesBatch = async (
     if (onProgress) onProgress("Getting categories (Central)...");
     const res = await fetch('/api/central-category', {
        method: 'POST',
-       headers: { 'Content-Type': 'application/json' },
+       
+       headers: { 
+         'Content-Type': 'application/json',
+         ...(auth?.currentUser ? { 'Authorization': `Bearer ${await auth.currentUser.getIdToken()}` } : {})
+       },
        body: JSON.stringify({ items, model, virtualKeyId: apiKey, localKeys, isAdmin, hasExplicitAdminGrant })
     });
     const contentType = res.headers.get('content-type') || '';
