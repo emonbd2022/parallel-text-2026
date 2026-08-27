@@ -471,42 +471,6 @@ export default function App() {
         console.warn("Backend sync endpoint notice, attempting direct fallback:", serverErr);
       }
 
-      // 3. Client-side Direct Firestore Fallback (When eligible or authenticated)
-      if (db && isEligible) {
-        try {
-          const docRef = doc(db, 'central_keys', 'APIkeys');
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            const rawKeys = Array.isArray(data.keys) ? data.keys : [];
-            if (rawKeys.length > 0) {
-              const poolKeys = rawKeys.filter((k: any) => k.enabled !== false && k.key).map((k: any, idx: number) => ({
-                id: k.id || `central-${idx}`,
-                label: `Central Node ${idx + 1}`,
-                key: k.key
-              }));
-              const pool: ApiKey[] = poolKeys.map((k, idx) => ({
-                id: k.id || `central-${idx}`,
-                label: `Central Node ${idx + 1}`,
-                key: k.key,
-                errorCount: 0,
-                usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
-              }));
-              setCentralKeys(pool);
-              return pool;
-            } else {
-              setCentralKeys([]);
-              return [];
-            }
-          } else {
-            setCentralKeys([]);
-            return [];
-          }
-        } catch (firestoreErr) {
-          console.warn("Direct Firestore central keys fetch notice:", firestoreErr);
-        }
-      }
-
       setCentralKeys([]);
       return [];
     } catch (e) {

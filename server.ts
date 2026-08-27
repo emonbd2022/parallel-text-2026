@@ -457,9 +457,36 @@ apiRouter.get("/central-keys-capacity", (req, res) => {
     });
 });
 
+async function fetchSettingsFromFirestore(): Promise<{ centralModeEnabled: boolean }> {
+    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+    const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+    const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
+    let settings = { centralModeEnabled: true };
+    if (!projectId) return settings;
+    try {
+        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/settings/general${apiKey ? `?key=${apiKey}` : ''}`;
+        const resp = await fetch(url);
+        if (resp.ok) {
+            const data = await resp.json();
+            const fields = data.fields || {};
+            if (fields.centralModeEnabled && fields.centralModeEnabled.booleanValue !== undefined) {
+                settings.centralModeEnabled = fields.centralModeEnabled.booleanValue;
+            }
+        }
+    } catch (e) {
+        // Safe fallback
+    }
+    return settings;
+}
+
 // 1-Read Central API Keys Pool for Runtime Client Processing (Safe Virtual Node Handles Only)
 apiRouter.get("/central-keys-pool", async (req, res) => {
     try {
+        const settings = await fetchSettingsFromFirestore();
+        if (!settings.centralModeEnabled) {
+            return res.status(403).json({ success: false, error: "Central Mode is disabled by administrator.", keys: [], count: 0 });
+        }
+
         const authHeader = req.headers.authorization;
         const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
         const isForce = req.query.refresh === 'true';
@@ -552,6 +579,11 @@ apiRouter.post("/central-keys-pool-sync", async (req, res) => {
 
 apiRouter.post("/central-generate", async (req, res) => {
     try {
+        const settings = await fetchSettingsFromFirestore();
+        if (!settings.centralModeEnabled) {
+            throw new Error("Central Mode is disabled by administrator.");
+        }
+
         const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
         const { items = [], config = {}, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = body;
         const virtualKeyId = vId || nodeId;
@@ -669,6 +701,11 @@ Return a strictly valid JSON array where each object contains:
 
 apiRouter.post("/central-category", async (req, res) => {
     try {
+        const settings = await fetchSettingsFromFirestore();
+        if (!settings.centralModeEnabled) {
+            throw new Error("Central Mode is disabled by administrator.");
+        }
+
         const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
         const { items, model, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = body;
         const virtualKeyId = vId || nodeId;
@@ -1085,6 +1122,106 @@ apiRouter.get("/admin/keys", async (req, res) => {
             updatedAt: new Date().toISOString(),
             version: 1
         });
+    } catch (e: any) {
+        res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+});
+
+apiRouter.delete("/admin/keys", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+        // Verify admin access via Firestore write
+        const storedKeys: StoredKey[] = [];
+        saveStoredKeys(storedKeys);
+        invalidateCentralCache();
+        const success = await saveKeysToFirestoreDocument(storedKeys, idToken);
+        if (!success && idToken) {
+           return res.status(403).json({ success: false, error: "Unauthorized" });
+        }
+        res.json({ success: true });
+    } catch (e: any) {
+        res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+});
+
+apiRouter.get("/admin/keys/export-csv", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+        const firestoreKeys = await fetchKeysFromFirestore(idToken);
+        
+        if (firestoreKeys === null) {
+            return res.status(403).send("Unauthorized");
+        }
+        
+        const storedKeys = firestoreKeys || (isProductionEnv() ? [] : loadStoredKeys());
+        
+        let csvContent = "api label,api key,contributor name,contributor gmail\n";
+        for (const data of storedKeys) {
+            let decryptedKey = '';
+            try {
+                decryptedKey = decrypt(data.encryptedKey) || '';
+            } catch (e) {}
+            if (!decryptedKey && (data as any).key) {
+               decryptedKey = (data as any).key;
+            }
+            
+            const label = `"${(data.label || '').replace(/"/g, '""')}"`;
+            const key = `"${(decryptedKey || '').replace(/"/g, '""')}"`;
+            
+            const contributorEmail = data.contributorEmail || '';
+            let exactContributor = '';
+            if (data.contributorName && data.contributorName !== data.label && data.contributorName !== 'central' && data.contributorName !== 'anonymous' && data.contributorName !== 'Community Contributor') {
+                exactContributor = data.contributorName;
+            } else if (data.contributedBy && data.contributedBy !== data.label && data.contributedBy !== 'central' && data.contributedBy !== 'anonymous' && data.contributedBy !== 'Community Contributor') {
+                exactContributor = data.contributedBy;
+            } else if (contributorEmail) {
+                exactContributor = contributorEmail.split('@')[0];
+            } else {
+                exactContributor = data.label || 'Contributor';
+            }
+            const name = `"${exactContributor.replace(/"/g, '""')}"`;
+            const email = `"${contributorEmail.replace(/"/g, '""')}"`;
+            
+            csvContent += `${label},${key},${name},${email}\n`;
+        }
+        
+        res.header('Content-Type', 'text/csv');
+        res.attachment('central_api_keys.csv');
+        return res.send(csvContent);
+    } catch (e: any) {
+        res.status(500).send("Internal Server Error");
+    }
+});
+
+apiRouter.get("/admin/keys/reveal", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+        const firestoreKeys = await fetchKeysFromFirestore(idToken);
+        
+        if (firestoreKeys === null) {
+            return res.status(403).json({ success: false, error: "Unauthorized" });
+        }
+        
+        const storedKeys = firestoreKeys || (isProductionEnv() ? [] : loadStoredKeys());
+        
+        const revealedKeys = storedKeys.map(data => {
+            let decryptedKey = '';
+            try {
+                decryptedKey = decrypt(data.encryptedKey) || '';
+            } catch (e) {}
+            if (!decryptedKey && (data as any).key) {
+               decryptedKey = (data as any).key;
+            }
+            return {
+                id: data.id,
+                decryptedKey
+            };
+        });
+        
+        res.json({ success: true, keys: revealedKeys });
     } catch (e: any) {
         res.status(500).json({ success: false, error: String(e?.message || e) });
     }

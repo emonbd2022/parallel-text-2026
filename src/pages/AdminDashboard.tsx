@@ -1,9 +1,9 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { where, getDocs, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
@@ -163,6 +163,32 @@ export const AdminDashboard: React.FC = () => {
 
   const [isDeduplicating, setIsDeduplicating] = useState(false);
   const [dedupResult, setDedupResult] = useState<string | null>(null);
+  
+  const [centralModeEnabled, setCentralModeEnabled] = useState(true);
+
+  useEffect(() => {
+      const fetchSettings = async () => {
+          try {
+              const docSnap = await getDoc(doc(db, 'settings', 'general'));
+              if (docSnap.exists()) {
+                  const data = docSnap.data();
+                  if (typeof data.centralModeEnabled === 'boolean') {
+                      setCentralModeEnabled(data.centralModeEnabled);
+                  }
+              }
+          } catch(e) {}
+      };
+      fetchSettings();
+  }, []);
+
+  const toggleCentralMode = async () => {
+      const newMode = !centralModeEnabled;
+      setCentralModeEnabled(newMode);
+      try {
+          await setDoc(doc(db, 'settings', 'general'), { centralModeEnabled: newMode }, { merge: true });
+          recordFirestoreWrite('settings', 1, 'AdminDashboard:toggleCentralMode');
+      } catch(e) {}
+  };
 
   const handleDeduplicate = async () => {
     setIsDeduplicating(true);
@@ -181,6 +207,66 @@ export const AdminDashboard: React.FC = () => {
     } finally {
       setIsDeduplicating(false);
       setTimeout(() => setDedupResult(null), 6000);
+    }
+  };
+
+  const handleExportCSV = async () => {
+    try {
+      let idToken = '';
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken(true);
+      const res = await fetch('/api/admin/keys/export-csv', {
+        headers: { 'Authorization': `Bearer ${idToken}` }
+      });
+      if (!res.ok) throw new Error("Failed to export CSV");
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'central_api_keys.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      alert("Error exporting CSV: " + e);
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (!window.confirm("CRITICAL WARNING: Are you sure you want to PERMANENTLY DELETE ALL Central API keys from the authoritative server registry? This cannot be undone and will break Central API for all users!")) return;
+    try {
+      let idToken = '';
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken(true);
+      const res = await fetch('/api/admin/keys', {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${idToken}` }
+      });
+      if (!res.ok) throw new Error("Failed to clear central keys");
+      await fetchCentralKeys(true);
+    } catch (e) {
+      alert("Error clearing central keys: " + e);
+    }
+  };
+
+  const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
+  const handleReveal = async () => {
+    if (!window.confirm("Are you sure you want to reveal decrypted API keys? These are sensitive credentials.")) return;
+    try {
+      let idToken = '';
+      if (auth.currentUser) idToken = await auth.currentUser.getIdToken(true);
+      const res = await fetch('/api/admin/keys/reveal', {
+        headers: { 'Authorization': `Bearer ${idToken}` }
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.keys)) {
+        const keyMap: Record<string, string> = {};
+        data.keys.forEach((k: any) => { keyMap[k.id] = k.decryptedKey; });
+        setRevealedKeys(keyMap);
+        setTimeout(() => setRevealedKeys({}), 30000); // Hide after 30s
+      } else {
+        throw new Error("Reveal request failed");
+      }
+    } catch (e) {
+      alert("Error revealing keys: " + e);
     }
   };
 
@@ -811,6 +897,11 @@ export const AdminDashboard: React.FC = () => {
             <label className="flex items-center gap-2 cursor-pointer bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 shadow-lg">
                 <input type="checkbox" checked={maintenanceMode} onChange={toggleMaintenance} className="w-4 h-4 accent-red-500" />
                 <span className="text-sm font-bold text-red-400">Maintenance Mode</span>
+            </label>
+
+            <label className="flex items-center gap-2 cursor-pointer bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 shadow-lg">
+                <input type="checkbox" checked={centralModeEnabled} onChange={toggleCentralMode} className="w-4 h-4 accent-purple-500" />
+                <span className="text-sm font-bold text-purple-400">Central Mode</span>
             </label>
           </div>
         </div>
@@ -1709,6 +1800,39 @@ export const AdminDashboard: React.FC = () => {
                   {loadingKeys ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4 text-purple-400" />}
                   <span>Refresh</span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={handleExportCSV}
+                  disabled={centralKeys.length === 0}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-500/10 hover:bg-blue-500/20 text-blue-300 border border-blue-500/30 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 cursor-pointer"
+                  title="Export real decrypted keys to CSV"
+                >
+                  <Download className="w-4 h-4 text-blue-400" />
+                  <span>Export CSV</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleReveal}
+                  disabled={centralKeys.length === 0}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 cursor-pointer"
+                  title="Reveal decrypted API keys temporarily"
+                >
+                  <Eye className="w-4 h-4 text-indigo-400" />
+                  <span>Reveal Keys</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleClearAll}
+                  disabled={centralKeys.length === 0}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 cursor-pointer ml-auto"
+                  title="Permanently delete all central keys from the server"
+                >
+                  <Trash2 className="w-4 h-4 text-rose-400" />
+                  <span>All Clear</span>
+                </button>
               </div>
             </div>
 
@@ -1855,12 +1979,12 @@ export const AdminDashboard: React.FC = () => {
 
                             <td className="p-4">
                               <div className="flex items-center gap-2">
-                                <span className="font-mono text-xs text-slate-300 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
-                                  {key.maskedKey || '••••••••'}
+                                <span className="font-mono text-xs text-slate-300 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 break-all max-w-[200px]">
+                                  {revealedKeys[key.id] || key.maskedKey || '••••••••'}
                                 </span>
                                 <button
                                   type="button"
-                                  onClick={() => copyKeyIdentifier(key.id, key.maskedKey || key.id)}
+                                  onClick={() => copyKeyIdentifier(key.id, revealedKeys[key.id] || key.maskedKey || key.id)}
                                   className="p-1 hover:bg-slate-800 text-slate-500 hover:text-slate-300 rounded transition-colors"
                                   title="Copy Key Identifier"
                                 >
