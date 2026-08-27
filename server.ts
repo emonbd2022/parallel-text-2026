@@ -583,13 +583,13 @@ apiRouter.post("/central-keys-pool-sync", async (req, res) => {
                 .map((k: any) => typeof k === 'string' ? k.trim() : (typeof k?.key === 'string' ? k.key.trim() : ''))
                 .filter(Boolean);
             const uniqueKeys = new Set(extractedKeys.filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
-            if (uniqueKeys.size >= 8) {
+            if (uniqueKeys.size >= 4) {
                 isEligible = true;
             }
         }
 
         if (!isEligible) {
-            return res.status(403).json({ success: false, error: "Central API access requires at least 8 unique local API keys or Administrator approval.", keys: [], count: 0 });
+            return res.status(403).json({ success: false, error: "Central API access requires at least 4 unique local API keys or Administrator approval.", keys: [], count: 0 });
         }
 
         const authHeader = req.headers.authorization;
@@ -641,12 +641,12 @@ apiRouter.post("/central-generate", async (req, res) => {
             isEligible = true;
         } else if (Array.isArray(localKeys)) {
             const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
-            if (uniqueKeys.size >= 8) {
+            if (uniqueKeys.size >= 4) {
                 isEligible = true;
             }
         }
         if (!isEligible) {
-            throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
+            throw new Error("Central API access requires at least 4 unique local API keys or Administrator approval.");
         }
 
         const apiKey = await getRealKey(virtualKeyId);
@@ -763,12 +763,12 @@ apiRouter.post("/central-category", async (req, res) => {
             isEligible = true;
         } else if (Array.isArray(localKeys)) {
             const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
-            if (uniqueKeys.size >= 8) {
+            if (uniqueKeys.size >= 4) {
                 isEligible = true;
             }
         }
         if (!isEligible) {
-            throw new Error("Central API access requires at least 8 unique local API keys or Administrator approval.");
+            throw new Error("Central API access requires at least 4 unique local API keys or Administrator approval.");
         }
 
         const apiKey = await getRealKey(virtualKeyId);

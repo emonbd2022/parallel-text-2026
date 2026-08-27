@@ -65,11 +65,11 @@ export const ApiKeyManager: React.FC<Props> = ({
   // 1. If admin disabled Central Mode globally, access is locked for normal users.
   // 2. Admin users retain access regardless of lock.
   // 3. Admin-granted accounts (userData?.centralApiAccess === true) retain access.
-  // 4. Any logged-in user with >= 8 UNIQUE local keys is automatically unlocked when mode is enabled.
+  // 4. Any logged-in user with >= 4 UNIQUE local keys is automatically unlocked when mode is enabled.
   const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
   const isCentralDisabledForUser = centralModeEnabled === false && !isAdmin;
   const hasExplicitAdminGrant = userData?.centralApiAccess === true;
-  const hasEightKeysUnlocked = Boolean((user || userData) && uniqueLocalKeysCount >= 8);
+  const hasEightKeysUnlocked = Boolean((user || userData) && uniqueLocalKeysCount >= 4);
   const isEligibleForCentral = isAdmin || (!isCentralDisabledForUser && Boolean(hasExplicitAdminGrant || hasEightKeysUnlocked));
 
   // Auto-revert normal users to Local API mode if admin turns off Central Mode while Central mode is active
@@ -112,7 +112,7 @@ export const ApiKeyManager: React.FC<Props> = ({
         if (onShowToast) {
           onShowToast(
             'Central API Locked', 
-            `You must have at least 8 unique API keys added locally to unlock Central API mode. (Currently: ${uniqueLocalKeysCount}/8 unique keys)`
+            `You must have at least 4 unique API keys added locally to unlock Central API mode. (Currently: ${uniqueLocalKeysCount}/4 unique keys)`
           );
         }
         return;
@@ -276,7 +276,7 @@ export const ApiKeyManager: React.FC<Props> = ({
           ) : (
             <>
               <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span>Requires 8 keys ({uniqueLocalKeysCount}/8)</span>
+              <span>Requires 4 keys ({uniqueLocalKeysCount}/4)</span>
             </>
           )}
         </button>
@@ -309,12 +309,12 @@ export const ApiKeyManager: React.FC<Props> = ({
               Central API Auto-Unlock
             </div>
             <span className="text-[11px] font-mono font-bold bg-purple-500/20 text-purple-300 px-2.5 py-0.5 rounded-full border border-purple-500/30">
-              {uniqueLocalKeysCount} / 8 Unique Keys
+              {uniqueLocalKeysCount} / 4 Unique Keys
             </span>
           </div>
 
           <p className="text-slate-300 text-xs leading-relaxed">
-            Add at least <strong>8 unique, valid Gemini API keys</strong> to your local pool to automatically unlock the shared, high-speed Central API pool. No admin approval required.
+            Add at least <strong>4 unique, valid Gemini API keys</strong> to your local pool to automatically unlock the shared, high-speed Central API pool. No admin approval required.
           </p>
 
           {/* Visual Progress Bar */}
@@ -322,16 +322,16 @@ export const ApiKeyManager: React.FC<Props> = ({
             <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-700/50">
               <div 
                 className="h-full bg-gradient-to-r from-amber-500 via-purple-500 to-emerald-500 transition-all duration-500 ease-out"
-                style={{ width: `${Math.min(100, (uniqueLocalKeysCount / 8) * 100)}%` }}
+                style={{ width: `${Math.min(100, (uniqueLocalKeysCount / 4) * 100)}%` }}
               />
             </div>
             <div className="flex justify-between items-center text-[11px] text-slate-400">
               <span>
-                {uniqueLocalKeysCount >= 8 
+                {uniqueLocalKeysCount >= 4 
                   ? 'Goal reached! Central API unlocked.' 
-                  : `${8 - uniqueLocalKeysCount} more unique key${8 - uniqueLocalKeysCount === 1 ? '' : 's'} needed`}
+                  : `${4 - uniqueLocalKeysCount} more unique key${4 - uniqueLocalKeysCount === 1 ? '' : 's'} needed`}
               </span>
-              <span>Goal: 8 Keys</span>
+              <span>Goal: 4 Keys</span>
             </div>
           </div>
 
@@ -355,7 +355,7 @@ export const ApiKeyManager: React.FC<Props> = ({
               </button>
             ) : (
               <span className="text-amber-400 flex items-center gap-1 text-[11px]">
-                <Lock className="w-3 h-3" /> Unlocks at 8 keys
+                <Lock className="w-3 h-3" /> Unlocks at 4 keys
               </span>
             )}
           </div>

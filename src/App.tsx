@@ -427,7 +427,7 @@ export default function App() {
       const hasExplicitAdminGrant = userData?.centralApiAccess === true || isAdmin;
       const validLocalKeys = localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
       const uniqueKeysCount = new Set(validLocalKeys).size;
-      const isEligible = isAdmin || hasExplicitAdminGrant || uniqueKeysCount >= 8;
+      const isEligible = isAdmin || hasExplicitAdminGrant || uniqueKeysCount >= 4;
 
       console.log('📥 [Central API Pull] Requesting Central API keys from server pool...', {
         forceRefresh,
@@ -503,8 +503,8 @@ export default function App() {
       } else {
         const uniqueKeysCount = new Set(localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20)).size;
         const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
-        if (!isAdmin && uniqueKeysCount < 8 && !userData?.centralApiAccess) {
-          showNotification("Eligibility Notice", "Central API access requires at least 8 unique local API keys or Administrator approval.");
+        if (!isAdmin && uniqueKeysCount < 4 && !userData?.centralApiAccess) {
+          showNotification("Eligibility Notice", "Central API access requires at least 4 unique local API keys or Administrator approval.");
         } else {
           showNotification("Refresh Notice", "No central nodes returned from server. Check network connection.");
         }
