@@ -1,5 +1,4 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { auth } from '../lib/firebase';
 import { GeminiResponse } from "../types";
 
 interface BatchItem {
@@ -29,11 +28,7 @@ export const generateMetadataBatch = async (
     if (onProgress) onProgress("Creating titles & keywords (Central)...");
     const res = await fetch('/api/central-generate', {
        method: 'POST',
-       
-       headers: { 
-         'Content-Type': 'application/json',
-         ...(auth?.currentUser ? { 'Authorization': `Bearer ${await auth.currentUser.getIdToken()}` } : {})
-       },
+       headers: { 'Content-Type': 'application/json' },
        body: JSON.stringify({ items, config, virtualKeyId: apiKey, localKeys, isAdmin, hasExplicitAdminGrant })
     });
     const contentType = res.headers.get('content-type') || '';

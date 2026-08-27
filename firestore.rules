@@ -181,16 +181,6 @@ service cloud.firestore {
     }
 
     // =========================================================
-    // CENTRAL USAGE COLLECTION
-    // Tracks daily central API usage per user.
-    // docId is a secure server-side HMAC, preventing client listing or unauthorized access.
-    // =========================================================
-    match /central_usage/{docId} {
-      allow get, update, create: if true;
-      allow list, delete: if false;
-    }
-
-    // =========================================================
     // DEFAULT DENY
     // All other collections and paths are completely inaccessible
     // =========================================================

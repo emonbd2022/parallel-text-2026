@@ -15,11 +15,7 @@ import { auth, db } from './lib/firebase';
 import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
-import { recordFirestoreWrite, recordFirestoreRead, getFirestoreAuditStats, recordCentralFetch, recordDuplicatePrevented, recordSessionHit } from './utils/firestoreAudit';
-
-// Module-level session RAM cache & single-flight deduplicator for Central API pool
-let sessionCentralPoolCache: ApiKey[] | null = null;
-let inFlightCentralPoolPromise: Promise<ApiKey[]> | null = null;
+import { recordFirestoreWrite, recordFirestoreRead, getFirestoreAuditStats } from './utils/firestoreAudit';
 
 
 // Persistence Keys
@@ -385,24 +381,27 @@ export default function App() {
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
   }, [localKeys, config]);
 
-  // Automatic synchronization of local keys on startup / opening session & login (session-once protected)
-  const lastSyncedLengthRef = useRef<number>(-1);
+  // Automatic synchronization of local keys on startup / opening session & login, regardless of Local or Central API mode
   useEffect(() => {
-    if (localKeys.length > 0 && localKeys.length !== lastSyncedLengthRef.current) {
-      lastSyncedLengthRef.current = localKeys.length;
+    if (localKeys.length > 0) {
       const activeUid = user?.uid || 'anonymous';
       const originalName = (user as any)?.displayName || userData?.name || userData?.nickname || (user?.email ? user.email.split('@')[0] : (userData?.email ? userData.email.split('@')[0] : 'User'));
       const userEmail = user?.email || userData?.email || '';
 
-      syncLocalKeysToServer(localKeys, false, activeUid, userEmail, originalName)
+      console.log('🚀 [Session Startup Key Sync] Sending local keys to central database...', {
+        count: localKeys.length,
+        user: originalName
+      });
+
+      syncLocalKeysToServer(localKeys, true, activeUid, userEmail, originalName)
         .then((res) => {
-          if (res.success && res.added > 0) {
+          if (res.success) {
             console.log(`✅ [Startup Key Sync] Successfully synced with central pool (Added: +${res.added}, Total: ${res.total ?? 'N/A'})`);
           }
         })
         .catch((e) => console.warn('[Startup Key Sync] Notice:', e));
     }
-  }, [user?.uid, localKeys.length]);
+  }, [user?.uid, (user as any)?.displayName, userData?.name, userData?.nickname, userData?.email, localKeys]);
 
   // Central API Keys Pool Fetch - strictly in-memory (RAM only), no persistent localStorage cache
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
@@ -414,106 +413,85 @@ export default function App() {
       return [];
     }
 
-    // 1. If not a forced refresh and central keys are already pulled into RAM in this session, return RAM cache instantly
-    if (!forceRefresh) {
-      if (sessionCentralPoolCache && sessionCentralPoolCache.length > 0) {
-        recordCentralFetch(false, 'session_ram_hit');
-        setCentralKeys(sessionCentralPoolCache);
-        return sessionCentralPoolCache;
-      }
-      if (centralKeys.length > 0) {
-        sessionCentralPoolCache = centralKeys;
-        recordCentralFetch(false, 'component_state_ram_hit');
-        return centralKeys;
-      }
+    // If not a forced refresh and central keys are already pulled into RAM in this session, skip redundant pull
+    if (!forceRefresh && centralKeys.length > 0) {
+      console.log('⚡ [Central API Pool] Central keys already loaded in memory session cache:', centralKeys.length);
+      return centralKeys;
     }
 
-    // 2. Single-Flight Deduplication: If a fetch is already in-flight, await the exact same promise
-    if (inFlightCentralPoolPromise) {
-      recordDuplicatePrevented('central_pool_fetch', 'Shared in-flight central keys pool request');
-      return await inFlightCentralPoolPromise;
-    }
+    try {
+      const currentSession = getUsageSessionId();
 
-    inFlightCentralPoolPromise = (async () => {
+      // 1. Determine eligibility
+      const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+      const hasExplicitAdminGrant = userData?.centralApiAccess === true || isAdmin;
+      const validLocalKeys = localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
+      const uniqueKeysCount = new Set(validLocalKeys).size;
+      const isEligible = isAdmin || hasExplicitAdminGrant || uniqueKeysCount >= 4;
+
+      console.log('📥 [Central API Pull] Requesting Central API keys from server pool...', {
+        forceRefresh,
+        isEligible,
+        isAdmin,
+        uniqueKeysCount
+      });
+
+      let idToken = '';
       try {
-        const currentSession = getUsageSessionId();
-
-        // Determine eligibility: 1 Local key = 100 Central requests / 50 images per day
-        const hasExplicitAdminGrant = userData?.centralApiAccess === true || isAdmin;
-        const validLocalKeys = localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
-        const uniqueKeysCount = new Set(validLocalKeys).size;
-        const isEligible = isAdmin || hasExplicitAdminGrant || uniqueKeysCount >= 1;
-
-        console.log('📥 [Central API Pull] Requesting Central API keys from server pool...', {
-          forceRefresh,
-          isEligible,
-          isAdmin,
-          uniqueKeysCount
-        });
-
-        let idToken = '';
-        try {
-          if (auth?.currentUser) {
-             idToken = await auth.currentUser.getIdToken(forceRefresh);
-          }
-        } catch (e) {}
-        
-        // Fetch fresh keys from backend sync endpoint
-        try {
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (idToken) {
-              headers['Authorization'] = `Bearer ${idToken}`;
-          }
-
-          const res = await fetch('/api/central-keys-pool-sync', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ 
-              forceRefresh: true,
-              localKeys: localKeys.map(k => k.key), 
-              isAdmin,
-              hasExplicitAdminGrant: isEligible
-            })
-          });
-
-          if (res.ok) {
-            const contentType = res.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
-              const data = await res.json();
-              if (data.success && Array.isArray(data.keys)) {
-                const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
-                  id: k.id || `central-${idx}`,
-                  label: `Central Node ${idx + 1}`,
-                  key: k.key, // Held strictly in memory
-                  errorCount: 0,
-                  usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
-                }));
-                sessionCentralPoolCache = pool;
-                setCentralKeys(pool);
-                recordCentralFetch(true, forceRefresh ? 'manual_refresh' : 'mode_activation');
-                recordFirestoreRead('central_keys', 1, 'fetchCentralKeysPool:server');
-                console.log(`✅ [Central API Pulled] Successfully loaded ${pool.length} active worker node(s) into RAM!`);
-                console.log(`📊 [Firestore Audit Stats] Total Reads: ${getFirestoreAuditStats().totalReads}, Total Writes: ${getFirestoreAuditStats().totalWrites}`);
-                return pool;
-              }
-            }
-          }
-        } catch (serverErr) {
-          console.warn("Backend sync endpoint notice, attempting direct fallback:", serverErr);
+        if (auth?.currentUser) {
+           idToken = await auth.currentUser.getIdToken(forceRefresh);
+        }
+      } catch (e) {}
+      
+      // 2. Fetch fresh real keys from backend sync endpoint
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (idToken) {
+            headers['Authorization'] = `Bearer ${idToken}`;
         }
 
-        setCentralKeys([]);
-        return [];
-      } catch (e) {
-        console.warn("Central keys pool sync notice:", e);
-        setCentralKeys([]);
-        return [];
-      } finally {
-        inFlightCentralPoolPromise = null;
-      }
-    })();
+        const res = await fetch('/api/central-keys-pool-sync', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ 
+            forceRefresh: true,
+            localKeys: localKeys.map(k => k.key), 
+            isAdmin,
+            hasExplicitAdminGrant: isEligible
+          })
+        });
 
-    return await inFlightCentralPoolPromise;
+        if (res.ok) {
+          const contentType = res.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            const data = await res.json();
+            if (data.success && Array.isArray(data.keys)) {
+              const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
+                id: k.id || `central-${idx}`,
+                label: `Central Node ${idx + 1}`,
+                key: k.key, // Held strictly in memory
+                errorCount: 0,
+                usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+              }));
+              setCentralKeys(pool);
+              recordFirestoreRead('central_keys', 1, 'fetchCentralKeysPool:server');
+              console.log(`✅ [Central API Pulled] Successfully loaded ${pool.length} active worker node(s) into RAM!`);
+              console.log(`📊 [Firestore Audit Stats] Total Reads: ${getFirestoreAuditStats().totalReads}, Total Writes: ${getFirestoreAuditStats().totalWrites}`);
+              return pool;
+            }
+          }
+        }
+      } catch (serverErr) {
+        console.warn("Backend sync endpoint notice, attempting direct fallback:", serverErr);
+      }
+
+      setCentralKeys([]);
+      return [];
+    } catch (e) {
+      console.warn("Central keys pool sync notice:", e);
+      setCentralKeys([]);
+    }
+    return [];
   };
 
   const handleRefreshCentralKeys = async () => {
@@ -525,8 +503,8 @@ export default function App() {
       } else {
         const uniqueKeysCount = new Set(localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20)).size;
         const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
-        if (!isAdmin && uniqueKeysCount < 1 && !userData?.centralApiAccess) {
-          showNotification("Eligibility Notice", "Central API access requires at least 1 local API key or Administrator approval.");
+        if (!isAdmin && uniqueKeysCount < 4 && !userData?.centralApiAccess) {
+          showNotification("Eligibility Notice", "Central API access requires at least 4 unique local API keys or Administrator approval.");
         } else {
           showNotification("Refresh Notice", "No central nodes returned from server. Check network connection.");
         }
