@@ -1,7 +1,6 @@
 import { collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
-import { INITIAL_CENTRAL_KEYS, InitialCentralKeyRecord } from '../data/initialCentralKeys';
 
 export interface CentralKeyRecord {
   id: string;
@@ -21,6 +20,10 @@ let cachedCentralKeys: CentralKeyRecord[] | null = null;
 let lastCentralKeysFetchTime = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes TTL
 let clientFetchPromise: Promise<CentralKeyRecord[]> | null = null;
+
+const isDevSeedAllowed = () => {
+  return import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_CENTRAL_KEYS === 'true';
+};
 
 /**
  * Computes a browser-compatible SHA-256 hash string for deterministic key fingerprinting
@@ -255,7 +258,7 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
       }
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
-        if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
+        if (data.success && Array.isArray(data.keys)) {
           const mapped = data.keys.map((sk: any, idx: number) => ({
             id: sk.id || `central-${idx}`,
             label: sk.label || `Central Pool Node ${idx + 1}`,
@@ -286,10 +289,11 @@ export async function fetchCentralKeysFromFirestore(forceRefresh = false): Promi
 }
 
 /**
- * Fetches admin-level Central Key metadata list (masked credentials only)
+ * Fetches admin-level Central Key metadata list (masked credentials only).
+ * Authoritative: If database contains 0 keys, strictly returns empty array [].
  */
 export async function fetchAdminCentralKeys(forceRefresh = false): Promise<CentralKeyRecord[]> {
-  // 1. First priority: Server-side admin endpoint (if running on Node.js/Cloud Run)
+  // 1. First priority: Server-side admin endpoint (if running on Node.js/Cloud Run/Vercel)
   try {
     const url = forceRefresh ? '/api/admin/keys?refresh=true' : '/api/admin/keys';
     const headers: Record<string, string> = {
@@ -308,30 +312,28 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
       if (contentType && contentType.includes('application/json')) {
         const data = await res.json();
         const list = Array.isArray(data) ? data : (data.keys || []);
-        if (list.length > 0) {
-          return list.map((k: any) => {
-            const { name: derivedContributor, email } = deriveContributorDisplay(k);
-            return {
-              id: k.id,
-              label: k.label || 'Central Key',
-              key: '', // Never expose raw key
-              maskedKey: k.maskedKey || '••••••••',
-              keyHash: k.keyHash || k.id,
-              contributedBy: derivedContributor,
-              contributorName: derivedContributor,
-              contributorEmail: email,
-              enabled: k.enabled !== false,
-              createdAt: k.createdAt || new Date().toISOString()
-            };
-          });
-        }
+        return list.map((k: any) => {
+          const { name: derivedContributor, email } = deriveContributorDisplay(k);
+          return {
+            id: k.id,
+            label: k.label || 'Central Key',
+            key: '', // Never expose raw key
+            maskedKey: k.maskedKey || '••••••••',
+            keyHash: k.keyHash || k.id,
+            contributedBy: derivedContributor,
+            contributorName: derivedContributor,
+            contributorEmail: email,
+            enabled: k.enabled !== false,
+            createdAt: k.createdAt || new Date().toISOString()
+          };
+        });
       }
     }
   } catch (e) {
     console.log('[Central Key Service] Server admin keys fetch notice:', e);
   }
 
-  // 2. Direct Firestore 1-read Fallback for Admin (e.g. Vercel static deployment)
+  // 2. Direct Firestore 1-read Fallback for Admin (e.g. static deployment)
   if (db) {
     try {
       const docRef = doc(db, 'central_keys', 'APIkeys');
@@ -341,75 +343,31 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
       if (docSnap.exists()) {
         const data = docSnap.data();
         const rawKeys = Array.isArray(data.keys) ? data.keys : [];
-        if (rawKeys.length > 0) {
-          return rawKeys.map((k: any) => {
-            const { name: derivedContributor, email } = deriveContributorDisplay(k);
-            return {
-              id: k.id,
-              label: k.label || 'Central Key',
-              key: '',
-              maskedKey: k.maskedKey || (k.key ? maskApiKey(k.key) : '••••••••'),
-              keyHash: k.keyHash || k.id,
-              contributedBy: derivedContributor,
-              contributorName: derivedContributor,
-              contributorEmail: email,
-              enabled: k.enabled !== false,
-              createdAt: k.createdAt || new Date().toISOString()
-            };
-          });
-        }
+        return rawKeys.map((k: any) => {
+          const { name: derivedContributor, email } = deriveContributorDisplay(k);
+          return {
+            id: k.id,
+            label: k.label || 'Central Key',
+            key: '',
+            maskedKey: k.maskedKey || (k.key ? maskApiKey(k.key) : '••••••••'),
+            keyHash: k.keyHash || k.id,
+            contributedBy: derivedContributor,
+            contributorName: derivedContributor,
+            contributorEmail: email,
+            enabled: k.enabled !== false,
+            createdAt: k.createdAt || new Date().toISOString()
+          };
+        });
       }
 
-      // Auto-seed Initial Central Keys into Firestore if empty or document doesn't exist
-      try {
-        await setDoc(docRef, {
-          keys: INITIAL_CENTRAL_KEYS,
-          totalCount: INITIAL_CENTRAL_KEYS.length,
-          updatedAt: new Date().toISOString(),
-          version: 1
-        }, { merge: true });
-        recordFirestoreWrite('central_keys', 1, 'seedInitialCentralKeys:direct');
-      } catch (seedErr) {
-        console.log('[Central Key Service] Auto-seed Firestore central keys notice:', seedErr);
-      }
-
-      // Return mapped initial keys immediately so Admin UI is instantly populated
-      return INITIAL_CENTRAL_KEYS.map(k => {
-        const { name: derivedContributor, email } = deriveContributorDisplay(k);
-        return {
-          id: k.id,
-          label: k.label,
-          key: '',
-          maskedKey: k.maskedKey || '••••••••',
-          keyHash: k.keyHash,
-          contributedBy: derivedContributor,
-          contributorName: derivedContributor,
-          contributorEmail: email,
-          enabled: k.enabled !== false,
-          createdAt: k.createdAt
-        };
-      });
+      // Document does not exist in Firestore -> Authoritatively 0 keys
+      return [];
     } catch (fsErr) {
       console.log('[Central Key Service] Direct Firestore fetch notice:', fsErr);
     }
   }
 
-  // Fallback to static initial list if offline or Firestore uninitialized
-  return INITIAL_CENTRAL_KEYS.map(k => {
-    const { name: derivedContributor, email } = deriveContributorDisplay(k);
-    return {
-      id: k.id,
-      label: k.label,
-      key: '',
-      maskedKey: k.maskedKey || '••••••••',
-      keyHash: k.keyHash,
-      contributedBy: derivedContributor,
-      contributorName: derivedContributor,
-      contributorEmail: email,
-      enabled: k.enabled !== false,
-      createdAt: k.createdAt
-    };
-  });
+  return [];
 }
 
 /**
@@ -483,10 +441,8 @@ export async function addCentralKeyToFirestore(
       let existingKeys: any[] = [];
       if (docSnap.exists()) {
         existingKeys = docSnap.data().keys || [];
-      } else {
-        existingKeys = [...INITIAL_CENTRAL_KEYS];
       }
-      const exists = existingKeys.some((k: any) => k.keyHash === hash || k.id === docId);
+      const exists = existingKeys.some((k: any) => k.keyHash === hash || k.id === docId || (k.key && k.key.trim() === trimmedKey));
       if (!exists) {
         existingKeys.push({
           id: docId,
@@ -607,4 +563,27 @@ export async function deleteCentralKeyFromFirestore(keyId: string): Promise<void
       console.log('Direct Firestore key delete notice:', fsErr);
     }
   }
+}
+
+/**
+ * Triggers server-side and Firestore deduplication comparing real decrypted key values
+ */
+export async function deduplicateCentralKeysOnServer(): Promise<{ success: boolean; originalCount: number; deduplicatedCount: number; removedCount: number }> {
+  cachedCentralKeys = null;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (auth?.currentUser) {
+    try {
+      headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+    } catch {}
+  }
+
+  const res = await fetch('/api/admin/keys/deduplicate', {
+    method: 'POST',
+    headers
+  });
+
+  if (res.ok) {
+    return await res.json();
+  }
+  throw new Error(`Deduplication request failed with status ${res.status}`);
 }

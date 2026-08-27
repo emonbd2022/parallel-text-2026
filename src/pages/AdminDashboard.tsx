@@ -9,6 +9,7 @@ import {
   addCentralKeyToFirestore, 
   toggleCentralKeyStatus, 
   deleteCentralKeyFromFirestore,
+  deduplicateCentralKeysOnServer,
   CentralKeyRecord 
 } from '../services/centralKeyService';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
@@ -157,6 +158,29 @@ export const AdminDashboard: React.FC = () => {
       setCentralKeys(prev => prev.map(k => k.id === id ? { ...k, enabled: !currentStatus } : k));
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const [isDeduplicating, setIsDeduplicating] = useState(false);
+  const [dedupResult, setDedupResult] = useState<string | null>(null);
+
+  const handleDeduplicate = async () => {
+    setIsDeduplicating(true);
+    setDedupResult(null);
+    try {
+      const res = await deduplicateCentralKeysOnServer();
+      if (res.success) {
+        setDedupResult(res.removedCount > 0 
+          ? `Deduplication complete: Removed ${res.removedCount} duplicate key(s). Remaining: ${res.deduplicatedCount}.`
+          : `All keys are already unique (${res.deduplicatedCount} total).`
+        );
+        await fetchCentralKeys(true);
+      }
+    } catch (e: any) {
+      setDedupResult(`Deduplication notice: ${e?.message || e}`);
+    } finally {
+      setIsDeduplicating(false);
+      setTimeout(() => setDedupResult(null), 6000);
     }
   };
 
@@ -1656,7 +1680,7 @@ export const AdminDashboard: React.FC = () => {
                 </p>
               </div>
 
-              <div className="flex items-center gap-3 w-full sm:w-auto">
+              <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
                 <button
                   type="button"
                   onClick={() => setShowAddKeyForm(prev => !prev)}
@@ -1666,9 +1690,20 @@ export const AdminDashboard: React.FC = () => {
                   <span>{showAddKeyForm ? 'Cancel' : 'Add API Key'}</span>
                 </button>
 
+                <button
+                  type="button"
+                  onClick={handleDeduplicate}
+                  disabled={isDeduplicating || loadingKeys || centralKeys.length === 0}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 cursor-pointer"
+                  title="Remove duplicate API keys by comparing actual key values"
+                >
+                  {isDeduplicating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-amber-400" />}
+                  <span>Deduplicate</span>
+                </button>
+
                 <button 
                   onClick={() => fetchCentralKeys(true)}
-                  disabled={loadingKeys}
+                  disabled={loadingKeys || isDeduplicating}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 disabled:opacity-50 cursor-pointer"
                 >
                   {loadingKeys ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4 text-purple-400" />}
@@ -1676,6 +1711,13 @@ export const AdminDashboard: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {dedupResult && (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-200 flex items-center gap-2 animate-in fade-in">
+                <Info className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>{dedupResult}</span>
+              </div>
+            )}
 
             {/* Manual Add Key Form */}
             {showAddKeyForm && (
