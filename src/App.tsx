@@ -15,7 +15,7 @@ import { auth, db } from './lib/firebase';
 import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
-import { recordFirestoreWrite } from './utils/firestoreAudit';
+import { recordFirestoreWrite, recordFirestoreRead, getFirestoreAuditStats } from './utils/firestoreAudit';
 
 
 // Persistence Keys
@@ -412,6 +412,7 @@ export default function App() {
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
     // If not a forced refresh and central keys are already pulled into RAM in this session, skip redundant pull
     if (!forceRefresh && centralKeys.length > 0) {
+      console.log('⚡ [Central API Pool] Central keys already loaded in memory session cache:', centralKeys.length);
       return centralKeys;
     }
 
@@ -424,6 +425,13 @@ export default function App() {
       const validLocalKeys = localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
       const uniqueKeysCount = new Set(validLocalKeys).size;
       const isEligible = isAdmin || hasExplicitAdminGrant || uniqueKeysCount >= 8;
+
+      console.log('📥 [Central API Pull] Requesting Central API keys from server pool...', {
+        forceRefresh,
+        isEligible,
+        isAdmin,
+        uniqueKeysCount
+      });
 
       let idToken = '';
       try {
@@ -463,6 +471,9 @@ export default function App() {
                 usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
               }));
               setCentralKeys(pool);
+              recordFirestoreRead('central_keys', 1, 'fetchCentralKeysPool:server');
+              console.log(`✅ [Central API Pulled] Successfully loaded ${pool.length} active worker node(s) into RAM!`);
+              console.log(`📊 [Firestore Audit Stats] Total Reads: ${getFirestoreAuditStats().totalReads}, Total Writes: ${getFirestoreAuditStats().totalWrites}`);
               return pool;
             }
           }
@@ -2173,7 +2184,10 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                        </svg>
                      </div>
                      <div>
-                       <h3 className="text-base font-bold text-slate-100 mb-0.5">Drop your creativity here</h3>
+                       <div className="flex items-center gap-2 mb-0.5">
+                         <h3 className="text-base font-bold text-slate-100">Drop your creativity here</h3>
+                         <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">(version : 26.0.0)</span>
+                       </div>
                        <p className="text-xs text-slate-400">
                          Drag & drop or click to upload images for title, keyword, & category generation.
                          <span className="text-slate-500 block text-[11px] mt-0.5 font-medium">Supports JPG, PNG, WEBP, SVG, EPS</span>

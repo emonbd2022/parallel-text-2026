@@ -55,7 +55,10 @@ export const Login: React.FC = () => {
         >
           <Layers className="w-8 h-8 text-white" />
         </motion.div>
-        <h1 className="text-3xl font-bold text-white mb-2">Parallel Text</h1>
+        <div className="flex items-center gap-2 mb-2">
+          <h1 className="text-3xl font-bold text-white">Parallel Text</h1>
+          <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">(version : 26.0.0)</span>
+        </div>
         
         {!auth ? (
           <div className="w-full bg-orange-950/30 border border-orange-500/50 rounded-xl p-6 mb-6">

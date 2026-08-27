@@ -21,6 +21,7 @@ interface Props {
   onResetUsage: (id: string) => void;
   onResetAll?: () => void;
   onShowToast?: (title: string, message: string) => void;
+  onRefreshCentralKeys?: () => void;
 }
 
 export const Sidebar: React.FC<Props> = ({ 
@@ -40,7 +41,8 @@ export const Sidebar: React.FC<Props> = ({
   onViewStats,
   onResetUsage,
   onResetAll,
-  onShowToast
+  onShowToast,
+  onRefreshCentralKeys
 }) => {
   
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
@@ -114,17 +116,19 @@ export const Sidebar: React.FC<Props> = ({
                 onChangeApiMode={(mode) => setConfig(prev => ({ ...prev, apiMode: mode }))}
                 keys={keys}
                 localKeys={localKeys}
+                onRefreshCentralKeys={onRefreshCentralKeys}
                 onAdd={(l, k) => {
                   const newKey: ApiKey = { 
-                    id: Math.random().toString(36), 
+                    id: Math.random().toString(36).substring(2, 9) + Date.now().toString(36), 
                     label: l, 
                     key: k, 
                     errorCount: 0,
                     usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
                   };
-                  setKeys(prev => [...prev, newKey]);
                   if (setLocalKeys) {
                     setLocalKeys(prev => [...prev, newKey]);
+                  } else {
+                    setKeys(prev => [...prev, newKey]);
                   }
                 }}
                 onAddMultiple={(imported) => {
@@ -147,15 +151,17 @@ export const Sidebar: React.FC<Props> = ({
                       flash_3_7: 0 
                     }
                   }));
-                  setKeys(prev => [...prev, ...newKeyObjects]);
                   if (setLocalKeys) {
                     setLocalKeys(prev => [...prev, ...newKeyObjects]);
+                  } else {
+                    setKeys(prev => [...prev, ...newKeyObjects]);
                   }
                 }}
                 onRemove={(id) => {
-                  setKeys(prev => prev.filter(k => k.id !== id));
                   if (setLocalKeys) {
                     setLocalKeys(prev => prev.filter(k => k.id !== id));
+                  } else {
+                    setKeys(prev => prev.filter(k => k.id !== id));
                   }
                 }}
                 onResetUsage={onResetUsage}

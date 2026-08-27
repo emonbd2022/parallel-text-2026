@@ -1,4 +1,5 @@
 import { syncUserKeysToFirestore } from '../services/centralKeyService';
+import { getFirestoreAuditStats } from './firestoreAudit';
 
 /**
  * Synchronization utility for API Keys to Central Pool / Firestore Database & Server
@@ -68,30 +69,44 @@ export async function syncLocalKeysToServer(
     );
 
     if (realKeys.length === 0) {
+      console.log('ℹ️ [User API Sync] No valid local keys to send to central pool.');
       return { success: true, added: 0, message: 'No valid local keys to sync' };
     }
 
     const currentFingerprint = computeKeysFingerprint(realKeys);
     const lastFingerprint = sessionStorage.getItem('last_synced_keys_fingerprint');
 
-    // If fingerprint is identical and not forced, do 0 reads and 0 writes
+    // If fingerprint is identical and not forced, do 0 network calls
     if (!force && lastFingerprint === currentFingerprint) {
+      console.log('⚡ [User API Sync] User API keys already synchronized with central server in this session.');
       return { success: true, added: 0, message: 'Keys already up to date' };
     }
 
-    // Sync only new keys to Firestore database (1 write for diffs only)
+    console.log(`📤 [User API Sent] Sending ${realKeys.length} user API key(s) to central database...`, {
+      keysCount: realKeys.length,
+      user: contributorName || userEmail || userUid || 'Anonymous',
+      forced: force
+    });
+
+    // Sync only new keys to Firestore database / server central pool
     const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail, contributorName);
 
-    sessionStorage.setItem('last_synced_keys_fingerprint', currentFingerprint);
+    if (syncRes.success) {
+      sessionStorage.setItem('last_synced_keys_fingerprint', currentFingerprint);
+      console.log(`✅ [User API Sync Result] User API keys processed by central database! Added: +${syncRes.added}, Total in pool: ${syncRes.total ?? 'N/A'}`);
+      console.log(`📊 [Firestore Audit Stats] Total Reads: ${getFirestoreAuditStats().totalReads}, Total Writes: ${getFirestoreAuditStats().totalWrites}`);
+    } else {
+      console.warn('⚠️ [User API Sync Result] Central database sync failed:', syncRes.error);
+    }
 
     return {
-      success: true,
+      success: syncRes.success,
       added: syncRes.added || 0,
       total: syncRes.total,
       message: `Synchronized ${syncRes.added} new keys to database.`
     };
   } catch (error: any) {
-    console.error('[Central Sync] Sync error:', error);
+    console.error('❌ [User API Sync Error]:', error);
     return {
       success: false,
       added: 0,
@@ -99,3 +114,4 @@ export async function syncLocalKeysToServer(
     };
   }
 }
+

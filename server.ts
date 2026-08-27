@@ -291,9 +291,16 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
             body: JSON.stringify(body)
         });
 
-        return resp.ok;
+        if (resp.ok) {
+            console.log(`[Firestore Write: 1] Successfully saved ${deduplicatedKeys.length} central keys to central_keys/APIkeys document.`);
+            return true;
+        } else {
+            const errText = await resp.text();
+            console.warn(`[Firestore Write Failed] Status ${resp.status}:`, errText);
+            return false;
+        }
     } catch (e) {
-        console.log('[Server] Notice saving central_keys/APIkeys to Firestore:', e);
+        console.error('[Server] Error saving central_keys/APIkeys to Firestore:', e);
         return false;
     }
 }
@@ -913,6 +920,8 @@ apiRouter.post("/collect-keys", async (req, res) => {
         }
 
         const deduplicated = deduplicateKeysByValue(firestoreKeys);
+
+        console.log(`📥 [Server /api/collect-keys] Processed user keys: Received: ${keys.length}, Added: +${added}, Total in pool: ${deduplicated.length}`);
 
         if (added > 0 || modified) {
             await saveKeysToFirestoreDocument(deduplicated, idToken);
