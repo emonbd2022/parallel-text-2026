@@ -15,8 +15,6 @@ import { auth, db } from './lib/firebase';
 import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
-import { clearEncryptedCentralKeys } from './services/centralKeyCacheService';
-import { decryptClientSide } from './utils/cryptoUtils';
 import { recordFirestoreWrite } from './utils/firestoreAudit';
 
 
@@ -419,7 +417,6 @@ export default function App() {
 
     try {
       const currentSession = getUsageSessionId();
-      clearEncryptedCentralKeys(); // Purge any legacy cache from local storage
 
       // 1. Determine eligibility
       const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
@@ -483,19 +480,12 @@ export default function App() {
             const data = docSnap.data();
             const rawKeys = Array.isArray(data.keys) ? data.keys : [];
             if (rawKeys.length > 0) {
-              const decryptedPromises = rawKeys.filter((k: any) => k.enabled !== false).map(async (k: any, idx: number) => {
-                let realKey = k.key || '';
-                if (!realKey && k.encryptedKey) {
-                  realKey = await decryptClientSide(k.encryptedKey);
-                }
-                return {
-                  id: k.id || `central-${idx}`,
-                  label: `Central Node ${idx + 1}`,
-                  key: realKey
-                };
-              });
-              const decrypted = (await Promise.all(decryptedPromises)).filter(k => k.key && k.key.length > 0);
-              const pool: ApiKey[] = decrypted.map((k, idx) => ({
+              const poolKeys = rawKeys.filter((k: any) => k.enabled !== false && k.key).map((k: any, idx: number) => ({
+                id: k.id || `central-${idx}`,
+                label: `Central Node ${idx + 1}`,
+                key: k.key
+              }));
+              const pool: ApiKey[] = poolKeys.map((k, idx) => ({
                 id: k.id || `central-${idx}`,
                 label: `Central Node ${idx + 1}`,
                 key: k.key,

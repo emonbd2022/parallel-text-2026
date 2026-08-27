@@ -5,7 +5,6 @@ import crypto from 'crypto';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from "@google/genai";
-import { DEFAULT_CENTRAL_KEYS } from './src/data/centralKeysData';
 
 dotenv.config();
 
@@ -122,9 +121,6 @@ function loadStoredKeys(): StoredKey[] {
         // Safe read failure fallback
     }
 
-    if (isDevSeedEnabled()) {
-        return deduplicateKeysByValue(DEFAULT_CENTRAL_KEYS || []);
-    }
     return [];
 }
 
