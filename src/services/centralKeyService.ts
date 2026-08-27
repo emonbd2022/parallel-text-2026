@@ -88,7 +88,7 @@ function getSyncRegistryKey(userUid?: string): string {
 
 /**
  * Synchronizes user local API keys into the Central API pool
- * strictly event-driven: ONLY writes genuinely new/differing keys (0 writes if already synced).
+ * Server handles authoritative deduplication and persistence to Firestore single doc.
  */
 export async function syncUserKeysToFirestore(
   keys: { label: string; key: string }[],
@@ -105,32 +105,9 @@ export async function syncUserKeysToFirestore(
       return { success: true, total: 0, added: 0 };
     }
 
-    const registryKey = getSyncRegistryKey(userUid);
-    let syncedFingerprints: string[] = [];
-    try {
-      const stored = localStorage.getItem(registryKey) || sessionStorage.getItem(registryKey);
-      if (stored) syncedFingerprints = JSON.parse(stored);
-    } catch {}
-
-    const syncedSet = new Set(syncedFingerprints);
-    const keysToSync: { item: { label: string; key: string }; hash: string; docId: string }[] = [];
-
-    for (const item of validKeys) {
-      const trimmedKey = item.key.trim();
-      const hash = await computeKeySha256(trimmedKey);
-      if (!syncedSet.has(hash)) {
-        const docId = `ck_${hash.substring(0, 24)}`;
-        keysToSync.push({ item, hash, docId });
-      }
-    }
-
-    // If all keys are already present in the local sync registry, do 0 network calls / 0 writes
-    if (keysToSync.length === 0) {
-      return { success: true, total: validKeys.length, added: 0 };
-    }
-
+    const derivedContributor = (contributorName || (userEmail ? userEmail.split('@')[0] : 'User')).trim() || 'Contributor';
     let addedCount = 0;
-    const derivedContributor = contributorName || (userEmail ? userEmail.split('@')[0] : 'User');
+    let totalCount = validKeys.length;
 
     // 1. Sync to server-side registry (which handles server memory, AES-256-GCM encryption & single Firestore doc)
     try {
@@ -145,30 +122,36 @@ export async function syncUserKeysToFirestore(
         method: 'POST',
         headers,
         body: JSON.stringify({
-          keys: keysToSync.map(k => ({
-            label: k.item.label || 'User Contributed Key',
-            key: k.item.key,
+          keys: validKeys.map(k => ({
+            label: k.label || 'User Contributed Key',
+            key: k.key.trim(),
             contributorName: derivedContributor,
             contributedBy: derivedContributor,
             contributorEmail: userEmail || ''
           }))
         })
       });
+
       if (res.ok) {
         const contentType = res.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const data = await res.json();
           if (data.success) {
-            addedCount = data.added ?? keysToSync.length;
+            addedCount = data.added ?? 0;
+            totalCount = data.total ?? validKeys.length;
+            if (addedCount > 0) {
+              cachedCentralKeys = null;
+            }
+            return { success: true, total: totalCount, added: addedCount };
           }
         }
       }
     } catch (serverErr) {
-      console.log('[Central Key Service] Server collect-keys notice:', serverErr);
+      console.log('[Central Key Service] Server collect-keys notice, falling back to direct Firestore:', serverErr);
     }
 
-    // 2. Direct Firestore fallback if server was not reachable (e.g. static site)
-    if (addedCount === 0 && db && auth?.currentUser) {
+    // 2. Direct Firestore fallback if server was not reachable (e.g. static site or network interruption)
+    if (db) {
       try {
         const docRef = doc(db, 'central_keys', 'APIkeys');
         const docSnap = await getDoc(docRef);
@@ -176,16 +159,26 @@ export async function syncUserKeysToFirestore(
         if (docSnap.exists()) {
           existingKeys = docSnap.data().keys || [];
         }
+
         let localAdded = 0;
-        for (const k of keysToSync) {
-          const exists = existingKeys.some((ex: any) => ex.keyHash === k.hash || ex.id === k.docId);
+        for (const item of validKeys) {
+          const trimmedKey = item.key.trim();
+          const hash = await computeKeySha256(trimmedKey);
+          const docId = `ck_${hash.substring(0, 24)}`;
+          
+          const exists = existingKeys.some((ex: any) => 
+            ex.keyHash === hash || 
+            ex.id === docId || 
+            (ex.key && ex.key.trim() === trimmedKey)
+          );
+
           if (!exists) {
             existingKeys.push({
-              id: k.docId,
-              label: k.item.label || 'User Contributed Key',
-              key: k.item.key,
-              maskedKey: maskApiKey(k.item.key),
-              keyHash: k.hash,
+              id: docId,
+              label: item.label || 'User Contributed Key',
+              key: trimmedKey,
+              maskedKey: maskApiKey(trimmedKey),
+              keyHash: hash,
               enabled: true,
               createdAt: new Date().toISOString(),
               contributedBy: derivedContributor,
@@ -195,6 +188,7 @@ export async function syncUserKeysToFirestore(
             localAdded++;
           }
         }
+
         if (localAdded > 0) {
           await setDoc(docRef, {
             keys: existingKeys,
@@ -204,26 +198,19 @@ export async function syncUserKeysToFirestore(
           }, { merge: true });
           recordFirestoreWrite('central_keys', 1, 'syncUserKeysToFirestore:direct');
           addedCount = localAdded;
+          totalCount = existingKeys.length;
+          cachedCentralKeys = null;
+        } else {
+          totalCount = existingKeys.length;
         }
+
+        return { success: true, total: totalCount, added: addedCount };
       } catch (fsErr) {
         console.log('[Central Key Service] Direct Firestore collect sync notice:', fsErr);
       }
     }
 
-    // Update local persistent cache of synced hashes
-    try {
-      keysToSync.forEach(k => syncedSet.add(k.hash));
-      const arr = Array.from(syncedSet);
-      localStorage.setItem(registryKey, JSON.stringify(arr));
-      sessionStorage.setItem(registryKey, JSON.stringify(arr));
-    } catch {}
-
-    // Invalidate client cache if keys were added
-    if (addedCount > 0) {
-      cachedCentralKeys = null;
-    }
-
-    return { success: true, total: validKeys.length, added: addedCount };
+    return { success: true, total: totalCount, added: addedCount };
   } catch (error: any) {
     console.log('[Central Key Service] Sync error:', error);
     return { success: false, total: 0, added: 0, error: error?.message || 'Failed to sync keys' };

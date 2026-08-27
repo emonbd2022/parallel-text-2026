@@ -381,30 +381,25 @@ export default function App() {
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
   }, [localKeys, config]);
 
-  const lastSyncedLoginUidRef = useRef<string | null>(null);
-
-  // Automatic synchronization of local keys on login & session initialization, regardless of Local or Central API mode
+  // Automatic synchronization of local keys on startup / opening session & login, regardless of Local or Central API mode
   useEffect(() => {
     if (localKeys.length > 0) {
       const activeUid = user?.uid || 'anonymous';
-      const isNewLogin = user?.uid && lastSyncedLoginUidRef.current !== user.uid;
-      if (isNewLogin) {
-        lastSyncedLoginUidRef.current = user.uid;
-      }
-
       const originalName = (user as any)?.displayName || userData?.name || userData?.nickname || (user?.email ? user.email.split('@')[0] : (userData?.email ? userData.email.split('@')[0] : 'User'));
       const userEmail = user?.email || userData?.email || '';
 
-      // Perform sync using UID-scoped SHA-256 fingerprinting
-      syncLocalKeysToServer(localKeys, !!isNewLogin, activeUid, userEmail, originalName)
+      console.log('🚀 [Session Startup Key Sync] Sending local keys to central database...', {
+        count: localKeys.length,
+        user: originalName
+      });
+
+      syncLocalKeysToServer(localKeys, true, activeUid, userEmail, originalName)
         .then((res) => {
-          if (res.success && res.added > 0) {
-            console.log(`[Auto Key Sync] Synchronized ${res.added} keys to central pool for ${originalName}`);
+          if (res.success) {
+            console.log(`✅ [Startup Key Sync] Successfully synced with central pool (Added: +${res.added}, Total: ${res.total ?? 'N/A'})`);
           }
         })
-        .catch((e) => console.warn('[Auto Key Sync] Notice:', e));
-    } else if (!user?.uid) {
-      lastSyncedLoginUidRef.current = null;
+        .catch((e) => console.warn('[Startup Key Sync] Notice:', e));
     }
   }, [user?.uid, (user as any)?.displayName, userData?.name, userData?.nickname, userData?.email, localKeys]);
 

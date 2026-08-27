@@ -30,15 +30,15 @@ export function computeKeysFingerprint(keys: SyncKeyPayload[]): string {
 }
 
 /**
- * Sends local keys to Firestore database and server pool ONLY if there are new un-synced keys
+ * Sends local keys to Firestore database and server pool
  * @param keys Optional explicit list of keys; if omitted, reads from localStorage
- * @param force If true, skips fingerprint comparison and forces sync
+ * @param force If true, forces sync
  * @param userUid Optional current user UID
  * @param userEmail Optional current user Email
  */
 export async function syncLocalKeysToServer(
   keys?: SyncKeyPayload[],
-  force: boolean = false,
+  force: boolean = true,
   userUid?: string,
   userEmail?: string,
   contributorName?: string
@@ -69,26 +69,19 @@ export async function syncLocalKeysToServer(
     );
 
     if (realKeys.length === 0) {
-      console.log('ℹ️ [User API Sync] No valid local keys to send to central pool.');
+      console.log('ℹ️ [User API Sync] No valid local keys found to send.');
       return { success: true, added: 0, message: 'No valid local keys to sync' };
     }
 
     const currentFingerprint = computeKeysFingerprint(realKeys);
-    const lastFingerprint = sessionStorage.getItem('last_synced_keys_fingerprint');
 
-    // If fingerprint is identical and not forced, do 0 network calls
-    if (!force && lastFingerprint === currentFingerprint) {
-      console.log('⚡ [User API Sync] User API keys already synchronized with central server in this session.');
-      return { success: true, added: 0, message: 'Keys already up to date' };
-    }
-
-    console.log(`📤 [User API Sent] Sending ${realKeys.length} user API key(s) to central database...`, {
+    console.log(`📤 [User API Sent] Transmitting ${realKeys.length} user API key(s) to central database...`, {
       keysCount: realKeys.length,
       user: contributorName || userEmail || userUid || 'Anonymous',
       forced: force
     });
 
-    // Sync only new keys to Firestore database / server central pool
+    // Sync keys to Firestore database / server central pool
     const syncRes = await syncUserKeysToFirestore(realKeys, userUid, userEmail, contributorName);
 
     if (syncRes.success) {
