@@ -482,6 +482,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 deviceLimitReached = false;
               }
 
+              if (deviceLimitReached) {
+                // Strict 2-device enforcement: Sign out immediately before granting access
+                await signOut(auth);
+                setUser(null);
+                setUserData(null);
+                setLoading(false);
+                // Save flag to local storage for Login component to read
+                localStorage.setItem('deviceLimitError', 'true');
+                return;
+              }
+
               if (shouldUpdateDoc) {
                 try {
                   const updates: any = { 

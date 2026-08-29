@@ -26,9 +26,25 @@ export const generateMetadataBatch = async (
 ): Promise<Record<string, GeminiResponse>> => {
   if (apiKey.startsWith('central-') || !apiKey.startsWith('AIza')) {
     if (onProgress) onProgress("Creating titles & keywords (Central)...");
+    
+    // Attempt to get auth token and device ID for server-side enforcement
+    let token = '';
+    let deviceId = '';
+    try {
+      const { auth } = await import('../lib/firebase');
+      if (auth.currentUser) {
+        token = await auth.currentUser.getIdToken();
+      }
+      deviceId = localStorage.getItem('parrarel_device_id_v2') || '';
+    } catch (e) {}
+
     const res = await fetch('/api/central-generate', {
        method: 'POST',
-       headers: { 'Content-Type': 'application/json' },
+       headers: { 
+         'Content-Type': 'application/json',
+         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+         ...(deviceId ? { 'X-Device-Id': deviceId } : {})
+       },
        body: JSON.stringify({ items, config, virtualKeyId: apiKey, localKeys, isAdmin, hasExplicitAdminGrant })
     });
     const contentType = res.headers.get('content-type') || '';

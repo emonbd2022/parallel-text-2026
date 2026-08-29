@@ -11,6 +11,13 @@ export const Login: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  React.useEffect(() => {
+    if (localStorage.getItem('deviceLimitError') === 'true') {
+      setError('Device Limit Reached. Contact Admin for device reset');
+      localStorage.removeItem('deviceLimitError');
+    }
+  }, []);
+
   if (user) {
     return <Navigate to="/" replace />;
   }
