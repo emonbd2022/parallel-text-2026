@@ -574,3 +574,82 @@ export async function deduplicateCentralKeysOnServer(): Promise<{ success: boole
   }
   throw new Error(`Deduplication request failed with status ${res.status}`);
 }
+
+/**
+ * Tests a single central key by attempting to generate a stock photo title using a demo image.
+ */
+export async function testSingleCentralKey(
+  keyId: string,
+  base64Image: string,
+  model: string = 'gemini-3.1-flash-lite-preview'
+): Promise<{ success: boolean; title?: string; error?: string }> {
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
+    }
+
+    const res = await fetch('/api/admin/keys/test-single', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ keyId, base64Image, model })
+    });
+
+    const data = await res.json();
+    if (res.ok && data.success) {
+      return { success: true, title: data.title };
+    }
+    return { success: false, error: data.error || `HTTP ${res.status}: Failed to generate title` };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Network error while testing key' };
+  }
+}
+
+/**
+ * Deletes a batch of dead keys from Firestore and server storage.
+ */
+export async function deleteBatchCentralKeys(keyIds: string[]): Promise<void> {
+  if (!keyIds || keyIds.length === 0) return;
+  cachedCentralKeys = null;
+
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
+    }
+
+    await fetch('/api/admin/keys/delete-batch', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ keyIds })
+    });
+  } catch (e) {
+    console.log('Server batch delete warning:', e);
+  }
+
+  if (db) {
+    try {
+      const docRef = doc(db, 'central_keys', 'APIkeys');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const existingKeys: any[] = docSnap.data().keys || [];
+        const idSet = new Set(keyIds);
+        const filtered = existingKeys.filter((k: any) => !idSet.has(k.id));
+        await setDoc(docRef, {
+          keys: filtered,
+          totalCount: filtered.length,
+          updatedAt: new Date().toISOString(),
+          version: 1
+        }, { merge: true });
+        recordFirestoreWrite('central_keys', 1, 'deleteBatchCentralKeys:direct');
+      }
+    } catch (fsErr) {
+      console.log('Direct Firestore batch key delete notice:', fsErr);
+    }
+  }
+}
+

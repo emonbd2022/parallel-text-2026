@@ -10,6 +10,7 @@ import { AdminDashboard } from './pages/AdminDashboard';
 import { Pricing } from './pages/Pricing';
 import { Tutorial } from './pages/Tutorial';
 import { Layout } from './components/Layout';
+import { DeviceLimitModal } from './components/DeviceLimitModal';
 import { Cat } from 'lucide-react';
 import './index.css';
 import { registerSW } from 'virtual:pwa-register';
@@ -29,7 +30,7 @@ const ProtectedRoute = ({ children, adminOnly = false }: { children: React.React
       </div>
     </div>;
   if (!user) return <Navigate to="/login" replace />;
-  if (userData?.deviceLimitReached) return <div className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center text-red-500 font-bold text-xl"><h1 className="text-3xl mb-4">Device Limit Reached</h1><p>You can only use this account on up to 2 devices.</p></div>;
+  if (userData?.deviceLimitReached) return <DeviceLimitModal />;
   if (userData?.blocked) return <div className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center text-red-500 font-bold text-xl"><h1 className="text-3xl mb-4">Account Blocked</h1><p>Please contact support.</p></div>;
   if (adminOnly && userData?.role !== 'admin') return <Navigate to="/" replace />;
   
@@ -67,7 +68,7 @@ const PublicRoute = ({ children }: { children: React.ReactNode }) => {
          Waking up the cats...
       </div>
     </div>;
-  if (userData?.deviceLimitReached) return <div className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center text-red-500 font-bold text-xl"><h1 className="text-3xl mb-4">Device Limit Reached</h1><p>You can only use this account on up to 2 devices.</p></div>;
+  if (userData?.deviceLimitReached) return <DeviceLimitModal />;
   if (userData?.blocked) return <div className="h-screen w-screen bg-slate-950 flex flex-col items-center justify-center text-red-500 font-bold text-xl"><h1 className="text-3xl mb-4">Account Blocked</h1><p>Please contact support.</p></div>;
   
   return <Layout>{children}</Layout>;

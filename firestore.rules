@@ -81,12 +81,16 @@ service cloud.firestore {
             request.resource.data.credits >= 0 &&
             request.resource.data.credits <= 100 &&
             request.resource.data.totalProcessedImages is number &&
-            request.resource.data.totalProcessedImages == 0
+            request.resource.data.totalProcessedImages == 0 &&
+            (
+              !('deviceIds' in request.resource.data) ||
+              (request.resource.data.deviceIds is list && request.resource.data.deviceIds.size() <= 2)
+            )
           )
         );
 
       // Update: Enforces schema allowlist for ALL users.
-      // Normal users can ONLY update 'credits' (decrease/equal) and 'totalProcessedImages' (increase/equal).
+      // Normal users can update credits, processed counts, profile fields, and up to 2 registered deviceIds.
       allow update: if isAuthenticated() && 
         hasOnlyEssentialAccountFields() && 
         hasNoForbiddenLocalData() && 
@@ -94,7 +98,7 @@ service cloud.firestore {
           isAdmin() ||
           (
             request.auth.uid == userId &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages']) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages', 'deviceIds', 'lastActiveAt', 'nickname', 'name', 'photoURL']) &&
             (
               !('credits' in request.resource.data.diff(resource.data).affectedKeys()) ||
               (
@@ -109,6 +113,13 @@ service cloud.firestore {
                 request.resource.data.totalProcessedImages is number &&
                 request.resource.data.totalProcessedImages >= resource.data.totalProcessedImages &&
                 request.resource.data.totalProcessedImages >= 0
+              )
+            ) &&
+            (
+              !('deviceIds' in request.resource.data.diff(resource.data).affectedKeys()) ||
+              (
+                request.resource.data.deviceIds is list &&
+                request.resource.data.deviceIds.size() <= 2
               )
             )
           )

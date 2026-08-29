@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Key, Upload, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw, LogIn, AlertTriangle, Loader2 } from 'lucide-react';
+import { Key, Upload, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw, LogIn, AlertTriangle, Loader2, Sparkles, Clock, TrendingUp, HelpCircle, Info, ChevronRight } from 'lucide-react';
 import { ApiKey } from '../types';
 import { parseApiKeysCsv, CsvParseResult } from '../utils/csvKeyParser';
 import { ImportCsvModal } from './ImportCsvModal';
 import { syncLocalKeysToServer } from '../utils/keySync';
 import { useAuth } from '../contexts/AuthContext';
 import { validateGeminiApiKey } from '../services/geminiService';
+import { fetchServerCentralUsage, formatTimeUntilReset, CentralUsageStats, calculateLocalCentralLimit } from '../services/centralUsageService';
 
 interface Props {
   apiMode: 'local' | 'central';
@@ -81,6 +82,40 @@ export const ApiKeyManager: React.FC<Props> = ({
       }
     }
   }, [centralModeEnabled, apiMode, onChangeApiMode, onShowToast, isAdmin]);
+
+  // Central API Usage State
+  const [usageStats, setUsageStats] = useState<CentralUsageStats | null>(null);
+  const [isLoadingUsage, setIsLoadingUsage] = useState(false);
+
+  // Derive estimated fallback if server stats are loading
+  const localEstimatedLimits = calculateLocalCentralLimit(uniqueLocalKeysCount, isAdmin);
+
+  const loadUsageStats = async () => {
+    try {
+      setIsLoadingUsage(true);
+      const token = user ? await (user as any).getIdToken?.() : undefined;
+      const rawLocalKeyStrings = sourceLocalKeys.map(k => k.key).filter(Boolean);
+      const stats = await fetchServerCentralUsage(rawLocalKeyStrings, token, {
+        email: user?.email || userData?.email,
+        uid: (user as any)?.uid || userData?.uid,
+        role: userData?.role,
+        isAdmin
+      });
+      if (stats) {
+        setUsageStats(stats);
+      }
+    } catch (e) {
+      console.warn('Could not fetch usage stats:', e);
+    } finally {
+      setIsLoadingUsage(false);
+    }
+  };
+
+  useEffect(() => {
+    loadUsageStats();
+    const interval = setInterval(loadUsageStats, 20000);
+    return () => clearInterval(interval);
+  }, [uniqueLocalKeysCount, apiMode, user, userData, isAdmin]);
 
   // Update time for cooldown countdowns
   useEffect(() => {
@@ -317,6 +352,17 @@ export const ApiKeyManager: React.FC<Props> = ({
             Add at least <strong>4 unique, valid Gemini API keys</strong> to your local pool to automatically unlock the shared, high-speed Central API pool. No admin approval required.
           </p>
 
+          {/* Allocation preview formula */}
+          <div className="p-2.5 bg-slate-950/70 rounded-lg border border-purple-500/20 flex items-center justify-between text-[11px]">
+            <span className="text-purple-300 font-medium flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+              Unlock Reward:
+            </span>
+            <span className="font-mono text-emerald-400 font-bold">
+              4 Keys = 200 Images/day (400 requests)
+            </span>
+          </div>
+
           {/* Visual Progress Bar */}
           <div className="space-y-1.5">
             <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-700/50">
@@ -363,9 +409,10 @@ export const ApiKeyManager: React.FC<Props> = ({
       )}
 
       {apiMode === 'central' ? (
-        <div className="space-y-4">
-          <div className="p-5 bg-gradient-to-br from-purple-950/40 via-slate-900/60 to-slate-900/90 rounded-xl border border-purple-500/30">
-            <div className="flex items-center justify-between mb-3">
+        <div className="space-y-5">
+          {/* Main Central Pool Status Card */}
+          <div className="p-5 bg-gradient-to-br from-purple-950/40 via-slate-900/60 to-slate-900/90 rounded-xl border border-purple-500/30 space-y-4">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-purple-600/20 rounded-xl flex items-center justify-center border border-purple-500/30 text-purple-400">
                   <Zap className="w-5 h-5" />
@@ -385,16 +432,151 @@ export const ApiKeyManager: React.FC<Props> = ({
               {onRefreshCentralKeys && (
                 <button
                   type="button"
-                  onClick={onRefreshCentralKeys}
-                  className="p-2 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 rounded-xl text-purple-300 transition-colors shrink-0"
-                  title="Refresh Central Pool"
+                  onClick={() => {
+                    if (onRefreshCentralKeys) onRefreshCentralKeys();
+                    loadUsageStats();
+                  }}
+                  className="p-2 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 rounded-xl text-purple-300 transition-colors shrink-0 cursor-pointer"
+                  title="Refresh Central Pool & Usage"
                 >
-                  <RefreshCw className="w-4 h-4" />
+                  <RefreshCw className={`w-4 h-4 ${isLoadingUsage ? 'animate-spin' : ''}`} />
                 </button>
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-3 mb-4">
+            {/* Authoritative Daily Usage & Quota Box */}
+            {(() => {
+              const totalReqs = usageStats ? usageStats.totalRequests : localEstimatedLimits.totalRequests;
+              const usedReqs = usageStats ? usageStats.usedRequests : 0;
+              const remainingReqs = usageStats ? usageStats.remainingRequests : totalReqs;
+              const totalImgs = usageStats ? usageStats.totalImages : localEstimatedLimits.totalImages;
+              const remainingImgs = usageStats ? usageStats.remainingImages : totalImgs;
+              const isExhausted = usageStats?.isLimitReached || (totalReqs > 0 && remainingReqs <= 0);
+              const nextReset = usageStats?.nextResetMs || (Date.now() + 1000 * 60 * 60 * 8);
+              const timeUntilResetStr = formatTimeUntilReset(nextReset);
+              const percentageUsed = totalReqs > 0 ? Math.min(100, Math.round((usedReqs / totalReqs) * 100)) : 0;
+
+              return (
+                <div className="p-4 bg-slate-950/80 rounded-xl border border-purple-500/20 space-y-3.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <TrendingUp className="w-4 h-4 text-purple-400" />
+                      <span className="text-xs font-bold text-white tracking-wide uppercase">
+                        Central API Daily Allocation
+                      </span>
+                    </div>
+                    <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
+                      isExhausted 
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/30' 
+                        : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                    }`}>
+                      {isExhausted ? 'Quota Exhausted' : 'Allocation Active'}
+                    </span>
+                  </div>
+
+                  {/* High Visibility Metrics Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                    <div className="p-3 bg-slate-900/90 rounded-lg border border-slate-800">
+                      <span className="text-[11px] text-slate-400 block mb-0.5 font-medium">Images Remaining</span>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className={`text-xl font-bold font-mono ${isExhausted ? 'text-rose-400' : 'text-emerald-400'}`}>
+                          {remainingImgs}
+                        </span>
+                        <span className="text-xs text-slate-500 font-mono">/ {totalImgs}</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-slate-900/90 rounded-lg border border-slate-800">
+                      <span className="text-[11px] text-slate-400 block mb-0.5 font-medium">Requests Available</span>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-xl font-bold font-mono text-purple-300">
+                          {remainingReqs}
+                        </span>
+                        <span className="text-xs text-slate-500 font-mono">/ {totalReqs}</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-slate-900/90 rounded-lg border border-slate-800 col-span-2 sm:col-span-1">
+                      <span className="text-[11px] text-slate-400 block mb-0.5 font-medium">Local Key Factor</span>
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-xl font-bold font-mono text-amber-400">
+                          {isAdmin ? 'Admin Unlimited' : `${uniqueLocalKeysCount} Keys`}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Usage Progress Meter */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between items-center text-[11px] text-slate-400">
+                      <span>Used: <strong className="text-slate-200 font-mono">{usedReqs}</strong> requests ({percentageUsed}%)</span>
+                      <span>Capacity: <strong className="text-slate-200 font-mono">{totalReqs}</strong> req / day</span>
+                    </div>
+                    <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                      <div 
+                        className={`h-full transition-all duration-500 ease-out ${
+                          isExhausted
+                            ? 'bg-rose-500'
+                            : percentageUsed > 80
+                            ? 'bg-amber-500'
+                            : 'bg-gradient-to-r from-purple-500 to-emerald-400'
+                        }`}
+                        style={{ width: `${percentageUsed}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Reset Banner & Countdown */}
+                  <div className="p-2.5 bg-purple-950/30 rounded-lg border border-purple-900/30 flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2 text-slate-300">
+                      <Clock className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                      <span>Resets daily at <strong>2:00 PM BST (GMT+6)</strong></span>
+                    </div>
+                    <span className="font-mono text-purple-300 font-bold bg-purple-900/40 px-2 py-0.5 rounded border border-purple-700/40 text-[11px]">
+                      {timeUntilResetStr}
+                    </span>
+                  </div>
+
+                  {/* Allocation Formula Note */}
+                  <div className="text-[11px] text-slate-400/90 leading-relaxed bg-slate-900/40 p-2.5 rounded-lg border border-slate-800/80">
+                    <span className="text-purple-300 font-semibold">Allocation Rule: </span>
+                    1 Local Key = 100 Central API requests = 50 images per day. 
+                    {isAdmin ? (
+                      <span className="text-amber-400 font-medium"> (Administrator access granted)</span>
+                    ) : (
+                      <span className="text-slate-300 font-mono"> Current: {uniqueLocalKeysCount} Keys × 50 Images = {totalImgs} Images/day</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Motivation Upgrade Card */}
+            {!isAdmin && (
+              <div className="p-4 bg-gradient-to-r from-purple-900/30 via-indigo-950/40 to-slate-900/90 rounded-xl border border-purple-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 font-bold text-white text-xs">
+                    <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+                    Want more Central API daily allowance?
+                  </div>
+                  <p className="text-[11px] text-slate-300">
+                    Add <strong>2 more local API keys</strong> to automatically expand capacity by <strong className="text-emerald-400">+100 images/day (+200 requests)</strong>!
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChangeApiMode('local');
+                    setShowInput(true);
+                  }}
+                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg border border-purple-400/30 shadow-md shadow-purple-950/50 flex items-center gap-1.5 shrink-0 cursor-pointer transition-all active:scale-95"
+                >
+                  <Key className="w-3.5 h-3.5" /> + Add Local Keys
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
               <div className="p-3 bg-slate-900/80 rounded-xl border border-slate-800">
                 <span className="text-slate-400 text-[11px] block mb-1">Active Worker Nodes</span>
                 <span className="text-xl font-bold text-white font-mono flex items-center gap-1.5">

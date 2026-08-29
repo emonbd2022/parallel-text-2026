@@ -61,9 +61,89 @@ export interface StoredKey {
 }
 
 let centralKeys: { id: string; key: string }[] = [];
+let cachedFirestoreStoredKeys: StoredKey[] | null = null;
 let lastCentralKeysFetchTime = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes TTL
 let centralKeyRefreshPromise: Promise<{ id: string; key: string }[]> | null = null;
+
+let cachedSettings: { centralModeEnabled: boolean } | null = null;
+let lastSettingsFetchTime = 0;
+const SETTINGS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes TTL
+let settingsRefreshPromise: Promise<{ centralModeEnabled: boolean }> | null = null;
+
+const USAGE_DATA_FILE = path.join(process.cwd(), 'central-usage.json');
+
+interface UserDailyUsage {
+    cycleId: string;
+    usedRequests: number;
+    lastUpdated: number;
+}
+
+// Map of userId/email/ip -> UserDailyUsage
+const userDailyUsageMap = new Map<string, UserDailyUsage>();
+
+function loadDailyUsage(): void {
+    try {
+        if (fs.existsSync(USAGE_DATA_FILE)) {
+            const raw = fs.readFileSync(USAGE_DATA_FILE, 'utf8');
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                const currentCycle = getBangladeshDailyCycleId();
+                for (const [key, val] of Object.entries(parsed)) {
+                    const item = val as any;
+                    if (item && item.cycleId === currentCycle && typeof item.usedRequests === 'number') {
+                        userDailyUsageMap.set(key, {
+                            cycleId: item.cycleId,
+                            usedRequests: item.usedRequests,
+                            lastUpdated: item.lastUpdated || Date.now()
+                        });
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        // Safe fallback
+    }
+}
+
+let saveUsageTimeout: NodeJS.Timeout | null = null;
+function saveDailyUsageDebounced(): void {
+    if (saveUsageTimeout) clearTimeout(saveUsageTimeout);
+    saveUsageTimeout = setTimeout(() => {
+        try {
+            if (isProductionEnv() && !!process.env.VERCEL) return;
+            const obj: Record<string, UserDailyUsage> = {};
+            for (const [k, v] of userDailyUsageMap.entries()) {
+                obj[k] = v;
+            }
+            fs.writeFileSync(USAGE_DATA_FILE, JSON.stringify(obj, null, 2));
+        } catch (e) {
+            // Ignore on read-only environments
+        }
+    }, 1000);
+}
+
+/**
+ * Bangladesh Time is GMT+6.
+ * Authoritative Central API cycle resets every day at 2:00 PM BST (14:00 BST = 08:00 UTC).
+ * Any timestamp between 08:00:00 UTC Day D and 07:59:59.999 UTC Day D+1 belongs to the same daily cycle.
+ */
+export function getBangladeshDailyCycleId(timestampMs = Date.now()): string {
+    const shifted = new Date(timestampMs - 8 * 60 * 60 * 1000);
+    const year = shifted.getUTCFullYear();
+    const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(shifted.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+export function getNextResetTimestamp(timestampMs = Date.now()): number {
+    const now = new Date(timestampMs);
+    const todayReset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 8, 0, 0, 0));
+    if (now.getTime() < todayReset.getTime()) {
+        return todayReset.getTime();
+    }
+    return todayReset.getTime() + 24 * 60 * 60 * 1000;
+}
 
 const isProductionEnv = () => {
     return process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
@@ -102,7 +182,6 @@ export function deduplicateKeysByValue(keys: StoredKey[]): StoredKey[] {
 }
 
 function loadStoredKeys(): StoredKey[] {
-    // In production, NEVER fall back to hardcoded/seed keys.
     try {
         const locations = [
             path.join(process.cwd(), 'central-keys.json'),
@@ -112,7 +191,7 @@ function loadStoredKeys(): StoredKey[] {
             if (fs.existsSync(loc)) {
                 const data = fs.readFileSync(loc, 'utf8');
                 const parsed = JSON.parse(data);
-                if (Array.isArray(parsed)) {
+                if (Array.isArray(parsed) && parsed.length > 0) {
                     return deduplicateKeysByValue(parsed);
                 }
             }
@@ -126,8 +205,8 @@ function loadStoredKeys(): StoredKey[] {
 
 function saveStoredKeys(keys: StoredKey[]) {
     try {
-        if (isProductionEnv()) {
-            // Do not attempt to write to local filesystem on Vercel/production (read-only filesystem)
+        if (isProductionEnv() && !!process.env.VERCEL) {
+            // Do not attempt to write to local filesystem on Vercel
             return;
         }
         fs.writeFileSync(DATA_FILE, JSON.stringify(keys, null, 2));
@@ -136,19 +215,47 @@ function saveStoredKeys(keys: StoredKey[]) {
     }
 }
 
+// Initialize in-memory keys and usage from persistent disk immediately on server boot
+try {
+    const initialDiskKeys = loadStoredKeys();
+    if (initialDiskKeys.length > 0) {
+        centralKeys = initialDiskKeys.filter(k => k.enabled !== false).map(data => {
+            let decryptedKey = '';
+            try {
+                decryptedKey = decrypt(data.encryptedKey || (data as any).key);
+            } catch (e) {
+                if (data.encryptedKey && (data.encryptedKey.startsWith('AIza') || data.encryptedKey.startsWith('AQ.'))) {
+                    decryptedKey = data.encryptedKey;
+                }
+            }
+            if (!decryptedKey && (data as any).key) {
+                decryptedKey = (data as any).key;
+            }
+            return { id: data.id, key: decryptedKey };
+        }).filter(k => k.key && k.key.length > 0);
+        console.log(`[Server Boot] Loaded ${centralKeys.length} central API keys from persistent central-keys.json.`);
+    }
+    loadDailyUsage();
+} catch (e) {
+    console.error("[Server Boot] Init error:", e);
+}
+
 /**
  * Fetches central keys from Firestore single document central_keys/APIkeys via REST API
- * Returns:
- * - StoredKey[] (array of keys, or [] if document has 0 keys or does not exist)
- * - null (if Firestore is unreachable or network error)
+ * Cached with CACHE_TTL_MS to eliminate redundant Firestore reads.
  */
-async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | null> {
+async function fetchKeysFromFirestore(idToken?: string, forceRefresh = false): Promise<StoredKey[] | null> {
+    const now = Date.now();
+    if (!forceRefresh && cachedFirestoreStoredKeys !== null && (now - lastCentralKeysFetchTime < CACHE_TTL_MS)) {
+        return cachedFirestoreStoredKeys;
+    }
+
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
     const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
     const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
 
     if (!projectId) {
-        return null;
+        return cachedFirestoreStoredKeys;
     }
 
     try {
@@ -162,14 +269,16 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
         if (!resp.ok) {
             if (resp.status === 404) {
                 // Authoritative document does not exist -> strictly 0 keys
+                cachedFirestoreStoredKeys = [];
+                lastCentralKeysFetchTime = Date.now();
                 return [];
             }
             if (resp.status === 403 && !idToken) {
                 // Unauthenticated server-side probe on protected collection
-                return null;
+                return cachedFirestoreStoredKeys;
             }
             console.log(`[Server] Firestore REST fetch status ${resp.status}`);
-            return null;
+            return cachedFirestoreStoredKeys;
         }
         const data = (await resp.json()) as any;
         const fields = data.fields || {};
@@ -177,6 +286,8 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
 
         if (rawKeysArray.length === 0) {
             // Authoritative document contains 0 keys
+            cachedFirestoreStoredKeys = [];
+            lastCentralKeysFetchTime = Date.now();
             return [];
         }
 
@@ -229,10 +340,13 @@ async function fetchKeysFromFirestore(idToken?: string): Promise<StoredKey[] | n
                 });
             }
         }
-        return deduplicateKeysByValue(items);
+        const deduplicated = deduplicateKeysByValue(items);
+        cachedFirestoreStoredKeys = deduplicated;
+        lastCentralKeysFetchTime = Date.now();
+        return deduplicated;
     } catch (err) {
         console.log("[Server] Notice fetching Firestore central_keys/APIkeys:", err);
-        return null;
+        return cachedFirestoreStoredKeys;
     }
 }
 
@@ -313,6 +427,8 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
 
         if (resp.ok) {
             console.log(`[Firestore Write: 1] Successfully saved ${deduplicatedKeys.length} central keys to central_keys/APIkeys document.`);
+            cachedFirestoreStoredKeys = deduplicatedKeys;
+            lastCentralKeysFetchTime = Date.now();
             return true;
         } else {
             const errText = await resp.text();
@@ -336,7 +452,7 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
 async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<{ id: string; key: string }[]> {
     const now = Date.now();
     // Return warm cache if valid
-    if (!forceRefresh && (now - lastCentralKeysFetchTime < CACHE_TTL_MS)) {
+    if (!forceRefresh && (now - lastCentralKeysFetchTime < CACHE_TTL_MS) && cachedFirestoreStoredKeys !== null) {
         return centralKeys;
     }
 
@@ -348,26 +464,54 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
     centralKeyRefreshPromise = (async () => {
         try {
             console.log(`[Server] Performing Central API registry sync (forceRefresh=${forceRefresh})...`);
+            const diskKeys = loadStoredKeys();
             
-            // 1. Fetch from authoritative Firestore registry document
-            const firestoreKeys = await fetchKeysFromFirestore(idToken);
+            // 1. Fetch from authoritative Firestore registry document (with single read caching)
+            const firestoreKeys = await fetchKeysFromFirestore(idToken, forceRefresh);
 
             // If Firestore answered with an authoritative document
             if (firestoreKeys !== null) {
                 if (firestoreKeys.length === 0) {
-                    // Authoritative registry is EMPTY -> clear in-memory cache and return 0 keys
+                    if (diskKeys.length > 0) {
+                        console.log(`[Server] Firestore registry doc is empty. Seeding with ${diskKeys.length} persistent disk keys...`);
+                        saveKeysToFirestoreDocument(diskKeys, idToken).catch(e => console.error("Firestore seed error:", e));
+                        const active = diskKeys.filter(k => k.enabled !== false).map(data => {
+                            let decryptedKey = '';
+                            try {
+                                decryptedKey = decrypt(data.encryptedKey || (data as any).key);
+                            } catch (e) {
+                                if (data.encryptedKey && (data.encryptedKey.startsWith('AIza') || data.encryptedKey.startsWith('AQ.'))) {
+                                    decryptedKey = data.encryptedKey;
+                                }
+                            }
+                            if (!decryptedKey && (data as any).key) {
+                                decryptedKey = (data as any).key;
+                            }
+                            return { id: data.id, key: decryptedKey };
+                        }).filter(k => k.key && k.key.length > 0);
+                        centralKeys = active;
+                        cachedFirestoreStoredKeys = diskKeys;
+                        lastCentralKeysFetchTime = Date.now();
+                        return centralKeys;
+                    }
+                    // Both are empty
                     centralKeys = [];
+                    cachedFirestoreStoredKeys = [];
                     lastCentralKeysFetchTime = Date.now();
-                    saveStoredKeys([]);
                     console.log(`[Server] Authoritative Central API registry is empty: 0 keys available.`);
                     return [];
                 }
 
-                // Authoritative registry has keys -> deduplicate by plaintext key value
-                const deduplicated = deduplicateKeysByValue(firestoreKeys);
-                saveStoredKeys(deduplicated);
+                // Authoritative registry has keys -> merge and deduplicate with disk keys
+                const merged = deduplicateKeysByValue([...firestoreKeys, ...diskKeys]);
+                saveStoredKeys(merged);
 
-                const active = deduplicated.filter(k => k.enabled !== false).map(data => {
+                if (merged.length > firestoreKeys.length) {
+                    // Sync any disk-only keys back to Firestore document
+                    saveKeysToFirestoreDocument(merged, idToken).catch(e => console.error("Firestore sync back error:", e));
+                }
+
+                const active = merged.filter(k => k.enabled !== false).map(data => {
                     let decryptedKey = '';
                     try {
                         decryptedKey = decrypt(data.encryptedKey || (data as any).key);
@@ -383,6 +527,7 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                 }).filter(k => k.key && k.key.length > 0);
 
                 centralKeys = active;
+                cachedFirestoreStoredKeys = merged;
                 lastCentralKeysFetchTime = Date.now();
                 console.log(`[Server] Central API key registry active count: ${centralKeys.length} nodes`);
                 return centralKeys;
@@ -391,16 +536,8 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
             // If Firestore fetch was null (e.g. unauthenticated probe or network glitch)
             lastCentralKeysFetchTime = Date.now();
 
-            if (isProductionEnv()) {
-                // In production: NEVER load hardcoded seed keys.
-                // Keep current in-memory cache if any, otherwise return 0 keys.
-                return centralKeys;
-            }
-
-            // In development only (if explicit dev flag enabled)
-            if (isDevSeedEnabled()) {
-                const devKeys = loadStoredKeys();
-                const active = devKeys.filter(k => k.enabled !== false).map(data => {
+            if (diskKeys.length > 0) {
+                const active = diskKeys.filter(k => k.enabled !== false).map(data => {
                     let decryptedKey = '';
                     try {
                         decryptedKey = decrypt(data.encryptedKey || (data as any).key);
@@ -409,18 +546,19 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                             decryptedKey = data.encryptedKey;
                         }
                     }
+                    if (!decryptedKey && (data as any).key) {
+                        decryptedKey = (data as any).key;
+                    }
                     return { id: data.id, key: decryptedKey };
                 }).filter(k => k.key && k.key.length > 0);
                 centralKeys = active;
+                cachedFirestoreStoredKeys = diskKeys;
                 return centralKeys;
             }
 
             return centralKeys;
         } catch (error) {
             console.log("[Server] Error in syncCentralKeys:", error);
-            if (isProductionEnv() && centralKeys.length === 0) {
-                return [];
-            }
             return centralKeys;
         } finally {
             centralKeyRefreshPromise = null;
@@ -432,7 +570,113 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
 
 function invalidateCentralCache() {
     lastCentralKeysFetchTime = 0;
+    cachedFirestoreStoredKeys = null;
     console.log('[Server] Central API registry cache invalidated (event-driven).');
+}
+
+/**
+ * Authoritative Identity Resolver for Usage Tracking
+ */
+function getUserIdentity(req: express.Request, bodyUser?: any): { id: string; email?: string; isAdmin: boolean } {
+    const authHeader = req.headers.authorization;
+    const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+    let email = bodyUser?.email || '';
+    let uid = bodyUser?.uid || '';
+    let isAdmin = false;
+
+    if (idToken) {
+        try {
+            const parts = idToken.split('.');
+            if (parts.length === 3) {
+                const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+                if (payload.email) email = payload.email;
+                if (payload.user_id || payload.sub) uid = payload.user_id || payload.sub;
+                if (payload.email === 'titaniumfact97@gmail.com' || payload.email === 'reactoremon2022@gmail.com' || payload.role === 'admin' || payload.admin === true) {
+                    isAdmin = true;
+                }
+            }
+        } catch {}
+    }
+
+    if (bodyUser?.isAdmin || bodyUser?.role === 'admin' || bodyUser?.role === 'superadmin' || email === 'titaniumfact97@gmail.com' || email === 'reactoremon2022@gmail.com') {
+        isAdmin = true;
+    }
+
+    const id = uid || email || (req.ip ? `ip_${req.ip}` : 'anonymous_user');
+    return { id, email, isAdmin };
+}
+
+/**
+ * Calculates user Central API allowance based on local API keys:
+ * RULE:
+ * 1 Local API Key = 100 Central API requests / 50 Images per day
+ * Formula:
+ * Daily Central Requests = Local API Key Count × 100
+ * Daily Central Images = Local API Key Count × 50
+ */
+function getUserCentralLimit(localKeys: any[], isAdmin: boolean): { localKeyCount: number; maxRequests: number; maxImages: number } {
+    let localKeyCount = 0;
+    if (Array.isArray(localKeys)) {
+        const rawKeyList = localKeys.map((k: any) => typeof k === 'string' ? k.trim() : (typeof k?.key === 'string' ? k.key.trim() : '')).filter(Boolean);
+        const uniqueKeys = new Set(rawKeyList.filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
+        localKeyCount = uniqueKeys.size;
+    }
+
+    if (isAdmin) {
+        const maxReqs = Math.max(50000, localKeyCount * 100);
+        return { localKeyCount, maxRequests: maxReqs, maxImages: Math.floor(maxReqs / 2) };
+    }
+
+    const maxRequests = localKeyCount * 100;
+    const maxImages = localKeyCount * 50;
+    return { localKeyCount, maxRequests, maxImages };
+}
+
+/**
+ * Authoritatively verifies if user has quota available for this request
+ */
+function checkUserQuota(userId: string, localKeys: any[], isAdmin: boolean, requestsToConsume = 1) {
+    const cycleId = getBangladeshDailyCycleId();
+    const nextResetMs = getNextResetTimestamp();
+    const resetTime = new Date(nextResetMs).toISOString();
+    const { localKeyCount, maxRequests, maxImages } = getUserCentralLimit(localKeys, isAdmin);
+
+    let usage = userDailyUsageMap.get(userId);
+    if (!usage || usage.cycleId !== cycleId) {
+        usage = { cycleId, usedRequests: 0, lastUpdated: Date.now() };
+        userDailyUsageMap.set(userId, usage);
+    }
+
+    const usedRequests = usage.usedRequests;
+    const remainingRequests = Math.max(0, maxRequests - usedRequests);
+    const remainingImages = Math.floor(remainingRequests / 2);
+    const allowed = maxRequests > 0 && (usedRequests + requestsToConsume <= maxRequests);
+
+    return {
+        allowed,
+        cycleId,
+        usedRequests,
+        totalRequests: maxRequests,
+        remainingRequests,
+        localKeyCount,
+        totalImages: maxImages,
+        remainingImages,
+        isLimitReached: usedRequests >= maxRequests,
+        resetTime,
+        nextResetMs
+    };
+}
+
+function recordUserUsage(userId: string, requestsConsumed = 1) {
+    const cycleId = getBangladeshDailyCycleId();
+    let usage = userDailyUsageMap.get(userId);
+    if (!usage || usage.cycleId !== cycleId) {
+        usage = { cycleId, usedRequests: 0, lastUpdated: Date.now() };
+    }
+    usage.usedRequests += requestsConsumed;
+    usage.lastUpdated = Date.now();
+    userDailyUsageMap.set(userId, usage);
+    saveDailyUsageDebounced();
 }
 
 export const app = express();
@@ -486,26 +730,43 @@ apiRouter.get("/central-keys-capacity", async (req, res) => {
     });
 });
 
-async function fetchSettingsFromFirestore(): Promise<{ centralModeEnabled: boolean }> {
-    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-    const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-    const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
-    let settings = { centralModeEnabled: true };
-    if (!projectId) return settings;
-    try {
-        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/settings/general${apiKey ? `?key=${apiKey}` : ''}`;
-        const resp = await fetch(url);
-        if (resp.ok) {
-            const data = await resp.json();
-            const fields = data.fields || {};
-            if (fields.centralModeEnabled && fields.centralModeEnabled.booleanValue !== undefined) {
-                settings.centralModeEnabled = fields.centralModeEnabled.booleanValue;
-            }
-        }
-    } catch (e) {
-        // Safe fallback
+async function fetchSettingsFromFirestore(forceRefresh = false): Promise<{ centralModeEnabled: boolean }> {
+    const now = Date.now();
+    if (!forceRefresh && cachedSettings !== null && (now - lastSettingsFetchTime < SETTINGS_CACHE_TTL_MS)) {
+        return cachedSettings;
     }
-    return settings;
+
+    if (settingsRefreshPromise) {
+        return await settingsRefreshPromise;
+    }
+
+    settingsRefreshPromise = (async () => {
+        const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+        const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+        const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
+        let settings = cachedSettings || { centralModeEnabled: true };
+        if (!projectId) return settings;
+        try {
+            const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/settings/general${apiKey ? `?key=${apiKey}` : ''}`;
+            const resp = await fetch(url);
+            if (resp.ok) {
+                const data = await resp.json();
+                const fields = data.fields || {};
+                if (fields.centralModeEnabled && fields.centralModeEnabled.booleanValue !== undefined) {
+                    settings = { centralModeEnabled: fields.centralModeEnabled.booleanValue };
+                }
+                cachedSettings = settings;
+                lastSettingsFetchTime = Date.now();
+            }
+        } catch (e) {
+            // Safe fallback
+        } finally {
+            settingsRefreshPromise = null;
+        }
+        return settings;
+    })();
+
+    return await settingsRefreshPromise;
 }
 
 // 1-Read Central API Keys Pool for Runtime Client Processing (Safe Virtual Node Handles Only)
@@ -624,29 +885,74 @@ apiRouter.post("/central-keys-pool-sync", async (req, res) => {
     }
 });
 
+// Endpoint to query authoritative Central API daily usage and remaining allowances
+apiRouter.post("/central-usage", async (req, res) => {
+    try {
+        const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+        const { localKeys, user, isAdmin: adminFlag } = body;
+        const identity = getUserIdentity(req, user);
+        const isAdmin = identity.isAdmin || adminFlag === true;
+
+        const quota = checkUserQuota(identity.id, localKeys, isAdmin, 0);
+        res.json({
+            success: true,
+            ...quota
+        });
+    } catch (e: any) {
+        console.error("Error fetching central usage:", e);
+        res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+});
+
+apiRouter.get("/central-usage", async (req, res) => {
+    try {
+        const identity = getUserIdentity(req);
+        const quota = checkUserQuota(identity.id, [], identity.isAdmin, 0);
+        res.json({
+            success: true,
+            ...quota
+        });
+    } catch (e: any) {
+        res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+});
+
 apiRouter.post("/central-generate", async (req, res) => {
     try {
         const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-        const { items = [], config = {}, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = body;
+        const { items = [], config = {}, virtualKeyId: vId, nodeId, localKeys, isAdmin: adminFlag, hasExplicitAdminGrant, user } = body;
         const virtualKeyId = vId || nodeId;
 
+        const identity = getUserIdentity(req, user);
+        const isAdmin = identity.isAdmin || adminFlag === true || hasExplicitAdminGrant === true;
+
         const settings = await fetchSettingsFromFirestore();
-        if (!settings.centralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
+        if (!settings.centralModeEnabled && !isAdmin) {
             throw new Error("Central Mode is disabled by administrator.");
         }
         
         // Central API Eligibility Check
         let isEligible = false;
-        if (isAdmin || hasExplicitAdminGrant) {
+        if (isAdmin) {
             isEligible = true;
         } else if (Array.isArray(localKeys)) {
-            const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
+            const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
             if (uniqueKeys.size >= 4) {
                 isEligible = true;
             }
         }
         if (!isEligible) {
             throw new Error("Central API access requires at least 4 unique local API keys or Administrator approval.");
+        }
+
+        // Authoritative Central API Daily Quota Enforcement
+        const quota = checkUserQuota(identity.id, localKeys, isAdmin, 1);
+        if (!quota.allowed) {
+            return res.status(429).json({
+                error: "DAILY_CENTRAL_LIMIT_REACHED",
+                message: `Today's Central API daily limit has been reached (${quota.usedRequests}/${quota.totalRequests} requests used). Allowance resets at 2:00 PM Bangladesh Time (GMT+6).`,
+                usage: quota
+            });
         }
 
         const apiKey = await getRealKey(virtualKeyId);
@@ -692,7 +998,7 @@ Return a strictly valid JSON array where each object contains:
         promptParts.push({ text: promptText });
 
         const response = await ai.models.generateContent({
-            model: config.model || 'gemini-2.0-flash',
+            model: config.model || 'gemini-3.1-flash-lite-preview',
             contents: promptParts,
             config: {
                 systemInstruction: systemInstruction,
@@ -739,6 +1045,9 @@ Return a strictly valid JSON array where each object contains:
             }
         });
 
+        // Record successful request consumption
+        recordUserUsage(identity.id, 1);
+
         res.json(results);
     } catch (error: any) {
         console.error("Central API Error:", error);
@@ -749,26 +1058,39 @@ Return a strictly valid JSON array where each object contains:
 apiRouter.post("/central-category", async (req, res) => {
     try {
         const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-        const { items, model, virtualKeyId: vId, nodeId, localKeys, isAdmin, hasExplicitAdminGrant } = body;
+        const { items, model, virtualKeyId: vId, nodeId, localKeys, isAdmin: adminFlag, hasExplicitAdminGrant, user } = body;
         const virtualKeyId = vId || nodeId;
 
+        const identity = getUserIdentity(req, user);
+        const isAdmin = identity.isAdmin || adminFlag === true || hasExplicitAdminGrant === true;
+
         const settings = await fetchSettingsFromFirestore();
-        if (!settings.centralModeEnabled && !isAdmin && !hasExplicitAdminGrant) {
+        if (!settings.centralModeEnabled && !isAdmin) {
             throw new Error("Central Mode is disabled by administrator.");
         }
         
         // Central API Eligibility Check
         let isEligible = false;
-        if (isAdmin || hasExplicitAdminGrant) {
+        if (isAdmin) {
             isEligible = true;
         } else if (Array.isArray(localKeys)) {
-            const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => k.startsWith('AIza') && k.length > 20));
+            const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
             if (uniqueKeys.size >= 4) {
                 isEligible = true;
             }
         }
         if (!isEligible) {
             throw new Error("Central API access requires at least 4 unique local API keys or Administrator approval.");
+        }
+
+        // Authoritative Central API Daily Quota Enforcement
+        const quota = checkUserQuota(identity.id, localKeys, isAdmin, 1);
+        if (!quota.allowed) {
+            return res.status(429).json({
+                error: "DAILY_CENTRAL_LIMIT_REACHED",
+                message: `Today's Central API daily limit has been reached (${quota.usedRequests}/${quota.totalRequests} requests used). Allowance resets at 2:00 PM Bangladesh Time (GMT+6).`,
+                usage: quota
+            });
         }
 
         const apiKey = await getRealKey(virtualKeyId);
@@ -840,7 +1162,7 @@ Return a strictly valid JSON array where each object contains:
         });
 
         const response = await ai.models.generateContent({
-            model: model || 'gemini-2.0-flash',
+            model: model || 'gemini-3.1-flash-lite-preview',
             contents: promptParts,
             config: {
                 systemInstruction: systemInstruction,
@@ -880,6 +1202,9 @@ Return a strictly valid JSON array where each object contains:
                 };
             }
         });
+
+        // Record successful request consumption
+        recordUserUsage(identity.id, 1);
 
         res.json(results);
     } catch (error: any) {
@@ -1090,8 +1415,7 @@ apiRouter.post("/admin/keys/refresh", async (req, res) => {
         const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
         invalidateCentralCache();
         await syncCentralKeys(true, idToken);
-        const firestoreKeys = await fetchKeysFromFirestore(idToken);
-        const storedKeys = firestoreKeys !== null ? firestoreKeys : (isProductionEnv() ? [] : loadStoredKeys());
+        const storedKeys = cachedFirestoreStoredKeys !== null ? [...cachedFirestoreStoredKeys] : (isProductionEnv() ? [] : loadStoredKeys());
         storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
         
         const keys = storedKeys.map(data => {
@@ -1152,8 +1476,7 @@ apiRouter.get("/admin/keys", async (req, res) => {
         }
         await syncCentralKeys(force, idToken);
         
-        const firestoreKeys = await fetchKeysFromFirestore(idToken);
-        const storedKeys = firestoreKeys !== null ? firestoreKeys : (isProductionEnv() ? [] : loadStoredKeys());
+        const storedKeys = cachedFirestoreStoredKeys !== null ? [...cachedFirestoreStoredKeys] : (isProductionEnv() ? [] : loadStoredKeys());
         
         // Sort by createdAt descending
         storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -1230,13 +1553,14 @@ apiRouter.get("/admin/keys/export-csv", async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
         const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-        const firestoreKeys = await fetchKeysFromFirestore(idToken);
-        
-        if (firestoreKeys === null) {
-            return res.status(403).send("Unauthorized");
+        let storedKeys = cachedFirestoreStoredKeys;
+        if (storedKeys === null) {
+            const firestoreKeys = await fetchKeysFromFirestore(idToken, false);
+            if (firestoreKeys === null && isProductionEnv()) {
+                return res.status(403).send("Unauthorized");
+            }
+            storedKeys = firestoreKeys || (isProductionEnv() ? [] : loadStoredKeys());
         }
-        
-        const storedKeys = firestoreKeys || (isProductionEnv() ? [] : loadStoredKeys());
         
         let csvContent = "api label,api key,contributor name,contributor gmail\n";
         for (const data of storedKeys) {
@@ -1280,13 +1604,14 @@ apiRouter.get("/admin/keys/reveal", async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
         const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-        const firestoreKeys = await fetchKeysFromFirestore(idToken);
-        
-        if (firestoreKeys === null) {
-            return res.status(403).json({ success: false, error: "Unauthorized" });
+        let storedKeys = cachedFirestoreStoredKeys;
+        if (storedKeys === null) {
+            const firestoreKeys = await fetchKeysFromFirestore(idToken, false);
+            if (firestoreKeys === null && isProductionEnv()) {
+                return res.status(403).json({ success: false, error: "Unauthorized" });
+            }
+            storedKeys = firestoreKeys || (isProductionEnv() ? [] : loadStoredKeys());
         }
-        
-        const storedKeys = firestoreKeys || (isProductionEnv() ? [] : loadStoredKeys());
         
         const revealedKeys = storedKeys.map(data => {
             let decryptedKey = '';
@@ -1306,6 +1631,107 @@ apiRouter.get("/admin/keys/reveal", async (req, res) => {
     } catch (e: any) {
         res.status(500).json({ success: false, error: String(e?.message || e) });
     }
+});
+
+apiRouter.post("/admin/keys/test-single", async (req, res) => {
+    try {
+        const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+        const { keyId, base64Image, rawKey, model } = body;
+        const authHeader = req.headers.authorization;
+        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+
+        let apiKey = '';
+        if (rawKey && (rawKey.startsWith('AIza') || rawKey.startsWith('AQ.'))) {
+            apiKey = rawKey.trim();
+        } else if (keyId) {
+            let storedKeys = cachedFirestoreStoredKeys;
+            if (!storedKeys || storedKeys.length === 0) {
+                storedKeys = loadStoredKeys();
+            }
+            let keyRecord = storedKeys?.find(k => k.id === keyId);
+            if (!keyRecord) {
+                const fetched = await fetchKeysFromFirestore(idToken, false);
+                keyRecord = fetched?.find(k => k.id === keyId);
+            }
+            if (!keyRecord) {
+                return res.status(404).json({ success: false, error: `Key '${keyId}' not found in registry.` });
+            }
+            try {
+                apiKey = decrypt(keyRecord.encryptedKey) || (keyRecord as any).key || '';
+            } catch (e) {
+                apiKey = (keyRecord as any).key || keyRecord.encryptedKey || '';
+            }
+            if (!apiKey && keyRecord.encryptedKey && (keyRecord.encryptedKey.startsWith('AIza') || keyRecord.encryptedKey.startsWith('AQ.'))) {
+                apiKey = keyRecord.encryptedKey;
+            }
+        }
+
+        if (!apiKey || apiKey.length < 10) {
+            return res.status(400).json({ success: false, error: "Invalid or missing API key." });
+        }
+
+        const ai = new GoogleGenAI({ apiKey });
+
+        const promptParts: any[] = [];
+        if (base64Image && typeof base64Image === 'string' && base64Image.includes(',')) {
+            const base64Data = base64Image.split(',')[1];
+            const mimeType = base64Image.substring(base64Image.indexOf(':') + 1, base64Image.indexOf(';')) || 'image/jpeg';
+            promptParts.push({ inlineData: { mimeType, data: base64Data } });
+        } else if (base64Image && typeof base64Image === 'string' && base64Image.length > 50) {
+            promptParts.push({ inlineData: { mimeType: 'image/jpeg', data: base64Image } });
+        }
+
+        promptParts.push({
+            text: "Analyze this image and generate a 1-sentence descriptive stock photo title."
+        });
+
+        const targetModel = model || 'gemini-3.1-flash-lite-preview';
+
+        const response = await ai.models.generateContent({
+            model: targetModel,
+            contents: promptParts,
+        });
+
+        const title = response?.text ? response.text.trim() : (response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '');
+
+        if (!title) {
+            return res.json({ success: false, error: "Model returned empty response." });
+        }
+
+        return res.json({ success: true, keyId, title });
+    } catch (err: any) {
+        const errorMsg = err?.message || String(err) || "Failed to generate title";
+        return res.json({ success: false, keyId: req.body?.keyId, error: errorMsg });
+    }
+});
+
+apiRouter.post("/admin/keys/delete-batch", async (req, res) => {
+    withCentralKeysLock(async () => {
+        try {
+            const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+            const { keyIds } = body;
+            if (!Array.isArray(keyIds) || keyIds.length === 0) {
+                return res.json({ success: true, count: 0 });
+            }
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            const fetchedKeys = await fetchKeysFromFirestore(idToken);
+            if (fetchedKeys === null) {
+                return res.status(503).json({ success: false, error: "Database temporarily unavailable." });
+            }
+            const idSet = new Set(keyIds);
+            const remainingKeys = fetchedKeys.filter(k => !idSet.has(k.id));
+            const saveSuccess = await saveKeysToFirestoreDocument(remainingKeys, idToken);
+            if (!saveSuccess) {
+                return res.status(500).json({ success: false, error: "Failed to save to database." });
+            }
+            saveStoredKeys(remainingKeys);
+            invalidateCentralCache();
+            res.json({ success: true, count: keyIds.length, remaining: remainingKeys.length });
+        } catch (e: any) {
+            res.status(500).json({ success: false, error: String(e?.message || e) });
+        }
+    });
 });
 
 apiRouter.delete("/admin/keys/:id", async (req, res) => {

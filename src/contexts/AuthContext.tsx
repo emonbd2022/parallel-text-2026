@@ -3,6 +3,7 @@ import { User, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
+import { getOrCreateDeviceId, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
 
 export interface UserData {
   uid: string;
@@ -48,6 +49,7 @@ interface AuthContextType {
   setNotifications: React.Dispatch<React.SetStateAction<AppNotification[]>>;
   deleteNotification: (id: string, globalDelete?: boolean) => Promise<void>;
   logout: () => Promise<void>;
+  resetUserDevices: (targetUid?: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({ 
@@ -62,7 +64,8 @@ const AuthContext = createContext<AuthContextType>({
   notifications: [],
   setNotifications: () => {},
   deleteNotification: async () => {},
-  logout: async () => {}
+  logout: async () => {},
+  resetUserDevices: async () => {}
 });
 
 // Cache helpers to store per-user data as well as the active cachedUserData
@@ -383,6 +386,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
   };
 
+  const resetUserDevices = async (targetUid?: string) => {
+    const uidToReset = targetUid || user?.uid || userData?.uid;
+    if (!uidToReset || !db) return;
+
+    try {
+      const userRef = doc(db, 'users', uidToReset);
+      const isSelf = !targetUid || targetUid === user?.uid;
+      const currentDevId = getOrCreateDeviceId();
+      const newDeviceIds = isSelf ? [currentDevId] : [];
+
+      await updateDoc(userRef, {
+        deviceIds: newDeviceIds,
+        lastActiveAt: new Date().toISOString()
+      });
+      recordFirestoreWrite('users', 1, 'AuthContext:resetUserDevices');
+
+      if (isSelf && userData) {
+        const updated: UserData = {
+          ...userData,
+          deviceIds: newDeviceIds,
+          deviceLimitReached: false
+        };
+        setUserData(updated);
+        saveUserDataToCache(updated);
+      }
+    } catch (e: any) {
+      console.error('Failed to reset user devices:', e);
+      throw e;
+    }
+  };
+
   useEffect(() => {
     if (!auth) {
       setLoading(false);
@@ -411,13 +445,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (docSnap.exists()) {
               const d = docSnap.data();
 
-              // Device ID Policy Enforcement
-              let deviceId = localStorage.getItem('deviceId');
-              if (!deviceId) {
-                deviceId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-                localStorage.setItem('deviceId', deviceId);
-              }
-
+              // Device ID Policy Enforcement: 1 Gmail = Max 2 Devices
+              const deviceId = getOrCreateDeviceId();
               let dbDeviceIds = Array.isArray(d.deviceIds) ? [...d.deviceIds] : [];
               let shouldUpdateDoc = false;
               const isFirstAdmin = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
@@ -425,7 +454,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               let isBlocked = !!d.blocked;
               let deviceLimitReached = false;
 
-              // Auto-unblock hardcoded admins affected by the previous device limit bug
+              // Auto-unblock hardcoded admins
               if (isFirstAdmin && isBlocked) {
                 isBlocked = false;
                 shouldUpdateDoc = true;
@@ -436,33 +465,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 shouldUpdateDoc = true;
               }
 
-              if (role !== 'admin' && !dbDeviceIds.includes(deviceId)) {
-                if (dbDeviceIds.length < 2) {
+              if (role !== 'admin') {
+                if (dbDeviceIds.includes(deviceId)) {
+                  // Device is already authorized
+                  deviceLimitReached = false;
+                } else if (dbDeviceIds.length < MAX_DEVICES_PER_ACCOUNT) {
+                  // New authorized device (slot 1 or 2)
                   dbDeviceIds.push(deviceId);
                   shouldUpdateDoc = true;
+                  deviceLimitReached = false;
                 } else {
-                  // Do NOT permanently block the account in Firestore.
-                  // Just block this specific session/device.
-                  isBlocked = true;
+                  // 3rd device attempt: limit reached, block session only without permanently corrupting account
                   deviceLimitReached = true;
                 }
+              } else {
+                deviceLimitReached = false;
               }
 
               if (shouldUpdateDoc) {
                 try {
-                  const updates: any = { deviceIds: dbDeviceIds };
+                  const updates: any = { 
+                    deviceIds: dbDeviceIds,
+                    lastActiveAt: new Date().toISOString()
+                  };
                   if (isFirstAdmin && d.role !== 'admin') {
                     updates.role = 'admin';
                   }
                   if (isFirstAdmin && d.blocked) {
                     updates.blocked = false;
                   }
-                  // We removed updates.blocked = true here to prevent permanent lockouts
-                  // due to device limits. Admins can still manually block users.
                   await updateDoc(userRef, updates);
                   recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
                 } catch (e) {
-                  console.error('Failed to update user doc', e);
+                  console.error('Failed to update user doc with device info', e);
                 }
               }
 
@@ -514,11 +549,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const userEmail = currentUser.email || '';
               const nowISO = new Date().toISOString();
 
-              let deviceId = localStorage.getItem('deviceId');
-              if (!deviceId) {
-                deviceId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-                localStorage.setItem('deviceId', deviceId);
-              }
+              const deviceId = getOrCreateDeviceId();
 
               const newUserData: UserData = {
                 uid: currentUser.uid,
@@ -586,7 +617,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, centralModeEnabled, setCentralModeEnabled, notifications, setNotifications, deleteNotification, logout }}>
+    <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, centralModeEnabled, setCentralModeEnabled, notifications, setNotifications, deleteNotification, logout, resetUserDevices }}>
       {!loading && children}
     </AuthContext.Provider>
   );

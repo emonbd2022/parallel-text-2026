@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Laptop, Smartphone, ShieldCheck, Flame } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
@@ -12,6 +12,7 @@ import {
   deduplicateCentralKeysOnServer,
   CentralKeyRecord 
 } from '../services/centralKeyService';
+import { DeadApiModal } from '../components/DeadApiModal';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
 
 type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active';
@@ -92,6 +93,7 @@ export const AdminDashboard: React.FC = () => {
   const [centralKeys, setCentralKeys] = useState<CentralKeyRecord[]>([]);
   const [loadingKeys, setLoadingKeys] = useState(false);
   const [showAddKeyForm, setShowAddKeyForm] = useState(false);
+  const [showDeadApiModal, setShowDeadApiModal] = useState(false);
   const [newKeyLabel, setNewKeyLabel] = useState('');
   const [newKeyValue, setNewKeyValue] = useState('');
   const [isAddingKey, setIsAddingKey] = useState(false);
@@ -264,8 +266,13 @@ export const AdminDashboard: React.FC = () => {
   };
 
   // Fetch all active notifications directly from server for the Admin Notification Center
-  const fetchServerNotifications = async () => {
+  const lastFetchedNotifsTimeRef = useRef<number>(0);
+  const fetchServerNotifications = async (force = false) => {
     if (!db) return;
+    const now = Date.now();
+    if (!force && (now - lastFetchedNotifsTimeRef.current < 60000) && serverNotifications.length > 0) {
+      return;
+    }
     setLoadingNotifs(true);
     try {
       const q = query(collection(db, 'notifications'), orderBy('createdAt', 'desc'), limit(50));
@@ -274,6 +281,7 @@ export const AdminDashboard: React.FC = () => {
       const list: AppNotification[] = [];
       snap.forEach(d => list.push(d.data() as AppNotification));
       setServerNotifications(list);
+      lastFetchedNotifsTimeRef.current = Date.now();
       try {
         sessionStorage.setItem('adminCachedServerNotifs', JSON.stringify(list));
       } catch {}
@@ -561,6 +569,35 @@ export const AdminDashboard: React.FC = () => {
       setAllUsers(prev => prev.map(u => u.uid === uid ? { ...u, ...updates } : u));
     } catch (error) {
       console.error("Error updating user:", error);
+    }
+  };
+
+  const handleResetUserDevices = async (targetUser: UserData) => {
+    const targetName = targetUser.name || targetUser.email || 'this user';
+    if (!window.confirm(`Reset device authorization slots for ${targetName}?\n\nThis will clear their 2 registered device slots in Firestore, immediately restoring login access if they reached the 2-device limit.`)) {
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'users', targetUser.uid), {
+        deviceIds: [],
+        lastActiveAt: new Date().toISOString()
+      });
+      recordFirestoreWrite('users', 1, 'AdminDashboard:resetUserDevices');
+
+      setUsersByPage(prev => {
+        const next = { ...prev };
+        for (const p of Object.keys(next)) {
+          const pageNum = Number(p);
+          next[pageNum] = (next[pageNum] || []).map(u => u.uid === targetUser.uid ? { ...u, deviceIds: [] } : u);
+        }
+        return next;
+      });
+      setAllUsers(prev => prev.map(u => u.uid === targetUser.uid ? { ...u, deviceIds: [] } : u));
+      alert(`Device slots successfully reset for ${targetName}.`);
+    } catch (error: any) {
+      console.error("Error resetting devices:", error);
+      alert(`Failed to reset devices: ${error?.message || 'Unknown error'}`);
     }
   };
 
@@ -1039,6 +1076,7 @@ export const AdminDashboard: React.FC = () => {
                       <th className="pb-3 font-semibold">Credits</th>
                       <th className="pb-3 font-semibold">Plan & Validity</th>
                       <th className="pb-3 font-semibold">Central API</th>
+                      <th className="pb-3 font-semibold">Devices (Max 2)</th>
                       <th className="pb-3 font-semibold">Processed</th>
                       <th className="pb-3 font-semibold">Avg/Day</th>
                       <th className="pb-3 font-semibold">Status</th>
@@ -1048,7 +1086,7 @@ export const AdminDashboard: React.FC = () => {
                   <tbody className="divide-y divide-slate-800">
                     {(loading || isFetchingAllUsers) ? (
                       <tr>
-                        <td colSpan={10} className="py-12 text-center text-slate-400">
+                        <td colSpan={11} className="py-12 text-center text-slate-400">
                           <div className="flex flex-col items-center justify-center gap-3">
                             <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
                             <span className="text-sm font-medium">
@@ -1058,7 +1096,7 @@ export const AdminDashboard: React.FC = () => {
                         </td>
                       </tr>
                     ) : filteredUsers.length === 0 ? (
-                      <tr><td colSpan={10} className="py-8 text-center text-slate-500">No users found.</td></tr>
+                      <tr><td colSpan={11} className="py-8 text-center text-slate-500">No users found.</td></tr>
                     ) : (
                       filteredUsers.map((user, index) => {
                             const rank = viewMode === 'all' ? index + 1 : (currentPage - 1) * 5 + index + 1;
@@ -1068,6 +1106,7 @@ export const AdminDashboard: React.FC = () => {
                               const days = Math.max(1, Math.floor((Date.now() - joinDate.getTime()) / (1000 * 60 * 60 * 24)));
                               avgPerDay = Math.round((user.totalProcessedImages || 0) / days);
                             }
+                            const registeredDevicesCount = Array.isArray(user.deviceIds) ? user.deviceIds.length : 0;
                             return (
                           <tr key={user.uid} className="hover:bg-slate-800/30 transition-colors">
                             <td className="py-4 font-bold text-slate-400">#{rank}</td>
@@ -1168,6 +1207,39 @@ export const AdminDashboard: React.FC = () => {
                                </label>
                             </td>
 
+                            <td className="py-4">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border flex items-center gap-1 ${
+                                  user.role === 'admin'
+                                    ? 'bg-purple-500/10 text-purple-300 border-purple-500/20'
+                                    : registeredDevicesCount >= 2 
+                                    ? 'bg-rose-500/10 text-rose-300 border-rose-500/20' 
+                                    : registeredDevicesCount === 1
+                                    ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20'
+                                    : 'bg-slate-800 text-slate-400 border-slate-700'
+                                }`}>
+                                  {user.role === 'admin' ? (
+                                    <span>Admin (Bypass)</span>
+                                  ) : (
+                                    <>
+                                      <Smartphone className="w-3 h-3" />
+                                      <span>{registeredDevicesCount}/2</span>
+                                    </>
+                                  )}
+                                </span>
+                                {registeredDevicesCount > 0 && user.role !== 'admin' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleResetUserDevices(user)}
+                                    className="p-1 hover:bg-slate-800 text-slate-400 hover:text-amber-300 rounded transition-colors"
+                                    title={`Reset device slots for ${user.name || user.email}`}
+                                  >
+                                    <RefreshCw className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+
                             <td className="py-4 font-bold text-white">
                               {(user.totalProcessedImages || 0).toLocaleString()}
                             </td>
@@ -1189,6 +1261,17 @@ export const AdminDashboard: React.FC = () => {
                             </td>
 
                             <td className="py-4 text-right pr-3">
+                              <div className="flex items-center justify-end gap-1.5">
+                                {registeredDevicesCount > 0 && user.role !== 'admin' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleResetUserDevices(user)}
+                                    className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-amber-300 border border-slate-700 rounded-lg transition-all shadow-sm"
+                                    title={`Reset device slots for ${user.name || user.email}`}
+                                  >
+                                    <RefreshCw className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                                 <button 
                                   onClick={() => setUserToDelete(user)}
                                   disabled={user.uid === currentAdmin?.uid}
@@ -1197,6 +1280,7 @@ export const AdminDashboard: React.FC = () => {
                                 >
                                   <Trash2 className="w-4 h-4 group-hover:scale-110 transition-transform" />
                                 </button>
+                              </div>
                             </td>
                           </tr>
                       );
@@ -1766,6 +1850,17 @@ export const AdminDashboard: React.FC = () => {
 
                 <button
                   type="button"
+                  onClick={() => setShowDeadApiModal(true)}
+                  disabled={loadingKeys || centralKeys.length === 0}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-gradient-to-r from-rose-500/20 via-red-500/20 to-orange-500/20 hover:from-rose-500/30 hover:via-red-500/30 hover:to-orange-500/30 text-rose-300 border border-rose-500/40 rounded-xl text-sm font-bold transition-all shadow-lg shadow-rose-950/40 active:scale-95 disabled:opacity-50 cursor-pointer"
+                  title="Check API health against a demo image and automatically delete dead keys (max 3 tries per key)"
+                >
+                  <Flame className="w-4 h-4 text-rose-400" />
+                  <span>Delete Dead APIs</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={handleDeduplicate}
                   disabled={isDeduplicating || loadingKeys || centralKeys.length === 0}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 cursor-pointer"
@@ -2284,6 +2379,14 @@ export const AdminDashboard: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Dead API Auto-Purge Modal */}
+      <DeadApiModal
+        isOpen={showDeadApiModal}
+        onClose={() => setShowDeadApiModal(false)}
+        centralKeys={centralKeys}
+        onScanComplete={() => fetchCentralKeys(true)}
+      />
     </motion.div>
     </>
   );

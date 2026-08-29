@@ -39,7 +39,11 @@ export const generateMetadataBatch = async (
         let errMsg = await res.text();
         try {
             const errObj = JSON.parse(errMsg);
-            if (errObj.error) errMsg = errObj.error;
+            if (errObj.message) {
+              errMsg = errObj.message;
+            } else if (errObj.error) {
+              errMsg = errObj.error;
+            }
         } catch {}
         throw new Error(errMsg || `Server error ${res.status}`);
     }
