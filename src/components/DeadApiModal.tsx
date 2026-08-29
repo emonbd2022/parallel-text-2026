@@ -19,7 +19,7 @@ import {
   Eye,
   Info
 } from 'lucide-react';
-import { CentralKeyRecord, testSingleCentralKey, deleteCentralKeyFromFirestore } from '../services/centralKeyService';
+import { CentralKeyRecord, testSingleCentralKey, markSingleCentralKeyDead } from '../services/centralKeyService';
 
 // Default lightweight sample image (a crisp camera on desk in SVG data URL converted to base64)
 const DEFAULT_DEMO_IMAGE = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(`
@@ -50,7 +50,7 @@ export interface KeyTestResult {
   maxAttempts: number;
   title?: string;
   error?: string;
-  deleted?: boolean;
+  markedDead?: boolean;
 }
 
 export const DeadApiModal: React.FC<DeadApiModalProps> = ({
@@ -223,14 +223,14 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
         } : r));
       } else {
         deadCount++;
-        addLog(`  🚨 KEY MARKED DEAD (Failed 3/3 attempts). Auto-deleting "${currentKey.label}"...`, 'error');
+        addLog(`  🚨 KEY MARKED DEAD (Failed 3/3 attempts). Deactivating "${currentKey.label}" and storing...`, 'error');
         
-        // Auto-delete dead key from Firestore and server storage
+        // Mark dead key as DEAD (deactivated and stored, not deleted)
         try {
-          await deleteCentralKeyFromFirestore(currentKey.id);
-          addLog(`  🗑️ Key "${currentKey.label}" permanently deleted from database.`, 'error');
+          await markSingleCentralKeyDead(currentKey.id, lastErrorMessage || 'Failed 3/3 Gemini API verification attempts');
+          addLog(`  🏷️ Key "${currentKey.label}" labeled as DEAD & disabled (kept in database to prevent login re-add).`, 'error');
         } catch (delErr: any) {
-          addLog(`  ⚠️ Failed to delete key from Firestore: ${delErr?.message}`, 'error');
+          addLog(`  ⚠️ Failed to mark key as dead: ${delErr?.message}`, 'error');
         }
 
         setTestResults(prev => prev.map((r, idx) => idx === i ? {
@@ -238,7 +238,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
           status: 'dead',
           error: lastErrorMessage || 'Failed 3/3 attempts to generate metadata',
           attempt: attemptNumber,
-          deleted: true
+          markedDead: true
         } : r));
       }
 
@@ -250,7 +250,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
     setScanFinished(true);
     setCurrentIndex(-1);
     setCurrentAttempt(0);
-    addLog(`🏁 Scan complete! Healthy Kept: ${healthyCount}, Dead Purged: ${deadCount}`, 'success');
+    addLog(`🏁 Scan complete! Healthy Active: ${healthyCount}, Dead Deactivated: ${deadCount}`, 'success');
     onScanComplete();
   };
 
@@ -285,13 +285,13 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-xl font-bold text-white">Dead API Detection & Auto-Purge</h3>
+                <h3 className="text-xl font-bold text-white">Dead API Detection & Safe Deactivation</h3>
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-300 border border-rose-500/20">
                   Max 3 Tries Rule
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Automatically tests each API key with a demo image. Any key failing 3 consecutive attempts will be auto-deleted.
+                Automatically tests each API key with a demo image. Any key failing 3 consecutive attempts will be marked as DEAD & deactivated (stored safely to prevent re-addition on login).
               </p>
             </div>
           </div>
@@ -449,8 +449,8 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
               </div>
               <ul className="text-xs text-slate-400 space-y-1 pl-6 list-disc">
                 <li>Takes the demo image and requests metadata generation from Gemini.</li>
-                <li><strong className="text-emerald-400">Success on Try 1, 2, or 3:</strong> API key is validated healthy and kept.</li>
-                <li><strong className="text-rose-400">Fails all 3 tries:</strong> Key is immediately classified as DEAD and deleted from Firestore & Server.</li>
+                <li><strong className="text-emerald-400">Success on Try 1, 2, or 3:</strong> API key is validated active and kept in rotation pool.</li>
+                <li><strong className="text-rose-400">Fails all 3 tries:</strong> Key is labeled as DEAD and deactivated from active dispatch pool (stored safely to prevent re-adding upon future user logins).</li>
                 <li>Sequentially proceeds across all <strong>{centralKeys.length}</strong> Central API keys.</li>
               </ul>
             </div>
@@ -466,11 +466,11 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
                   <p className="text-lg font-bold text-white mt-0.5">{centralKeys.length}</p>
                 </div>
                 <div className="p-3 bg-slate-950/80 border border-emerald-500/20 rounded-xl">
-                  <p className="text-[10px] text-emerald-400 font-semibold uppercase">Healthy (Kept)</p>
+                  <p className="text-[10px] text-emerald-400 font-semibold uppercase">Healthy (Active)</p>
                   <p className="text-lg font-bold text-emerald-300 mt-0.5">{healthyCount}</p>
                 </div>
                 <div className="p-3 bg-slate-950/80 border border-rose-500/20 rounded-xl">
-                  <p className="text-[10px] text-rose-400 font-semibold uppercase">Dead (Deleted)</p>
+                  <p className="text-[10px] text-rose-400 font-semibold uppercase">Dead (Deactivated)</p>
                   <p className="text-lg font-bold text-rose-400 mt-0.5">{deadCount}</p>
                 </div>
                 <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
@@ -581,12 +581,12 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
                             <td className="py-2.5 px-3">
                               {r.status === 'healthy' && (
                                 <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded font-semibold text-[11px] inline-flex items-center gap-1">
-                                  <CheckCircle className="w-3 h-3" /> Healthy
+                                  <CheckCircle className="w-3 h-3" /> Active
                                 </span>
                               )}
                               {r.status === 'dead' && (
-                                <span className="px-2 py-0.5 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded font-semibold text-[11px] inline-flex items-center gap-1">
-                                  <Trash2 className="w-3 h-3" /> Auto-Deleted
+                                <span className="px-2 py-0.5 bg-rose-500/10 text-rose-300 border border-rose-500/20 rounded font-semibold text-[11px] inline-flex items-center gap-1" title="Stored in database but permanently deactivated from rotation">
+                                  <AlertTriangle className="w-3 h-3 text-rose-400" /> Dead (Deactivated)
                                 </span>
                               )}
                               {r.status === 'testing' && (

@@ -58,6 +58,10 @@ export interface StoredKey {
     contributedBy?: string;
     contributorName?: string;
     contributorEmail?: string;
+    status?: 'active' | 'dead' | 'untested' | 'disabled';
+    isDead?: boolean;
+    deadReason?: string;
+    lastTestedAt?: string;
 }
 
 let centralKeys: { id: string; key: string }[] = [];
@@ -219,7 +223,7 @@ function saveStoredKeys(keys: StoredKey[]) {
 try {
     const initialDiskKeys = loadStoredKeys();
     if (initialDiskKeys.length > 0) {
-        centralKeys = initialDiskKeys.filter(k => k.enabled !== false).map(data => {
+        centralKeys = initialDiskKeys.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
             let decryptedKey = '';
             try {
                 decryptedKey = decrypt(data.encryptedKey || (data as any).key);
@@ -300,6 +304,10 @@ async function fetchKeysFromFirestore(idToken?: string, forceRefresh = false): P
             let encryptedKey = kf.encryptedKey?.stringValue || '';
             const keyHash = kf.keyHash?.stringValue || '';
             const enabled = kf.enabled?.booleanValue !== false;
+            const status = kf.status?.stringValue || (kf.isDead?.booleanValue ? 'dead' : (enabled ? 'active' : 'disabled'));
+            const isDead = kf.isDead?.booleanValue || status === 'dead';
+            const deadReason = kf.deadReason?.stringValue || '';
+            const lastTestedAt = kf.lastTestedAt?.stringValue || '';
             const createdAt = kf.createdAt?.stringValue || new Date().toISOString();
             const rawContributedBy = kf.contributedBy?.stringValue;
             const rawContributorName = kf.contributorName?.stringValue;
@@ -332,7 +340,11 @@ async function fetchKeysFromFirestore(idToken?: string, forceRefresh = false): P
                     label,
                     encryptedKey: encryptedKey || encrypt(rawKey),
                     keyHash: keyHash || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex'),
-                    enabled,
+                    enabled: isDead ? false : enabled,
+                    status: (isDead ? 'dead' : (enabled ? 'active' : 'disabled')) as any,
+                    isDead,
+                    deadReason,
+                    lastTestedAt,
                     createdAt,
                     contributedBy,
                     contributorName,
@@ -398,11 +410,15 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
                     label: { stringValue: k.label || 'Central Key' },
                     encryptedKey: { stringValue: k.encryptedKey || '' },
                     keyHash: { stringValue: k.keyHash || '' },
-                    enabled: { booleanValue: k.enabled !== false },
+                    enabled: { booleanValue: k.enabled !== false && !k.isDead && k.status !== 'dead' },
                     createdAt: { stringValue: k.createdAt || new Date().toISOString() },
                     contributedBy: { stringValue: k.contributedBy || 'central' },
                     contributorName: { stringValue: k.contributorName || 'User' },
-                    contributorEmail: { stringValue: k.contributorEmail || '' }
+                    contributorEmail: { stringValue: k.contributorEmail || '' },
+                    status: { stringValue: k.status || (k.isDead ? 'dead' : (k.enabled === false ? 'disabled' : 'active')) },
+                    isDead: { booleanValue: Boolean(k.isDead || k.status === 'dead') },
+                    deadReason: { stringValue: k.deadReason || '' },
+                    lastTestedAt: { stringValue: k.lastTestedAt || '' }
                 }
             }
         }));
@@ -475,7 +491,7 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                     if (diskKeys.length > 0) {
                         console.log(`[Server] Firestore registry doc is empty. Seeding with ${diskKeys.length} persistent disk keys...`);
                         saveKeysToFirestoreDocument(diskKeys, idToken).catch(e => console.error("Firestore seed error:", e));
-                        const active = diskKeys.filter(k => k.enabled !== false).map(data => {
+                        const active = diskKeys.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
                             let decryptedKey = '';
                             try {
                                 decryptedKey = decrypt(data.encryptedKey || (data as any).key);
@@ -511,7 +527,7 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                     saveKeysToFirestoreDocument(merged, idToken).catch(e => console.error("Firestore sync back error:", e));
                 }
 
-                const active = merged.filter(k => k.enabled !== false).map(data => {
+                const active = merged.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
                     let decryptedKey = '';
                     try {
                         decryptedKey = decrypt(data.encryptedKey || (data as any).key);
@@ -537,7 +553,7 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
             lastCentralKeysFetchTime = Date.now();
 
             if (diskKeys.length > 0) {
-                const active = diskKeys.filter(k => k.enabled !== false).map(data => {
+                const active = diskKeys.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
                     let decryptedKey = '';
                     try {
                         decryptedKey = decrypt(data.encryptedKey || (data as any).key);
@@ -1439,24 +1455,33 @@ apiRouter.post("/admin/keys/refresh", async (req, res) => {
                 exactContributor = data.label || 'Contributor';
             }
 
+            const isDead = Boolean(data.isDead || data.status === 'dead');
+            const status = data.status || (isDead ? 'dead' : (data.enabled === false ? 'disabled' : 'active'));
+
             return {
                 id: data.id,
                 label: data.label,
                 maskedKey,
-                enabled: data.enabled !== false,
+                enabled: data.enabled !== false && !isDead,
+                status,
+                isDead,
+                deadReason: data.deadReason || '',
+                lastTestedAt: data.lastTestedAt || '',
                 createdAt: data.createdAt,
                 contributedBy: exactContributor,
                 contributorName: exactContributor,
                 contributorEmail: data.contributorEmail
             };
         });
-        const activeKeys = keys.filter(k => k.enabled).length;
-        const disabledKeys = keys.filter(k => !k.enabled).length;
+        const activeKeys = keys.filter(k => k.enabled && !k.isDead && k.status !== 'dead').length;
+        const deadKeys = keys.filter(k => k.isDead || k.status === 'dead').length;
+        const disabledKeys = keys.filter(k => !k.enabled && !k.isDead && k.status !== 'dead').length;
         res.json({
             success: true,
             keys,
             totalKeys: keys.length,
             activeKeys,
+            deadKeys,
             disabledKeys,
             updatedAt: new Date().toISOString(),
             version: 1
@@ -1502,23 +1527,32 @@ apiRouter.get("/admin/keys", async (req, res) => {
                 exactContributor = data.label || 'Contributor';
             }
 
+            const isDead = Boolean(data.isDead || data.status === 'dead');
+            const status = data.status || (isDead ? 'dead' : (data.enabled === false ? 'disabled' : 'active'));
+
             return {
                 id: data.id,
                 label: data.label,
                 maskedKey,
-                enabled: data.enabled !== false,
+                enabled: data.enabled !== false && !isDead,
+                status,
+                isDead,
+                deadReason: data.deadReason || '',
+                lastTestedAt: data.lastTestedAt || '',
                 createdAt: data.createdAt,
                 contributedBy: exactContributor,
                 contributorName: exactContributor,
                 contributorEmail: data.contributorEmail
             };
         });
-        const activeKeys = keys.filter(k => k.enabled).length;
-        const disabledKeys = keys.filter(k => !k.enabled).length;
+        const activeKeys = keys.filter(k => k.enabled && !k.isDead && k.status !== 'dead').length;
+        const deadKeys = keys.filter(k => k.isDead || k.status === 'dead').length;
+        const disabledKeys = keys.filter(k => !k.enabled && !k.isDead && k.status !== 'dead').length;
         res.json({
             keys,
             totalKeys: keys.length,
             activeKeys,
+            deadKeys,
             disabledKeys,
             updatedAt: new Date().toISOString(),
             version: 1
@@ -1675,7 +1709,10 @@ apiRouter.post("/admin/keys/test-single", async (req, res) => {
         const promptParts: any[] = [];
         if (base64Image && typeof base64Image === 'string' && base64Image.includes(',')) {
             const base64Data = base64Image.split(',')[1];
-            const mimeType = base64Image.substring(base64Image.indexOf(':') + 1, base64Image.indexOf(';')) || 'image/jpeg';
+            let mimeType = base64Image.substring(base64Image.indexOf(':') + 1, base64Image.indexOf(';')) || 'image/jpeg';
+            if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(mimeType.toLowerCase())) {
+                mimeType = 'image/jpeg';
+            }
             promptParts.push({ inlineData: { mimeType, data: base64Data } });
         } else if (base64Image && typeof base64Image === 'string' && base64Image.length > 50) {
             promptParts.push({ inlineData: { mimeType: 'image/jpeg', data: base64Image } });
@@ -1703,6 +1740,54 @@ apiRouter.post("/admin/keys/test-single", async (req, res) => {
         const errorMsg = err?.message || String(err) || "Failed to generate title";
         return res.json({ success: false, keyId: req.body?.keyId, error: errorMsg });
     }
+});
+
+apiRouter.post("/admin/keys/mark-dead-batch", async (req, res) => {
+    withCentralKeysLock(async () => {
+        try {
+            const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+            const { keyIds, reason } = body;
+            if (!Array.isArray(keyIds) || keyIds.length === 0) {
+                return res.json({ success: true, count: 0 });
+            }
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            const fetchedKeys = await fetchKeysFromFirestore(idToken, true);
+            if (fetchedKeys === null) {
+                return res.status(503).json({ success: false, error: "Database temporarily unavailable." });
+            }
+            const idSet = new Set(keyIds);
+            let markedCount = 0;
+            const now = new Date().toISOString();
+
+            for (const k of fetchedKeys) {
+                if (idSet.has(k.id)) {
+                    k.status = 'dead';
+                    k.isDead = true;
+                    k.enabled = false;
+                    k.deadReason = reason || 'Failed Gemini API health check (3/3 attempts)';
+                    k.lastTestedAt = now;
+                    markedCount++;
+                }
+            }
+
+            if (markedCount > 0) {
+                const saveSuccess = await saveKeysToFirestoreDocument(fetchedKeys, idToken);
+                if (!saveSuccess) {
+                    return res.status(500).json({ success: false, error: "Failed to persist marked dead keys to database." });
+                }
+                saveStoredKeys(fetchedKeys);
+                invalidateCentralCache();
+                await syncCentralKeys(true, idToken);
+            }
+
+            console.log(`[Server] Labeled ${markedCount} API keys as DEAD (deactivated & stored).`);
+            res.json({ success: true, count: markedCount });
+        } catch (e: any) {
+            console.error("Error marking dead keys batch:", e);
+            res.status(500).json({ success: false, error: String(e?.message || e) });
+        }
+    });
 });
 
 apiRouter.post("/admin/keys/delete-batch", async (req, res) => {
@@ -1765,7 +1850,7 @@ apiRouter.patch("/admin/keys/:id", async (req, res) => {
     withCentralKeysLock(async () => {
         try {
             const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-            const { enabled } = body;
+            const { enabled, status, isDead, deadReason, lastTestedAt } = body;
             const authHeader = req.headers.authorization;
             const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
             const fetchedKeys = await fetchKeysFromFirestore(idToken);
@@ -1775,7 +1860,40 @@ apiRouter.patch("/admin/keys/:id", async (req, res) => {
             const storedKeys = fetchedKeys;
             const key = storedKeys.find(k => k.id === req.params.id);
             if (key) {
-                key.enabled = enabled;
+                if (typeof enabled === 'boolean') {
+                    key.enabled = enabled;
+                    if (enabled) {
+                        // If re-enabling a key, clear dead status
+                        key.isDead = false;
+                        key.status = 'active';
+                        key.deadReason = '';
+                    } else if (key.status !== 'dead') {
+                        key.status = 'disabled';
+                    }
+                }
+                if (status) {
+                    key.status = status;
+                    if (status === 'dead') {
+                        key.isDead = true;
+                        key.enabled = false;
+                    } else if (status === 'active') {
+                        key.isDead = false;
+                        key.enabled = true;
+                    }
+                }
+                if (typeof isDead === 'boolean') {
+                    key.isDead = isDead;
+                    if (isDead) {
+                        key.status = 'dead';
+                        key.enabled = false;
+                    }
+                }
+                if (typeof deadReason === 'string') {
+                    key.deadReason = deadReason;
+                }
+                if (typeof lastTestedAt === 'string') {
+                    key.lastTestedAt = lastTestedAt;
+                }
                 
                 const saveSuccess = await saveKeysToFirestoreDocument(storedKeys, idToken);
                 if (!saveSuccess) {
@@ -1784,6 +1902,7 @@ apiRouter.patch("/admin/keys/:id", async (req, res) => {
                 
                 saveStoredKeys(storedKeys);
                 invalidateCentralCache();
+                await syncCentralKeys(true, idToken);
             }
             res.json({ success: true });
         } catch (e: any) {

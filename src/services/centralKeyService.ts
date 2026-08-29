@@ -12,6 +12,10 @@ export interface CentralKeyRecord {
   contributorName?: string;
   contributorEmail?: string;
   enabled: boolean;
+  status?: 'active' | 'dead' | 'untested' | 'disabled';
+  isDead?: boolean;
+  deadReason?: string;
+  lastTestedAt?: string;
   createdAt: string;
 }
 
@@ -464,9 +468,17 @@ export async function addCentralKeyToFirestore(
  */
 export async function toggleCentralKeyStatus(
   keyId: string,
-  newEnabledStatus: boolean
+  newEnabledStatus: boolean,
+  extra?: { status?: string; isDead?: boolean; deadReason?: string }
 ): Promise<void> {
   cachedCentralKeys = null; // Invalidate client cache
+
+  const payload: any = { enabled: newEnabledStatus };
+  if (extra) {
+    if (extra.status) payload.status = extra.status;
+    if (typeof extra.isDead === 'boolean') payload.isDead = extra.isDead;
+    if (extra.deadReason) payload.deadReason = extra.deadReason;
+  }
 
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -479,7 +491,7 @@ export async function toggleCentralKeyStatus(
     await fetch(`/api/admin/keys/${keyId}`, {
       method: 'PATCH',
       headers,
-      body: JSON.stringify({ enabled: newEnabledStatus })
+      body: JSON.stringify(payload)
     });
   } catch (e) {
     console.log('Server patch warning:', e);
@@ -494,6 +506,14 @@ export async function toggleCentralKeyStatus(
         const item = existingKeys.find((k: any) => k.id === keyId);
         if (item) {
           item.enabled = newEnabledStatus;
+          if (extra?.status) item.status = extra.status;
+          if (typeof extra?.isDead === 'boolean') item.isDead = extra.isDead;
+          if (extra?.deadReason) item.deadReason = extra.deadReason;
+          if (newEnabledStatus) {
+            item.isDead = false;
+            item.status = 'active';
+            item.deadReason = '';
+          }
           await setDoc(docRef, {
             keys: existingKeys,
             totalCount: existingKeys.length,
@@ -505,6 +525,84 @@ export async function toggleCentralKeyStatus(
       }
     } catch (fsErr) {
       console.log('Direct Firestore key update notice:', fsErr);
+    }
+  }
+}
+
+/**
+ * Marks a single key as dead (deactivated & stored, not deleted)
+ */
+export async function markSingleCentralKeyDead(
+  keyId: string,
+  reason: string = 'Failed Gemini API health check (3/3 attempts)'
+): Promise<void> {
+  return toggleCentralKeyStatus(keyId, false, {
+    status: 'dead',
+    isDead: true,
+    deadReason: reason
+  });
+}
+
+/**
+ * Marks a batch of keys as DEAD (stored but permanently deactivated from rotation, never deleted)
+ */
+export async function markBatchCentralKeysAsDead(
+  keyIds: string[],
+  reason: string = 'Failed Gemini API health check (3/3 attempts)'
+): Promise<void> {
+  if (!keyIds || keyIds.length === 0) return;
+  cachedCentralKeys = null;
+
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
+    }
+
+    await fetch('/api/admin/keys/mark-dead-batch', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ keyIds, reason })
+    });
+  } catch (e) {
+    console.log('Server batch mark dead warning:', e);
+  }
+
+  if (db) {
+    try {
+      const docRef = doc(db, 'central_keys', 'APIkeys');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const existingKeys: any[] = docSnap.data().keys || [];
+        const idSet = new Set(keyIds);
+        const now = new Date().toISOString();
+        let changed = false;
+
+        for (const k of existingKeys) {
+          if (idSet.has(k.id)) {
+            k.enabled = false;
+            k.status = 'dead';
+            k.isDead = true;
+            k.deadReason = reason;
+            k.lastTestedAt = now;
+            changed = true;
+          }
+        }
+
+        if (changed) {
+          await setDoc(docRef, {
+            keys: existingKeys,
+            totalCount: existingKeys.length,
+            updatedAt: now,
+            version: 1
+          }, { merge: true });
+          recordFirestoreWrite('central_keys', 1, 'markBatchCentralKeysAsDead:direct');
+        }
+      }
+    } catch (fsErr) {
+      console.log('Direct Firestore batch key mark dead notice:', fsErr);
     }
   }
 }

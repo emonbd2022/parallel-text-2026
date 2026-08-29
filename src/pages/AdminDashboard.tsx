@@ -154,12 +154,19 @@ export const AdminDashboard: React.FC = () => {
     setTimeout(() => setCopiedKeyId(null), 2000);
   };
 
-  const toggleKeyStatus = async (id: string, currentStatus: boolean) => {
+  const toggleKeyStatus = async (id: string, currentEnabled: boolean, currentStatus?: string) => {
     try {
-      await toggleCentralKeyStatus(id, !currentStatus);
-      setCentralKeys(prev => prev.map(k => k.id === id ? { ...k, enabled: !currentStatus } : k));
+      const nextEnabled = !currentEnabled;
+      const nextStatus = nextEnabled ? 'active' : 'disabled';
+      await toggleCentralKeyStatus(id, nextEnabled, { status: nextStatus });
+      setCentralKeys(prev => prev.map(k => k.id === id ? { 
+        ...k, 
+        enabled: nextEnabled,
+        status: nextStatus,
+        isDead: nextEnabled ? false : k.isDead
+      } : k));
     } catch (e) {
-      console.error(e);
+      console.error("Failed to toggle central key status:", e);
     }
   };
 
@@ -1781,7 +1788,7 @@ export const AdminDashboard: React.FC = () => {
       {activeTab === 'keys' && (
         <div className="space-y-6 animate-in fade-in duration-200">
           {/* KPI Summary Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl relative overflow-hidden">
               <div className="flex items-center justify-between">
                 <div>
@@ -1795,34 +1802,49 @@ export const AdminDashboard: React.FC = () => {
               <p className="text-[11px] text-slate-500 mt-3">All API keys stored in server database</p>
             </div>
 
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl relative overflow-hidden">
+            <div className="bg-slate-900/80 border border-emerald-500/20 rounded-2xl p-5 shadow-xl relative overflow-hidden">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">Active Pool Capacity</p>
                   <p className="text-2xl font-bold text-emerald-300 mt-1">
-                    {centralKeys.filter(k => k.enabled).length}
+                    {centralKeys.filter(k => k.enabled && !k.isDead && k.status !== 'dead').length}
                   </p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
                   <CheckCircle2 className="w-6 h-6" />
                 </div>
               </div>
-              <p className="text-[11px] text-slate-500 mt-3">Currently used for Central API parallel load balancing</p>
+              <p className="text-[11px] text-slate-500 mt-3">Active keys for multi-node load balancing</p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-rose-500/20 rounded-2xl p-5 shadow-xl relative overflow-hidden">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold text-rose-400 uppercase tracking-wider">Dead (Deactivated)</p>
+                  <p className="text-2xl font-bold text-rose-400 mt-1">
+                    {centralKeys.filter(k => k.isDead || k.status === 'dead').length}
+                  </p>
+                </div>
+                <div className="w-12 h-12 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+                  <Flame className="w-6 h-6" />
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-3">Retained in storage to prevent re-addition on login</p>
             </div>
 
             <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl relative overflow-hidden">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Disabled Keys</p>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Disabled / Paused</p>
                   <p className="text-2xl font-bold text-slate-300 mt-1">
-                    {centralKeys.filter(k => !k.enabled).length}
+                    {centralKeys.filter(k => !k.enabled && !k.isDead && k.status !== 'dead').length}
                   </p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-slate-800/60 border border-slate-700/50 flex items-center justify-center text-slate-400">
                   <AlertTriangle className="w-6 h-6" />
                 </div>
               </div>
-              <p className="text-[11px] text-slate-500 mt-3">Paused keys excluded from concurrent dispatch</p>
+              <p className="text-[11px] text-slate-500 mt-3">Manually paused keys excluded from dispatch</p>
             </div>
           </div>
 
@@ -1853,10 +1875,10 @@ export const AdminDashboard: React.FC = () => {
                   onClick={() => setShowDeadApiModal(true)}
                   disabled={loadingKeys || centralKeys.length === 0}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-gradient-to-r from-rose-500/20 via-red-500/20 to-orange-500/20 hover:from-rose-500/30 hover:via-red-500/30 hover:to-orange-500/30 text-rose-300 border border-rose-500/40 rounded-xl text-sm font-bold transition-all shadow-lg shadow-rose-950/40 active:scale-95 disabled:opacity-50 cursor-pointer"
-                  title="Check API health against a demo image and automatically delete dead keys (max 3 tries per key)"
+                  title="Test API validity with Gemini 3.1 Flash Lite model against a demo image. Dead keys are labeled and deactivated (never deleted, preventing automatic re-add on login)."
                 >
                   <Flame className="w-4 h-4 text-rose-400" />
-                  <span>Delete Dead APIs</span>
+                  <span>Dead API Scanner</span>
                 </button>
 
                 <button
@@ -2108,16 +2130,34 @@ export const AdminDashboard: React.FC = () => {
                             </td>
 
                             <td className="p-4">
-                              <button 
-                                onClick={() => toggleKeyStatus(key.id, key.enabled)}
-                                className={`px-2.5 py-1 text-[11px] font-bold rounded-full uppercase transition-all cursor-pointer ${
-                                  key.enabled 
-                                    ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30' 
-                                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700 border border-slate-700'
-                                }`}
-                              >
-                                {key.enabled ? 'Active / Enabled' : 'Disabled'}
-                              </button>
+                              {key.isDead || key.status === 'dead' ? (
+                                <div className="flex flex-col gap-1 items-start">
+                                  <button 
+                                    onClick={() => toggleKeyStatus(key.id, key.enabled, key.status)}
+                                    className="px-2.5 py-1 text-[11px] font-bold rounded-full uppercase transition-all cursor-pointer bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 border border-rose-500/40 inline-flex items-center gap-1.5"
+                                    title={`Dead Key (${key.deadReason || 'Verification failed'}). Click to force re-activate.`}
+                                  >
+                                    <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                                    <span>Dead (Deactivated)</span>
+                                  </button>
+                                  {key.deadReason && (
+                                    <span className="text-[10px] text-rose-400/80 truncate max-w-[170px]" title={key.deadReason}>
+                                      {key.deadReason}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <button 
+                                  onClick={() => toggleKeyStatus(key.id, key.enabled, key.status)}
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-full uppercase transition-all cursor-pointer ${
+                                    key.enabled 
+                                      ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30' 
+                                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700 border border-slate-700'
+                                  }`}
+                                >
+                                  {key.enabled ? 'Active / Enabled' : 'Disabled'}
+                                </button>
+                              )}
                             </td>
 
                             <td className="p-4 text-right">
