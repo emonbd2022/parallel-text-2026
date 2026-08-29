@@ -490,7 +490,7 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                 if (firestoreKeys.length === 0) {
                     if (diskKeys.length > 0) {
                         console.log(`[Server] Firestore registry doc is empty. Seeding with ${diskKeys.length} persistent disk keys...`);
-                        saveKeysToFirestoreDocument(diskKeys, idToken).catch(e => console.error("Firestore seed error:", e));
+                        const seedSuccess = await saveKeysToFirestoreDocument(diskKeys, idToken).catch(e => { console.error("Firestore seed error:", e); return false; });
                         const active = diskKeys.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
                             let decryptedKey = '';
                             try {
@@ -506,7 +506,9 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                             return { id: data.id, key: decryptedKey };
                         }).filter(k => k.key && k.key.length > 0);
                         centralKeys = active;
-                        cachedFirestoreStoredKeys = diskKeys;
+                        if (seedSuccess) {
+                            cachedFirestoreStoredKeys = diskKeys;
+                        }
                         lastCentralKeysFetchTime = Date.now();
                         return centralKeys;
                     }
@@ -522,9 +524,10 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                 const merged = deduplicateKeysByValue([...firestoreKeys, ...diskKeys]);
                 saveStoredKeys(merged);
 
+                let syncSuccess = true;
                 if (merged.length > firestoreKeys.length) {
                     // Sync any disk-only keys back to Firestore document
-                    saveKeysToFirestoreDocument(merged, idToken).catch(e => console.error("Firestore sync back error:", e));
+                    syncSuccess = await saveKeysToFirestoreDocument(merged, idToken).catch(e => { console.error("Firestore sync back error:", e); return false; });
                 }
 
                 const active = merged.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
@@ -543,7 +546,11 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                 }).filter(k => k.key && k.key.length > 0);
 
                 centralKeys = active;
-                cachedFirestoreStoredKeys = merged;
+                if (syncSuccess) {
+                    cachedFirestoreStoredKeys = merged;
+                } else {
+                    cachedFirestoreStoredKeys = firestoreKeys;
+                }
                 lastCentralKeysFetchTime = Date.now();
                 console.log(`[Server] Central API key registry active count: ${centralKeys.length} nodes`);
                 return centralKeys;
@@ -568,7 +575,6 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                     return { id: data.id, key: decryptedKey };
                 }).filter(k => k.key && k.key.length > 0);
                 centralKeys = active;
-                cachedFirestoreStoredKeys = diskKeys;
                 return centralKeys;
             }
 
