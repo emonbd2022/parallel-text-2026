@@ -381,6 +381,12 @@ export default function App() {
     localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
   }, [localKeys, config]);
 
+  useEffect(() => {
+    if (!isProcessing && config.apiMode === 'central') {
+      window.dispatchEvent(new Event('central-usage-update'));
+    }
+  }, [isProcessing, config.apiMode]);
+
   // Automatic synchronization of local keys on startup / opening session & login, regardless of Local or Central API mode
   useEffect(() => {
     if (localKeys.length > 0) {

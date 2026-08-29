@@ -114,7 +114,12 @@ export const ApiKeyManager: React.FC<Props> = ({
   useEffect(() => {
     loadUsageStats();
     const interval = setInterval(loadUsageStats, 20000);
-    return () => clearInterval(interval);
+    const handleForceUpdate = () => loadUsageStats();
+    window.addEventListener('central-usage-update', handleForceUpdate);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('central-usage-update', handleForceUpdate);
+    };
   }, [uniqueLocalKeysCount, apiMode, user, userData, isAdmin]);
 
   // Update time for cooldown countdowns

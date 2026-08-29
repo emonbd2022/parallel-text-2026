@@ -21,17 +21,8 @@ import {
 } from 'lucide-react';
 import { CentralKeyRecord, testSingleCentralKey, markSingleCentralKeyDead } from '../services/centralKeyService';
 
-// Default lightweight sample image (a crisp camera on desk in SVG data URL converted to base64)
-const DEFAULT_DEMO_IMAGE = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(`
-<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
-  <rect width="600" height="400" fill="#1e293b"/>
-  <circle cx="300" cy="200" r="90" fill="#334155" stroke="#94a3b8" stroke-width="6"/>
-  <circle cx="300" cy="200" r="50" fill="#0f172a" stroke="#38bdf8" stroke-width="4"/>
-  <rect x="220" y="110" width="160" height="30" rx="6" fill="#475569"/>
-  <circle cx="250" cy="125" r="7" fill="#ef4444"/>
-  <text x="300" y="340" fill="#f8fafc" font-size="20" font-family="sans-serif" font-weight="bold" text-anchor="middle">Demo Stock Photography Sample</text>
-</svg>
-`);
+// Default lightweight sample image (1x1 transparent PNG)
+const DEFAULT_DEMO_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 export interface DeadApiModalProps {
   isOpen: boolean;
@@ -93,6 +84,37 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
     setLogMessages(prev => [...prev.slice(-100), { id: Math.random().toString(36), time, text, type }]);
   };
 
+  const compressImage = (dataUrl: string, callback: (compressed: string) => void) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+      const maxDim = 800;
+      if (width > maxDim || height > maxDim) {
+        if (width > height) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        callback(canvas.toDataURL('image/jpeg', 0.6));
+      } else {
+        callback(dataUrl);
+      }
+    };
+    img.src = dataUrl;
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -100,9 +122,11 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
     const reader = new FileReader();
     reader.onload = (event) => {
       if (event.target?.result) {
-        setDemoImage(event.target.result as string);
-        setDemoImageName(file.name);
-        addLog(`Demo image loaded: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`, 'info');
+        compressImage(event.target.result as string, (compressed) => {
+          setDemoImage(compressed);
+          setDemoImageName(file.name);
+          addLog(`Demo image loaded: ${file.name} (${(file.size / 1024).toFixed(1)} KB) -> compressed`, 'info');
+        });
       }
     };
     reader.readAsDataURL(file);
@@ -115,9 +139,11 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
       const reader = new FileReader();
       reader.onload = (event) => {
         if (event.target?.result) {
-          setDemoImage(event.target.result as string);
-          setDemoImageName(file.name);
-          addLog(`Demo image dropped: ${file.name}`, 'info');
+          compressImage(event.target.result as string, (compressed) => {
+            setDemoImage(compressed);
+            setDemoImageName(file.name);
+            addLog(`Demo image dropped: ${file.name} -> compressed`, 'info');
+          });
         }
       };
       reader.readAsDataURL(file);

@@ -1762,9 +1762,15 @@ apiRouter.post("/admin/keys/test-single", async (req, res) => {
             promptParts.push({ inlineData: { mimeType: 'image/jpeg', data: base64Image } });
         }
 
-        promptParts.push({
-            text: "Analyze this image and generate a 1-sentence descriptive stock photo title."
-        });
+        if (promptParts.length > 0) {
+            promptParts.push({
+                text: "Analyze this image and generate a 1-sentence descriptive stock photo title."
+            });
+        } else {
+            promptParts.push({
+                text: "Reply with the word 'OK' to confirm you are online and functional."
+            });
+        }
 
         const targetModel = model || 'gemini-3.1-flash-lite-preview';
 
