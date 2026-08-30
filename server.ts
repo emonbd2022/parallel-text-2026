@@ -1123,15 +1123,29 @@ Return a strictly valid JSON array where each object contains:
             }
         });
 
-        // Record successful request consumption (1 image = 2 requests: generate + category)
-        if (successfulImagesCount > 0) {
-            recordUserUsage(identity.id, successfulImagesCount * 2);
-        }
-
+        // REMOVED upfront deduction here. Deduction now occurs exclusively after CSV export.
+        
         res.json(results);
     } catch (error: any) {
         console.error("Central API Error:", error);
         res.status(500).json({ error: String(error?.message || error) });
+    }
+});
+
+apiRouter.post("/central-usage-deduct", async (req, res) => {
+    try {
+        const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+        const { user, requestsConsumed = 0 } = body;
+        const identity = getUserIdentity(req, user);
+        
+        if (requestsConsumed > 0) {
+            recordUserUsage(identity.id, requestsConsumed);
+        }
+        
+        res.json({ success: true });
+    } catch (e: any) {
+        console.error("Error deducting central usage:", e);
+        res.status(500).json({ success: false, error: String(e?.message || e) });
     }
 });
 

@@ -1347,6 +1347,19 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               credits: prev.unlimited ? prev.credits : (prev.credits - (numExported * 2))
           } : null);
           
+          if (config.apiMode === 'central') {
+              fetch('/api/central-usage-deduct', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ 
+                      requestsConsumed: numExported * 2,
+                      user: { uid: userData.uid, email: userData.email, role: userData.role }
+                  })
+              }).then(res => {
+                  if (res.ok) window.dispatchEvent(new Event('central-usage-update'));
+              }).catch(e => console.error("Failed to deduct central usage:", e));
+          }
+
           // Mark items as exported locally to prevent duplicate writes
           setItems(prev => prev.map(i => i.status === 'done' ? { ...i, exported: true } : i));
       }
