@@ -1348,16 +1348,46 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
           } : null);
           
           if (config.apiMode === 'central') {
-              fetch('/api/central-usage-deduct', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ 
-                      requestsConsumed: numExported * 2,
-                      user: { uid: userData.uid, email: userData.email, role: userData.role }
-                  })
-              }).then(res => {
-                  if (res.ok) window.dispatchEvent(new Event('central-usage-update'));
-              }).catch(e => console.error("Failed to deduct central usage:", e));
+              const consumed = numExported * 2;
+              try {
+                  const saved = localStorage.getItem('centralUsageStats');
+                  if (saved) {
+                      const stats = JSON.parse(saved);
+                      let currentLocalUsed = stats.usedRequests || 0;
+                      stats.usedRequests += consumed;
+                      stats.remainingRequests = Math.max(0, stats.totalRequests - stats.usedRequests);
+                      stats.remainingImages = Math.floor(stats.remainingRequests / 2);
+                      stats.isLimitReached = stats.usedRequests >= stats.totalRequests;
+                      localStorage.setItem('centralUsageStats', JSON.stringify(stats));
+                      window.dispatchEvent(new Event('central-usage-update-local'));
+                      
+                      fetch('/api/central-usage-deduct', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ 
+                              requestsConsumed: consumed,
+                              clientUsedRequests: currentLocalUsed,
+                              user: { uid: userData.uid, email: userData.email, role: userData.role }
+                          })
+                      }).then(res => {
+                          if (res.ok) window.dispatchEvent(new Event('central-usage-update'));
+                      }).catch(e => console.error("Failed to deduct central usage:", e));
+                  } else {
+                      // Fallback if no local storage
+                      fetch('/api/central-usage-deduct', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ 
+                              requestsConsumed: consumed,
+                              user: { uid: userData.uid, email: userData.email, role: userData.role }
+                          })
+                      }).then(res => {
+                          if (res.ok) window.dispatchEvent(new Event('central-usage-update'));
+                      }).catch(e => console.error("Failed to deduct central usage:", e));
+                  }
+              } catch (e) {
+                  console.error("Local stats update error:", e);
+              }
           }
 
           // Mark items as exported locally to prevent duplicate writes

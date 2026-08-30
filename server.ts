@@ -1135,9 +1135,23 @@ Return a strictly valid JSON array where each object contains:
 apiRouter.post("/central-usage-deduct", async (req, res) => {
     try {
         const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-        const { user, requestsConsumed = 0 } = body;
+        const { user, requestsConsumed = 0, clientUsedRequests } = body;
         const identity = getUserIdentity(req, user);
         
+        // If client is sending a higher usage (because server restarted), sync it upwards before adding
+        if (typeof clientUsedRequests === 'number') {
+            const cycleId = getBangladeshDailyCycleId();
+            let usage = userDailyUsageMap.get(identity.id);
+            if (!usage || usage.cycleId !== cycleId) {
+                usage = { cycleId, usedRequests: 0, lastUpdated: Date.now() };
+            }
+            if (clientUsedRequests > usage.usedRequests) {
+                usage.usedRequests = clientUsedRequests;
+                usage.lastUpdated = Date.now();
+                userDailyUsageMap.set(identity.id, usage);
+            }
+        }
+
         if (requestsConsumed > 0) {
             recordUserUsage(identity.id, requestsConsumed);
         }

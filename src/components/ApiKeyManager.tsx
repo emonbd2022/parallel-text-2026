@@ -144,6 +144,19 @@ export const ApiKeyManager: React.FC<Props> = ({
         isAdmin
       });
       if (stats) {
+        try {
+            const saved = localStorage.getItem('centralUsageStats');
+            if (saved) {
+                const parsedSaved = JSON.parse(saved);
+                // Prevent server memory reset from wiping out client usage
+                if (parsedSaved && parsedSaved.cycleId === stats.cycleId && stats.usedRequests < parsedSaved.usedRequests) {
+                    stats.usedRequests = parsedSaved.usedRequests;
+                    stats.remainingRequests = Math.max(0, stats.totalRequests - stats.usedRequests);
+                    stats.remainingImages = Math.floor(stats.remainingRequests / 2);
+                    stats.isLimitReached = stats.usedRequests >= stats.totalRequests;
+                }
+            }
+        } catch (err) {}
         setUsageStats(stats);
         localStorage.setItem('centralUsageStats', JSON.stringify(stats));
       }
@@ -158,10 +171,18 @@ export const ApiKeyManager: React.FC<Props> = ({
     loadUsageStats();
     const interval = setInterval(loadUsageStats, 20000);
     const handleForceUpdate = () => loadUsageStats();
+    const handleLocalUpdate = () => {
+        try {
+            const saved = localStorage.getItem('centralUsageStats');
+            if (saved) setUsageStats(JSON.parse(saved));
+        } catch (e) {}
+    };
     window.addEventListener('central-usage-update', handleForceUpdate);
+    window.addEventListener('central-usage-update-local', handleLocalUpdate);
     return () => {
       clearInterval(interval);
       window.removeEventListener('central-usage-update', handleForceUpdate);
+      window.removeEventListener('central-usage-update-local', handleLocalUpdate);
     };
   }, [uniqueLocalKeysCount, apiMode, user, userData, isAdmin]);
 
