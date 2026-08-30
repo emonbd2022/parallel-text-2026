@@ -1,43 +1,15 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { motion } from 'motion/react';
-import { ShieldAlert, Laptop, Smartphone, LogOut, RefreshCw, AlertTriangle, CheckCircle2, Lock, HelpCircle, ArrowRight } from 'lucide-react';
+import { ShieldAlert, Laptop, Smartphone, LogOut, AlertTriangle, Lock } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { getOrCreateDeviceId, formatDeviceId, detectDeviceMetadata, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
 
 export const DeviceLimitModal: React.FC = () => {
-  const { user, userData, logout, resetUserDevices } = useAuth();
-  const [isResetting, setIsResetting] = useState(false);
-  const [resetSuccess, setResetSuccess] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const { user, userData, logout } = useAuth();
 
   const currentDeviceId = getOrCreateDeviceId();
   const currentMeta = detectDeviceMetadata(currentDeviceId);
   const registeredIds = Array.isArray(userData?.deviceIds) ? userData.deviceIds : [];
-
-  const handleResetDevices = async () => {
-    if (!window.confirm("Authorize this device and deregister other machines? This will set this device as Device Slot 1.")) {
-      return;
-    }
-
-    setIsResetting(true);
-    setErrorMessage(null);
-    try {
-      if (resetUserDevices) {
-        await resetUserDevices();
-        setResetSuccess(true);
-        setTimeout(() => {
-          window.location.reload();
-        }, 1200);
-      } else {
-        throw new Error("Reset function not available");
-      }
-    } catch (e: any) {
-      console.error("Device reset failed:", e);
-      setErrorMessage(e.message || "Failed to reset devices. Please try signing out and back in.");
-    } finally {
-      setIsResetting(false);
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md overflow-y-auto">
@@ -63,7 +35,7 @@ export const DeviceLimitModal: React.FC = () => {
               Device Limit Reached
             </h1>
             <p className="text-slate-400 text-xs mt-0.5">
-              1 Account = Maximum 2 Active Devices
+              1 Account = Maximum {MAX_DEVICES_PER_ACCOUNT} Active Devices
             </p>
           </div>
         </div>
@@ -74,14 +46,14 @@ export const DeviceLimitModal: React.FC = () => {
             Your account <strong className="text-white font-mono bg-slate-800 px-1.5 py-0.5 rounded text-xs">{user?.email || userData?.email || 'this account'}</strong> has already reached the maximum limit of <strong className="text-rose-400">{MAX_DEVICES_PER_ACCOUNT} authorized devices</strong>.
           </p>
           <p className="text-slate-400 text-xs leading-relaxed">
-            To protect your account and maintain fair resource usage, new sessions on a 3rd distinct browser or computer are blocked until an old device is released.
+            To protect your account and maintain fair resource usage, new sessions on a 3rd distinct browser or computer are blocked until an old device is released by an administrator.
           </p>
         </div>
 
         {/* Device Status Breakdown */}
         <div className="space-y-2.5">
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider block">
-            Current Device Slots (2 of 2 in use)
+            Current Device Slots ({Math.min(registeredIds.length, MAX_DEVICES_PER_ACCOUNT)} of {MAX_DEVICES_PER_ACCOUNT} in use)
           </span>
 
           <div className="space-y-2">
@@ -134,50 +106,21 @@ export const DeviceLimitModal: React.FC = () => {
           </div>
         </div>
 
-        {/* Feedback Message */}
-        {errorMessage && (
-          <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>{errorMessage}</span>
-          </div>
-        )}
-
-        {resetSuccess && (
-          <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            <span>Device registered successfully! Refreshing session...</span>
-          </div>
-        )}
-
         {/* Action Buttons */}
         <div className="space-y-2.5 pt-2">
           <button
             type="button"
-            onClick={handleResetDevices}
-            disabled={isResetting || resetSuccess}
-            className="w-full py-3 px-4 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg shadow-purple-900/30 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-[0.99]"
-          >
-            {isResetting ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4" />
-            )}
-            <span>Authorize This Device (Reset Old Slots)</span>
-          </button>
-
-          <button
-            type="button"
             onClick={() => logout()}
-            className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-semibold rounded-xl border border-slate-700 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            className="w-full py-3 px-4 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white text-sm font-bold rounded-xl shadow-lg shadow-rose-900/30 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-[0.99]"
           >
-            <LogOut className="w-4 h-4 text-slate-400" />
+            <LogOut className="w-4 h-4" />
             <span>Sign Out & Switch Account</span>
           </button>
         </div>
 
         {/* Footer Support */}
         <div className="text-center text-[11px] text-slate-500 pt-1">
-          Need help? Contact support or an administrator to manage your devices.
+          Need help? Contact an administrator to manage your authorized devices.
         </div>
       </motion.div>
     </div>

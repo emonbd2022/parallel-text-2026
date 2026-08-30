@@ -8,13 +8,16 @@ declare const __BUILD_TIME__: string | undefined;
 declare const __GIT_COMMIT__: string | undefined;
 
 export const getAppVersion = (): string => {
+  let rawVersion = '26.0.0';
+  
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_APP_VERSION) {
-    return import.meta.env.VITE_APP_VERSION;
+    rawVersion = import.meta.env.VITE_APP_VERSION;
+  } else if (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) {
+    rawVersion = __APP_VERSION__;
   }
-  if (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) {
-    return __APP_VERSION__;
-  }
-  return '26.0.0';
+
+  // Ensure we strip off anything after a space, e.g. "26.0.0 (baa9941)" -> "26.0.0"
+  return rawVersion.split(' ')[0];
 };
 
 export const APP_VERSION = getAppVersion();

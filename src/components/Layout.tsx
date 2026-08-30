@@ -81,7 +81,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             </div>
             <div className="flex items-center gap-2">
               <span className="font-bold text-lg hidden sm:block bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-emerald-400">Parallel Text</span>
-              <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">(version : {APP_VERSION})</span>
+              <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">v{APP_VERSION}</span>
             </div>
           </button>
         </div>

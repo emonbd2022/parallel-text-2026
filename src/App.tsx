@@ -16,6 +16,7 @@ import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
 import { recordFirestoreWrite, recordFirestoreRead, getFirestoreAuditStats } from './utils/firestoreAudit';
+import { APP_VERSION } from './config/version';
 
 
 // Persistence Keys
@@ -2205,7 +2206,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                      <div>
                        <div className="flex items-center gap-2 mb-0.5">
                          <h3 className="text-base font-bold text-slate-100">Drop your creativity here</h3>
-                         <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">(version : 26.0.0)</span>
+                         <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">v{APP_VERSION}</span>
                        </div>
                        <p className="text-xs text-slate-400">
                          Drag & drop or click to upload images for title, keyword, & category generation.
