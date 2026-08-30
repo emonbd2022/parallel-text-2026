@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { signInWithGoogle, auth } from '../lib/firebase';
 import { useAuth } from '../contexts/AuthContext';
+import { APP_VERSION } from '../config/version';
 import { Layers, AlertTriangle } from 'lucide-react';
 import { motion } from 'motion/react';
 
@@ -64,7 +65,7 @@ export const Login: React.FC = () => {
         </motion.div>
         <div className="flex items-center gap-2 mb-2">
           <h1 className="text-3xl font-bold text-white">Parallel Text</h1>
-          <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">(version : 26.0.0)</span>
+          <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">(version : {APP_VERSION})</span>
         </div>
         
         {!auth ? (

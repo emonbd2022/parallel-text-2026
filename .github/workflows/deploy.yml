@@ -1,0 +1,49 @@
+name: Deploy Parallel Text & Auto Version
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Determine Dynamic Version
+        id: versioning
+        run: |
+          BUILD_NUM=${{ github.run_number }}
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          AUTO_VERSION="26.0.${BUILD_NUM}"
+          echo "AUTO_VERSION=${AUTO_VERSION}" >> $GITHUB_ENV
+          echo "Version determined: ${AUTO_VERSION} (${COMMIT_HASH})"
+
+      - name: Lint and Typecheck
+        run: npm run lint
+
+      - name: Build Application
+        env:
+          VITE_APP_VERSION: ${{ env.AUTO_VERSION }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          NODE_ENV: production
+        run: npm run build

@@ -1,8 +1,37 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Key, Upload, AlertCircle, X, Zap, ShieldCheck, Lock, CheckCircle2, RefreshCw, LogIn, AlertTriangle, Loader2, Sparkles, Clock, TrendingUp, HelpCircle, Info, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  Key, 
+  Upload, 
+  AlertCircle, 
+  X, 
+  Zap, 
+  ShieldCheck, 
+  Lock, 
+  CheckCircle2, 
+  RefreshCw, 
+  LogIn, 
+  AlertTriangle, 
+  Loader2, 
+  Sparkles, 
+  Clock, 
+  TrendingUp, 
+  HelpCircle, 
+  Info, 
+  ChevronRight, 
+  ShieldAlert,
+  RotateCcw,
+  Eye,
+  EyeOff,
+  Trash2,
+  Copy,
+  Check,
+  Activity,
+  Network
+} from 'lucide-react';
 import { ApiKey } from '../types';
 import { parseApiKeysCsv, CsvParseResult } from '../utils/csvKeyParser';
 import { ImportCsvModal } from './ImportCsvModal';
+import { LocalDeadApiModal } from './LocalDeadApiModal';
 import { syncLocalKeysToServer } from '../utils/keySync';
 import { useAuth } from '../contexts/AuthContext';
 import { validateGeminiApiKey } from '../services/geminiService';
@@ -42,31 +71,37 @@ export const ApiKeyManager: React.FC<Props> = ({
   const [isValidating, setIsValidating] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const [activeTab, setActiveTab] = useState<'keys' | 'health' | 'routing'>('keys');
 
   // CSV Import State
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isCsvModalOpen, setIsCsvModalOpen] = useState(false);
+  const [isLocalDeadApiModalOpen, setIsLocalDeadApiModalOpen] = useState(false);
   const [csvParseResult, setCsvParseResult] = useState<CsvParseResult | null>(null);
   const [csvFileName, setCsvFileName] = useState('');
   const [csvErrorMsg, setCsvErrorMsg] = useState<string | null>(null);
 
   // Derive unique local API keys via fingerprint / unique key set (0 Firestore reads/writes)
-  const sourceLocalKeys = localKeys && localKeys.length > 0 ? localKeys : keys;
-  const uniqueLocalKeySet = new Set(
-    sourceLocalKeys
-      .filter(k => k.key && !k.key.startsWith('central-') && k.key.trim().length > 10)
-      .map(k => k.key.trim())
-  );
-  const uniqueLocalKeysCount = uniqueLocalKeySet.size;
-  const localKeysCount = sourceLocalKeys.filter(k => !k.key.startsWith('central-')).length;
+  const sourceLocalKeys = useMemo(() => {
+    return localKeys && localKeys.length > 0 ? localKeys : keys;
+  }, [localKeys, keys]);
 
-  // Central API eligibility:
-  // 1. If admin disabled Central Mode globally, access is locked for normal users.
-  // 2. Admin users retain access regardless of lock.
-  // 3. Admin-granted accounts (userData?.centralApiAccess === true) retain access.
-  // 4. Any logged-in user with >= 4 UNIQUE local keys is automatically unlocked when mode is enabled.
+  const uniqueLocalKeySet = useMemo(() => {
+    return new Set(
+      sourceLocalKeys
+        .filter(k => k.key && !k.key.startsWith('central-') && k.key.trim().length > 10)
+        .map(k => k.key.trim())
+    );
+  }, [sourceLocalKeys]);
+
+  const uniqueLocalKeysCount = uniqueLocalKeySet.size;
+  const localKeysCount = useMemo(() => {
+    return sourceLocalKeys.filter(k => !k.key.startsWith('central-')).length;
+  }, [sourceLocalKeys]);
+
+  // Central API eligibility rules
   const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
   const isCentralDisabledForUser = centralModeEnabled === false && !isAdmin;
   const hasExplicitAdminGrant = userData?.centralApiAccess === true;
@@ -282,41 +317,54 @@ export const ApiKeyManager: React.FC<Props> = ({
     setVisibleKeys(next);
   };
 
+  const copyKeyText = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKeyId(id);
+    setTimeout(() => setCopiedKeyId(null), 1500);
+  };
+
   return (
-    <div className="glass-panel p-6 rounded-2xl">
-      <div className="flex bg-slate-900 rounded-xl p-1 mb-6 border border-slate-800">
+    <div className="glass-panel p-4 sm:p-5 rounded-2xl border border-white/5 shadow-xl w-full max-w-full overflow-hidden">
+      {/* Top Mode Selector Tabs */}
+      <div className="flex bg-slate-950/80 rounded-xl p-1 mb-5 border border-slate-800/90 shadow-inner">
         <button
+          type="button"
           onClick={() => handleModeChange('local')}
-          className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${apiMode === 'local' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-300'}`}
+          className={`flex-1 py-2 px-3 text-xs sm:text-sm font-bold rounded-lg transition-all cursor-pointer ${
+            apiMode === 'local' 
+              ? 'bg-slate-800 text-white shadow-md border border-slate-700/60' 
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
         >
           Local API ({localKeysCount})
         </button>
         <button
+          type="button"
           onClick={() => handleModeChange('central')}
-          className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 px-3 text-xs sm:text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             apiMode === 'central' 
-              ? 'bg-purple-600/20 text-purple-400 shadow-sm border border-purple-500/30' 
+              ? 'bg-purple-600/20 text-purple-300 shadow-md border border-purple-500/40' 
               : isCentralDisabledForUser
                 ? 'text-slate-500 opacity-60 hover:text-slate-400 cursor-not-allowed bg-slate-900/40'
                 : isEligibleForCentral 
-                  ? 'text-slate-400 hover:text-slate-300' 
+                  ? 'text-slate-400 hover:text-purple-300' 
                   : 'text-slate-500 opacity-80 hover:text-slate-400'
           }`}
         >
           {isCentralDisabledForUser ? (
             <>
               <Lock className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-              <span className="text-rose-300/80">Central API Locked</span>
+              <span className="text-rose-300/90 truncate">Central Locked</span>
             </>
           ) : isEligibleForCentral ? (
             <>
-              <Zap className="w-4 h-4 text-purple-400 shrink-0" />
-              <span>Central API — Blazing Fast</span>
+              <Zap className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+              <span className="truncate">Central API Pool</span>
             </>
           ) : (
             <>
               <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span>Requires 4 keys ({uniqueLocalKeysCount}/4)</span>
+              <span className="truncate">Unlock ({uniqueLocalKeysCount}/4)</span>
             </>
           )}
         </button>
@@ -324,13 +372,13 @@ export const ApiKeyManager: React.FC<Props> = ({
 
       {/* Central Mode Disabled by Admin Banner */}
       {isCentralDisabledForUser && (
-        <div className="mb-6 p-4 bg-gradient-to-r from-rose-950/30 via-slate-900 to-slate-900 border border-rose-500/30 rounded-xl text-xs space-y-2">
+        <div className="mb-5 p-4 bg-gradient-to-r from-rose-950/30 via-slate-900 to-slate-900 border border-rose-500/30 rounded-xl text-xs space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-bold text-rose-300 text-sm">
               <Lock className="w-4 h-4 text-rose-400 shrink-0" />
               Central API Mode Locked
             </div>
-            <span className="text-[11px] font-mono font-bold bg-rose-500/20 text-rose-300 px-2.5 py-0.5 rounded-full border border-rose-500/30">
+            <span className="text-[10px] font-mono font-bold bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded-full border border-rose-500/30">
               Disabled by Admin
             </span>
           </div>
@@ -342,7 +390,7 @@ export const ApiKeyManager: React.FC<Props> = ({
 
       {/* Central Unlock Progress / Notice */}
       {!isCentralDisabledForUser && !isEligibleForCentral && apiMode !== 'central' && (
-        <div className="mb-6 p-4 bg-gradient-to-r from-purple-950/30 via-slate-900 to-slate-900 border border-purple-500/30 rounded-xl text-xs space-y-3">
+        <div className="mb-5 p-4 bg-gradient-to-r from-purple-950/30 via-slate-900 to-slate-900 border border-purple-500/30 rounded-xl text-xs space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-bold text-purple-300 text-sm">
               <Zap className="w-4 h-4 text-purple-400 shrink-0" />
@@ -357,7 +405,6 @@ export const ApiKeyManager: React.FC<Props> = ({
             Add at least <strong>4 unique, valid Gemini API keys</strong> to your local pool to automatically unlock the shared, high-speed Central API pool. No admin approval required.
           </p>
 
-          {/* Allocation preview formula */}
           <div className="p-2.5 bg-slate-950/70 rounded-lg border border-purple-500/20 flex items-center justify-between text-[11px]">
             <span className="text-purple-300 font-medium flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />
@@ -368,7 +415,6 @@ export const ApiKeyManager: React.FC<Props> = ({
             </span>
           </div>
 
-          {/* Visual Progress Bar */}
           <div className="space-y-1.5">
             <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-700/50">
               <div 
@@ -391,7 +437,7 @@ export const ApiKeyManager: React.FC<Props> = ({
               Account Status: {!user && !userData ? (
                 <strong className="text-slate-500">Not Logged In</strong>
               ) : (
-                <strong className="text-purple-300">
+                <strong className="text-purple-300 truncate max-w-[140px]">
                   {userData?.email || user?.email || 'Logged In'}
                 </strong>
               )}
@@ -414,22 +460,22 @@ export const ApiKeyManager: React.FC<Props> = ({
       )}
 
       {apiMode === 'central' ? (
-        <div className="space-y-5">
+        <div className="space-y-4">
           {/* Main Central Pool Status Card */}
-          <div className="p-5 bg-gradient-to-br from-purple-950/40 via-slate-900/60 to-slate-900/90 rounded-xl border border-purple-500/30 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-purple-600/20 rounded-xl flex items-center justify-center border border-purple-500/30 text-purple-400">
-                  <Zap className="w-5 h-5" />
+          <div className="p-4 sm:p-5 bg-gradient-to-br from-purple-950/40 via-slate-900/60 to-slate-900/90 rounded-xl border border-purple-500/30 space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 bg-purple-600/20 rounded-xl flex items-center justify-center border border-purple-500/30 text-purple-400 shrink-0">
+                  <Zap className="w-4 h-4" />
                 </div>
-                <div>
-                  <h3 className="text-base font-bold text-white flex items-center gap-2">
-                    Central API Pool Active
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold">
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold text-white flex items-center gap-2 truncate">
+                    <span>Central API Pool Active</span>
+                    <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold shrink-0">
                       Live Connected
                     </span>
                   </h3>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-[11px] text-slate-400 truncate">
                     High-speed distributed parallel processing nodes
                   </p>
                 </div>
@@ -444,7 +490,7 @@ export const ApiKeyManager: React.FC<Props> = ({
                   className="p-2 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 rounded-xl text-purple-300 transition-colors shrink-0 cursor-pointer"
                   title="Refresh Central Pool & Usage"
                 >
-                  <RefreshCw className={`w-4 h-4 ${isLoadingUsage ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingUsage ? 'animate-spin' : ''}`} />
                 </button>
               )}
             </div>
@@ -462,15 +508,15 @@ export const ApiKeyManager: React.FC<Props> = ({
               const percentageUsed = totalReqs > 0 ? Math.min(100, Math.round((usedReqs / totalReqs) * 100)) : 0;
 
               return (
-                <div className="p-4 bg-slate-950/80 rounded-xl border border-purple-500/20 space-y-3.5">
+                <div className="p-3.5 bg-slate-950/80 rounded-xl border border-purple-500/20 space-y-3">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <TrendingUp className="w-4 h-4 text-purple-400" />
-                      <span className="text-xs font-bold text-white tracking-wide uppercase">
-                        Central API Daily Allocation
+                    <div className="flex items-center gap-1.5">
+                      <TrendingUp className="w-3.5 h-3.5 text-purple-400" />
+                      <span className="text-[11px] font-bold text-white tracking-wide uppercase">
+                        Central Daily Allocation
                       </span>
                     </div>
-                    <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
+                    <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border ${
                       isExhausted 
                         ? 'bg-rose-500/20 text-rose-300 border-rose-500/30' 
                         : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
@@ -479,45 +525,43 @@ export const ApiKeyManager: React.FC<Props> = ({
                     </span>
                   </div>
 
-                  {/* High Visibility Metrics Grid */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                    <div className="p-3 bg-slate-900/90 rounded-lg border border-slate-800">
-                      <span className="text-[11px] text-slate-400 block mb-0.5 font-medium">Images Remaining</span>
-                      <div className="flex items-baseline gap-1.5">
-                        <span className={`text-xl font-bold font-mono ${isExhausted ? 'text-rose-400' : 'text-emerald-400'}`}>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    <div className="p-2.5 bg-slate-900/90 rounded-lg border border-slate-800">
+                      <span className="text-[10px] text-slate-400 block mb-0.5 font-medium">Images Remaining</span>
+                      <div className="flex items-baseline gap-1">
+                        <span className={`text-lg font-bold font-mono ${isExhausted ? 'text-rose-400' : 'text-emerald-400'}`}>
                           {remainingImgs}
                         </span>
-                        <span className="text-xs text-slate-500 font-mono">/ {totalImgs}</span>
+                        <span className="text-[11px] text-slate-500 font-mono">/ {totalImgs}</span>
                       </div>
                     </div>
 
-                    <div className="p-3 bg-slate-900/90 rounded-lg border border-slate-800">
-                      <span className="text-[11px] text-slate-400 block mb-0.5 font-medium">Requests Available</span>
-                      <div className="flex items-baseline gap-1.5">
-                        <span className="text-xl font-bold font-mono text-purple-300">
+                    <div className="p-2.5 bg-slate-900/90 rounded-lg border border-slate-800">
+                      <span className="text-[10px] text-slate-400 block mb-0.5 font-medium">Requests Avail</span>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-lg font-bold font-mono text-purple-300">
                           {remainingReqs}
                         </span>
-                        <span className="text-xs text-slate-500 font-mono">/ {totalReqs}</span>
+                        <span className="text-[11px] text-slate-500 font-mono">/ {totalReqs}</span>
                       </div>
                     </div>
 
-                    <div className="p-3 bg-slate-900/90 rounded-lg border border-slate-800 col-span-2 sm:col-span-1">
-                      <span className="text-[11px] text-slate-400 block mb-0.5 font-medium">Local Key Factor</span>
-                      <div className="flex items-baseline gap-1.5">
-                        <span className="text-xl font-bold font-mono text-amber-400">
+                    <div className="p-2.5 bg-slate-900/90 rounded-lg border border-slate-800 col-span-2 sm:col-span-1">
+                      <span className="text-[10px] text-slate-400 block mb-0.5 font-medium">Local Key Factor</span>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-lg font-bold font-mono text-amber-400">
                           {isAdmin ? 'Admin Unlimited' : `${uniqueLocalKeysCount} Keys`}
                         </span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Usage Progress Meter */}
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between items-center text-[11px] text-slate-400">
+                  <div className="space-y-1">
+                    <div className="flex justify-between items-center text-[10px] text-slate-400">
                       <span>Used: <strong className="text-slate-200 font-mono">{usedReqs}</strong> requests ({percentageUsed}%)</span>
-                      <span>Capacity: <strong className="text-slate-200 font-mono">{totalReqs}</strong> req / day</span>
+                      <span>Capacity: <strong className="text-slate-200 font-mono">{totalReqs}</strong> / day</span>
                     </div>
-                    <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                    <div className="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-800">
                       <div 
                         className={`h-full transition-all duration-500 ease-out ${
                           isExhausted
@@ -531,41 +575,28 @@ export const ApiKeyManager: React.FC<Props> = ({
                     </div>
                   </div>
 
-                  {/* Reset Banner & Countdown */}
-                  <div className="p-2.5 bg-purple-950/30 rounded-lg border border-purple-900/30 flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2 text-slate-300">
-                      <Clock className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                  <div className="p-2 bg-purple-950/30 rounded-lg border border-purple-900/30 flex items-center justify-between text-[11px]">
+                    <div className="flex items-center gap-1.5 text-slate-300">
+                      <Clock className="w-3 h-3 text-purple-400 shrink-0" />
                       <span>Resets daily at <strong>2:00 PM BST (GMT+6)</strong></span>
                     </div>
-                    <span className="font-mono text-purple-300 font-bold bg-purple-900/40 px-2 py-0.5 rounded border border-purple-700/40 text-[11px]">
+                    <span className="font-mono text-purple-300 font-bold bg-purple-900/40 px-2 py-0.5 rounded border border-purple-700/40 text-[10px]">
                       {timeUntilResetStr}
                     </span>
-                  </div>
-
-                  {/* Allocation Formula Note */}
-                  <div className="text-[11px] text-slate-400/90 leading-relaxed bg-slate-900/40 p-2.5 rounded-lg border border-slate-800/80">
-                    <span className="text-purple-300 font-semibold">Allocation Rule: </span>
-                    1 Local Key = 100 Central API requests = 50 images per day. 
-                    {isAdmin ? (
-                      <span className="text-amber-400 font-medium"> (Administrator access granted)</span>
-                    ) : (
-                      <span className="text-slate-300 font-mono"> Current: {uniqueLocalKeysCount} Keys × 50 Images = {totalImgs} Images/day</span>
-                    )}
                   </div>
                 </div>
               );
             })()}
 
-            {/* Motivation Upgrade Card */}
             {!isAdmin && (
-              <div className="p-4 bg-gradient-to-r from-purple-900/30 via-indigo-950/40 to-slate-900/90 rounded-xl border border-purple-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 font-bold text-white text-xs">
-                    <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
-                    Want more Central API daily allowance?
+              <div className="p-3 bg-gradient-to-r from-purple-900/30 via-indigo-950/40 to-slate-900/90 rounded-xl border border-purple-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-1.5 font-bold text-white text-xs">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    Want more Central API daily quota?
                   </div>
                   <p className="text-[11px] text-slate-300">
-                    Add <strong>2 more local API keys</strong> to automatically expand capacity by <strong className="text-emerald-400">+100 images/day (+200 requests)</strong>!
+                    Add <strong>2 more local keys</strong> for <strong className="text-emerald-400">+100 images/day</strong>!
                   </p>
                 </div>
                 <button
@@ -574,116 +605,111 @@ export const ApiKeyManager: React.FC<Props> = ({
                     onChangeApiMode('local');
                     setShowInput(true);
                   }}
-                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg border border-purple-400/30 shadow-md shadow-purple-950/50 flex items-center gap-1.5 shrink-0 cursor-pointer transition-all active:scale-95"
+                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg border border-purple-400/30 shadow-md flex items-center gap-1.5 shrink-0 cursor-pointer active:scale-95 transition-all"
                 >
-                  <Key className="w-3.5 h-3.5" /> + Add Local Keys
+                  <Key className="w-3 h-3" /> + Add Local Keys
                 </button>
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="p-3 bg-slate-900/80 rounded-xl border border-slate-800">
-                <span className="text-slate-400 text-[11px] block mb-1">Active Worker Nodes</span>
-                <span className="text-xl font-bold text-white font-mono flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
+            <div className="grid grid-cols-2 gap-2.5">
+              <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-slate-400 text-[10px] block mb-0.5">Active Central Nodes</span>
+                <span className="text-base font-bold text-white font-mono flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
                   {keys.length > 0 ? keys.length : '16'} Nodes
                 </span>
               </div>
-              <div className="p-3 bg-slate-900/80 rounded-xl border border-slate-800">
-                <span className="text-slate-400 text-[11px] block mb-1">Security Mode</span>
-                <span className="text-xs font-semibold text-purple-300 flex items-center gap-1.5 mt-1">
-                  <ShieldCheck className="w-4 h-4 text-purple-400" />
-                  In-Memory Encrypted
+              <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-slate-400 text-[10px] block mb-0.5">Storage Mode</span>
+                <span className="text-[11px] font-semibold text-purple-300 flex items-center gap-1.5 mt-0.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
+                  In-Memory RAM
                 </span>
               </div>
-            </div>
-
-            <div className="p-3 bg-purple-950/30 rounded-xl border border-purple-800/30 text-xs text-purple-200/80 flex items-start gap-2.5">
-              <Lock className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
-              <span>
-                <strong>Zero Local Storage Footprint:</strong> Central pool keys are securely loaded into runtime RAM and never stored in browser localStorage.
-              </span>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex justify-between items-center text-xs font-medium text-slate-400 px-1">
-              <span>Connected Central Nodes</span>
-              <span className="text-emerald-400 flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                {keys.length > 0 ? `${keys.length} Ready` : 'Ready to Process'}
-              </span>
-            </div>
-
-            <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
-              {(keys.length > 0 ? keys : Array.from({ length: 8 }, (_, i) => ({ id: `node-${i}`, label: `Central Pool Node ${i + 1}`, errorCount: 0 }))).map((node, index) => (
-                <div 
-                  key={node.id || index}
-                  className="p-2.5 bg-slate-900/60 rounded-xl border border-slate-800/80 flex items-center justify-between text-xs"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                    <span className="text-slate-200 font-medium">{`Central Pool Node ${index + 1}`}</span>
-                  </div>
-                  <span className="text-[11px] font-mono text-purple-300/80 bg-purple-950/40 px-2 py-0.5 rounded border border-purple-900/40">
-                    Active
-                  </span>
-                </div>
-              ))}
             </div>
           </div>
         </div>
       ) : (
-        <>
-          <div className="flex justify-between items-center mb-6">
-            <div className="flex gap-4 items-center">
+        /* LOCAL API INTERFACE */
+        <div className="space-y-4">
+          {/* Sub-Header: Segmented Tab Bar */}
+          <div className="flex items-center justify-between gap-2 p-1 bg-slate-950/70 rounded-xl border border-slate-800/80">
+            <div className="flex items-center gap-1 w-full sm:w-auto">
               <button 
+                type="button"
                 onClick={() => setActiveTab('keys')}
-                className={`text-lg font-bold transition-colors ${activeTab === 'keys' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
+                className={`flex-1 sm:flex-initial py-1.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  activeTab === 'keys' 
+                    ? 'bg-slate-800 text-white shadow-sm border border-slate-700' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
               >
-                <span className="flex items-center gap-1.5"><Key className="w-4 h-4" /> API Keys ({keys.length})</span>
+                <Key className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                <span>Keys ({keys.length})</span>
               </button>
               <button 
+                type="button"
                 onClick={() => setActiveTab('health')}
-                className={`text-lg font-bold transition-colors ${activeTab === 'health' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
+                className={`flex-1 sm:flex-initial py-1.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  activeTab === 'health' 
+                    ? 'bg-slate-800 text-white shadow-sm border border-slate-700' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
               >
-                Health Status
+                <Activity className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>Health</span>
               </button>
               <button 
+                type="button"
                 onClick={() => setActiveTab('routing')}
-                className={`text-lg font-bold transition-colors ${activeTab === 'routing' ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}
+                className={`flex-1 sm:flex-initial py-1.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  activeTab === 'routing' 
+                    ? 'bg-slate-800 text-white shadow-sm border border-slate-700' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
               >
-                Routing
+                <Network className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                <span>Routing</span>
               </button>
             </div>
-            {activeTab === 'keys' && (
-              <div className="flex items-center gap-2">
-                {onResetAll && keys.length > 0 && (
-                  <button 
-                    onClick={onResetAll}
-                    className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-red-600/20 text-red-400 hover:bg-red-600 hover:text-white border border-red-500/30 hover:border-red-500 shadow-sm cursor-pointer"
-                  >
-                    Reset All
-                  </button>
-                )}
+          </div>
+
+          {/* Action Toolbar for Keys Tab */}
+          {activeTab === 'keys' && (
+            <div className="flex flex-wrap items-center gap-2 justify-between pt-1">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <button 
+                  type="button"
                   onClick={() => setShowInput(!showInput)}
-                  className={`text-xs font-semibold px-3 py-1.5 rounded-full transition-all cursor-pointer ${
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shrink-0 shadow-sm ${
                     showInput 
-                      ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' 
-                      : 'bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-900/50'
+                      ? 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700' 
+                      : 'bg-purple-600 text-white hover:bg-purple-500 shadow-purple-900/40 border border-purple-400/30'
                   }`}
                 >
-                  {showInput ? 'Cancel' : '+ Add Key'}
+                  <Key className="w-3.5 h-3.5" />
+                  <span>{showInput ? 'Cancel' : '+ Add Key'}</span>
                 </button>
+
+                <button 
+                  type="button"
+                  onClick={() => setIsLocalDeadApiModalOpen(true)}
+                  title="Scan for dead or rate-limited API keys"
+                  className="text-xs font-semibold px-3 py-1.5 rounded-xl transition-all bg-rose-950/40 hover:bg-rose-900/70 text-rose-300 hover:text-white border border-rose-800/40 hover:border-rose-600 shadow-sm flex items-center gap-1.5 cursor-pointer shrink-0 active:scale-95"
+                >
+                  <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Scan Local Keys</span>
+                </button>
+
                 <button 
                   type="button"
                   onClick={handleOpenCsvPicker}
                   title="Import multiple API keys from a CSV file"
-                  className="text-xs font-semibold px-3 py-1.5 rounded-full transition-all bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 hover:border-slate-600 shadow-sm flex items-center gap-1.5 cursor-pointer active:scale-95"
+                  className="text-xs font-semibold px-3 py-1.5 rounded-xl transition-all bg-slate-800/90 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700/80 shadow-sm flex items-center gap-1.5 cursor-pointer shrink-0 active:scale-95"
                 >
                   <Upload className="w-3.5 h-3.5 text-purple-400" />
-                  Import CSV
+                  <span>Import CSV</span>
                 </button>
                 <input 
                   type="file"
@@ -693,334 +719,389 @@ export const ApiKeyManager: React.FC<Props> = ({
                   className="hidden"
                 />
               </div>
-            )}
-          </div>
 
-      {csvErrorMsg && (
-        <div className="mb-4 p-3 bg-rose-950/40 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center justify-between animate-in fade-in">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>{csvErrorMsg}</span>
-          </div>
-          <button 
-            type="button" 
-            onClick={() => setCsvErrorMsg(null)}
-            className="text-rose-400 hover:text-rose-200 p-1 cursor-pointer"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+              {onResetAll && keys.length > 0 && (
+                <button 
+                  type="button"
+                  onClick={onResetAll}
+                  title="Reset error counts and usage counters for all local keys"
+                  className="text-[11px] font-semibold px-2.5 py-1.5 rounded-xl transition-all bg-red-950/30 text-red-300 hover:bg-red-900/60 hover:text-white border border-red-900/40 hover:border-red-700 shadow-sm flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  <RotateCcw className="w-3 h-3 text-red-400" />
+                  <span>Reset All</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* CSV Parsing Error Banner */}
+          {csvErrorMsg && (
+            <div className="p-3 bg-rose-950/40 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center justify-between animate-in fade-in">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{csvErrorMsg}</span>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setCsvErrorMsg(null)}
+                className="text-rose-400 hover:text-rose-200 p-1 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* CSV Import Preview Modal */}
+          <ImportCsvModal 
+            isOpen={isCsvModalOpen}
+            onClose={() => {
+              setIsCsvModalOpen(false);
+              setCsvParseResult(null);
+              setCsvFileName('');
+            }}
+            parseResult={csvParseResult}
+            fileName={csvFileName}
+            onConfirmImport={handleConfirmCsvImport}
+          />
+
+          {/* Local Dead API Scanner Modal */}
+          <LocalDeadApiModal
+            isOpen={isLocalDeadApiModalOpen}
+            onClose={() => setIsLocalDeadApiModalOpen(false)}
+            localKeys={sourceLocalKeys}
+            onRemove={onRemove}
+            onRemoveMultiple={(ids) => {
+              ids.forEach(id => onRemove(id));
+            }}
+            onScanComplete={() => {}}
+          />
+
+          {/* Add Key Inline Form */}
+          {activeTab === 'keys' && showInput && (
+            <form onSubmit={handleSubmit} className="bg-slate-900/90 p-4 rounded-xl border border-purple-500/30 space-y-3 animate-in fade-in">
+              <div className="space-y-2.5">
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 pl-0.5">Label (Optional)</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g., Primary Gemini Key"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700/80 rounded-lg px-3 py-2 text-xs text-white focus:border-purple-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-slate-400 mb-1 pl-0.5">API Secret (Live Verified)</label>
+                  <input 
+                    type="password" 
+                    placeholder="AIzaSy..."
+                    value={keyVal}
+                    onChange={(e) => {
+                      setKeyVal(e.target.value);
+                      setValidationError(null);
+                    }}
+                    required
+                    className="w-full bg-slate-950 border border-slate-700/80 rounded-lg px-3 py-2 text-xs text-white focus:border-purple-500 outline-none font-mono"
+                  />
+                </div>
+                {validationError && (
+                  <div className="p-2.5 bg-rose-950/60 border border-rose-500/40 rounded-lg text-xs text-rose-300 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>{validationError}</span>
+                  </div>
+                )}
+              </div>
+              <button 
+                type="submit" 
+                disabled={isValidating || !keyVal.trim()}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs py-2 rounded-lg transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-md"
+              >
+                {isValidating ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Validating Key Live with Google API...</span>
+                  </>
+                ) : (
+                  <span>Verify & Save Key</span>
+                )}
+              </button>
+            </form>
+          )}
+
+          {/* Keys Tab: Key Cards List */}
+          {activeTab === 'keys' && (
+            <div className="space-y-2 max-h-80 sm:max-h-96 min-h-[140px] overflow-y-auto pr-1 custom-scrollbar">
+              {keys.length === 0 && !showInput ? (
+                <div className="text-center py-8 bg-slate-950/50 rounded-xl border border-dashed border-slate-800 space-y-2 p-4">
+                  <Key className="w-6 h-6 text-slate-600 mx-auto" />
+                  <p className="text-xs font-semibold text-slate-300">No Local API Keys Configured</p>
+                  <p className="text-[11px] text-slate-500 max-w-xs mx-auto">
+                    Add a Gemini API key or import a CSV to start generating captions and processing images.
+                  </p>
+                  <div className="pt-2 flex justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowInput(true)}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg transition-all"
+                    >
+                      + Add Key
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleOpenCsvPicker}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition-all"
+                    >
+                      Import CSV
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                keys.map((k) => {
+                  const isCoolingDown = k.cooldownUntil && k.cooldownUntil > now;
+                  const remainingSecs = isCoolingDown ? Math.ceil((k.cooldownUntil! - now) / 1000) : 0;
+                  const isDead = k.errorCount >= 20;
+                  const usage = k.usage || {};
+                  const totalUsed = Object.entries(usage).reduce((sum, [key, val]) => {
+                    return key !== 'date' && typeof val === 'number' ? sum + val : sum;
+                  }, 0);
+
+                  const health = Math.max(0, 100 - (k.errorCount * 5));
+
+                  return (
+                    <div 
+                      key={k.id} 
+                      className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-3 ${
+                        isDead 
+                          ? 'bg-rose-950/20 border-rose-500/30' 
+                          : isCoolingDown 
+                          ? 'bg-amber-950/20 border-amber-500/30' 
+                          : 'bg-slate-900/70 hover:bg-slate-900 border-slate-800/80'
+                      }`}
+                    >
+                      <div className="flex flex-col min-w-0 flex-1 gap-1">
+                        {/* Header & Badges */}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span 
+                            className={`font-bold text-xs truncate max-w-[140px] sm:max-w-[180px] ${
+                              isDead ? 'text-rose-400' : 'text-slate-200'
+                            }`} 
+                            title={k.label}
+                          >
+                            {k.label}
+                          </span>
+
+                          <span 
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${
+                              health > 70 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 
+                              health > 30 ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 
+                              'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                            }`} 
+                            title="Health Score"
+                          >
+                            {health}%
+                          </span>
+
+                          {totalUsed > 0 && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded font-mono font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                              {totalUsed} reqs
+                            </span>
+                          )}
+
+                          {isCoolingDown && (
+                            <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono font-bold">
+                              Cooldown {remainingSecs}s
+                            </span>
+                          )}
+
+                          {isDead && (
+                            <span className="text-[9px] bg-rose-500/20 text-rose-300 border border-rose-500/30 px-1.5 py-0.5 rounded font-mono font-bold">
+                              FAILED
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Masked Key Identifier */}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] text-slate-400 font-mono truncate max-w-[200px]">
+                            {visibleKeys.has(k.id) 
+                              ? k.key 
+                              : `${k.key.substring(0, 6)}••••••••${k.key.substring(k.key.length - 4)}`}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => copyKeyText(k.id, k.key)}
+                          className="text-slate-400 hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                          title="Copy Key"
+                        >
+                          {copiedKeyId === k.id ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+
+                        <button 
+                          type="button"
+                          onClick={() => toggleVisibility(k.id)}
+                          className="text-slate-400 hover:text-purple-300 p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                          title={visibleKeys.has(k.id) ? "Hide Key" : "Show Key"}
+                        >
+                          {visibleKeys.has(k.id) ? (
+                            <EyeOff className="w-3.5 h-3.5 text-purple-400" />
+                          ) : (
+                            <Eye className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => onResetUsage(k.id)}
+                          className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                          title="Reset Usage"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        </button>
+
+                        <button 
+                          type="button"
+                          onClick={() => onRemove(k.id)}
+                          className="text-slate-400 hover:text-rose-400 p-1.5 rounded-lg hover:bg-rose-950/40 transition-colors cursor-pointer"
+                          title="Delete Key"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {/* Health Status Tab */}
+          {activeTab === 'health' && (
+            <div className="space-y-3 max-h-80 sm:max-h-96 min-h-[140px] overflow-y-auto pr-1 custom-scrollbar">
+              {keys.length === 0 ? (
+                <div className="text-center py-8 bg-slate-950/50 rounded-xl border border-dashed border-slate-800 space-y-1">
+                  <p className="text-xs font-semibold text-slate-300">No Keys Available</p>
+                  <p className="text-[11px] text-slate-500">Add local keys to monitor live health & error rates.</p>
+                </div>
+              ) : (
+                keys.map(k => {
+                  const totalSuccess = Object.keys(k.usage || {}).reduce((acc, key) => {
+                    if (key !== 'date' && typeof (k.usage as any)[key] === 'number') {
+                      return acc + (k.usage as any)[key];
+                    }
+                    return acc;
+                  }, 0);
+                  const totalAttempts = totalSuccess + k.errorCount;
+                  const successRate = totalAttempts > 0 ? (totalSuccess / totalAttempts) * 100 : 100;
+                  const health = Math.max(0, Math.min(100, successRate - (k.errorCount > 0 ? (k.errorCount / 20) * 100 : 0)));
+                  
+                  const isDead = k.errorCount >= 20;
+                  let colorClass = "bg-emerald-500";
+                  if (isDead) colorClass = "bg-rose-600";
+                  else if (health < 50) colorClass = "bg-rose-500";
+                  else if (health < 80) colorClass = "bg-amber-500";
+
+                  return (
+                    <div key={k.id} className="p-3 bg-slate-900/70 border border-slate-800/80 rounded-xl space-y-2">
+                      <div className="flex justify-between items-center text-xs">
+                        <div className="flex flex-col min-w-0">
+                          <span className={`font-semibold truncate max-w-[140px] ${isDead ? 'text-rose-400' : 'text-slate-200'}`} title={k.label}>
+                            {k.label}
+                          </span>
+                          <span className="text-[10px] text-slate-400 mt-0.5">Lifetime Requests: {totalSuccess}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {k.errorCount} err
+                          </span>
+                          <span className={`font-mono font-bold text-xs ${health >= 80 ? 'text-emerald-400' : health >= 50 ? 'text-amber-400' : 'text-rose-400'}`}>
+                            {isDead ? 'DEAD' : `${health.toFixed(0)}%`}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
+                        <div 
+                          className={`h-full rounded-full transition-all duration-500 ${colorClass}`}
+                          style={{ width: `${isDead ? 100 : health}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {/* Routing Status Tab */}
+          {activeTab === 'routing' && (
+            <div className="space-y-3 max-h-80 sm:max-h-96 min-h-[140px] overflow-y-auto pr-1 custom-scrollbar">
+              {keys.length === 0 ? (
+                <div className="text-center py-8 bg-slate-950/50 rounded-xl border border-dashed border-slate-800 space-y-1">
+                  <p className="text-xs font-semibold text-slate-300">No Keys Available for Routing</p>
+                  <p className="text-[11px] text-slate-500">Add local keys to enable automated dual-pool load balancing.</p>
+                </div>
+              ) : (
+                <div className="space-y-3 text-xs">
+                  <div className="bg-slate-900/70 p-3.5 rounded-xl border border-slate-800/80 space-y-2">
+                    <h4 className="font-bold text-xs text-purple-300 uppercase tracking-wide">
+                      Title & Keyword Pool ({Math.ceil(keys.length / 2)} keys)
+                    </h4>
+                    <ul className="space-y-1.5">
+                      {keys.slice(0, Math.ceil(keys.length / 2)).map(k => (
+                        <li key={k.id} className="flex justify-between items-center p-1.5 bg-slate-950/60 rounded-lg border border-slate-850">
+                          <span className="text-slate-300 font-medium truncate max-w-[140px]">{k.label}</span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded font-mono ${
+                            k.errorCount >= 20 ? 'bg-rose-500/20 text-rose-300' : 
+                            (k.cooldownUntil && k.cooldownUntil > now) ? 'bg-amber-500/20 text-amber-300' : 
+                            'bg-emerald-500/20 text-emerald-300'
+                          }`}>
+                            {k.errorCount >= 20 ? 'Failed' : (k.cooldownUntil && k.cooldownUntil > now) ? 'Cooldown' : 'Healthy'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="bg-slate-900/70 p-3.5 rounded-xl border border-slate-800/80 space-y-2">
+                    <h4 className="font-bold text-xs text-blue-300 uppercase tracking-wide">
+                      Category & Description Pool ({Math.floor(keys.length / 2)} keys)
+                    </h4>
+                    <ul className="space-y-1.5">
+                      {keys.slice(Math.ceil(keys.length / 2)).map(k => (
+                        <li key={k.id} className="flex justify-between items-center p-1.5 bg-slate-950/60 rounded-lg border border-slate-850">
+                          <span className="text-slate-300 font-medium truncate max-w-[140px]">{k.label}</span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded font-mono ${
+                            k.errorCount >= 20 ? 'bg-rose-500/20 text-rose-300' : 
+                            (k.cooldownUntil && k.cooldownUntil > now) ? 'bg-amber-500/20 text-amber-300' : 
+                            'bg-emerald-500/20 text-emerald-300'
+                          }`}>
+                            {k.errorCount >= 20 ? 'Failed' : (k.cooldownUntil && k.cooldownUntil > now) ? 'Cooldown' : 'Healthy'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div className="bg-slate-900/70 p-3.5 rounded-xl border border-slate-800/80 space-y-2">
+                    <h4 className="font-bold text-xs text-slate-300">Failover & Fallback Protocol</h4>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      If one pool exhausts all healthy keys, requests automatically route to the counterpart pool with zero dropped jobs.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
-
-      {/* CSV Import Preview Modal */}
-      <ImportCsvModal 
-        isOpen={isCsvModalOpen}
-        onClose={() => {
-          setIsCsvModalOpen(false);
-          setCsvParseResult(null);
-          setCsvFileName('');
-        }}
-        parseResult={csvParseResult}
-        fileName={csvFileName}
-        onConfirmImport={handleConfirmCsvImport}
-      />
-
-      {activeTab === 'keys' && showInput && (
-        <form onSubmit={handleSubmit} className="mb-6 bg-slate-800/50 p-4 rounded-xl border border-white/5 animate-in fade-in slide-in-from-top-2">
-          <div className="space-y-3 mb-4">
-            <div>
-              <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1 pl-1">Label</label>
-              <input 
-                type="text" 
-                placeholder="My Gemini Key"
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] uppercase font-bold text-slate-500 mb-1 pl-1">API Secret (Live Verified)</label>
-              <input 
-                type="text" 
-                placeholder="AIzaSy..."
-                value={keyVal}
-                onChange={(e) => {
-                  setKeyVal(e.target.value);
-                  setValidationError(null);
-                }}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-purple-500 outline-none font-mono"
-              />
-            </div>
-            {validationError && (
-              <div className="p-2.5 bg-rose-950/60 border border-rose-500/40 rounded-lg text-xs text-rose-300 flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                <span>{validationError}</span>
-              </div>
-            )}
-          </div>
-          <button 
-            type="submit" 
-            disabled={isValidating || !keyVal.trim()}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium text-sm py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
-          >
-            {isValidating ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Validating Key Live with Google API...</span>
-              </>
-            ) : (
-              'Verify & Save Key'
-            )}
-          </button>
-        </form>
-      )}
-
-      {activeTab === 'keys' && (
-      <div className="space-y-2 max-h-52 overflow-y-auto pr-2 custom-scrollbar">
-        {keys.length === 0 && !showInput && (
-          <div className="text-center py-6 bg-slate-800/30 rounded-xl border border-dashed border-slate-700">
-            <p className="text-sm text-slate-400">No keys configured.</p>
-            <p className="text-xs text-slate-500 mt-1">Add a Gemini API key to start.</p>
-          </div>
-        )}
-        {keys.map((k) => {
-          const isCoolingDown = k.cooldownUntil && k.cooldownUntil > now;
-          const remainingSecs = isCoolingDown ? Math.ceil((k.cooldownUntil! - now) / 1000) : 0;
-          const isDead = k.errorCount >= 20; // Increased from 5
-          const usage = {
-          date: '',
-          flash_3: 0,
-          flash: 0,
-          lite: 0,
-          flash_3_1_lite: 0,
-          flash_3_5: 0,
-          flash_3_5_lite: 0,
-          flash_3_6: 0,
-          ...(k.usage ?? {})
-        };
-
-          const flashLimit = usage.flash >= 10000;
-          const liteLimit = usage.lite >= 20;
-          const flash_3_Limit = usage.flash_3 >= 10000;
-          const flash_3_1_lite_Limit = usage.flash_3_1_lite >= 10000;
-          const flash_3_5_Limit = (usage.flash_3_5 || 0) >= 10000;
-          const flash_3_5_lite_Limit = (usage.flash_3_5_lite || 0) >= 10000;
-          const flash_3_7_Limit = (usage.flash_3_7 || 0) >= 10000;
-          const flash_3_6_Limit = (usage.flash_3_6 || 0) >= 10000;
-          const health = Math.max(0, 100 - (k.errorCount * 5));
-
-          return (
-            <div key={k.id} className={`flex items-center justify-between transition-colors p-3 rounded-xl border group relative
-              ${isDead ? 'bg-red-900/10 border-red-500/20' : 
-                isCoolingDown ? 'bg-amber-900/10 border-amber-500/20' : 
-                'bg-slate-800/40 hover:bg-slate-800/60 border-white/5'}`
-            }>
-              <div className="flex flex-col overflow-hidden mr-3 flex-1 min-w-0">
-                <div className="flex flex-wrap items-center gap-2 mb-1">
-                   <span className={`font-semibold text-sm truncate ${isDead ? 'text-red-400' : 'text-slate-200'}`} title={k.label}>{k.label}</span>
-                   
-                   {/* Health Badge */}
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${health > 50 ? 'bg-purple-500/10 text-purple-400' : health > 0 ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/20 text-red-400'}`} title="API Health">
-                      ❤️ {health}%
-                   </span>
-
-                   {/* Usage Badges */}
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_7_Limit ? 'bg-red-500/20 text-red-400' : 'bg-pink-500/10 text-pink-400'}`} title="Gemini 3.7 Flash Usage">
-                      🚀 3.7F: {usage.flash_3_7 || 0}
-                   </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_6_Limit ? 'bg-red-500/20 text-red-400' : 'bg-indigo-500/10 text-indigo-400'}`} title="Gemini 3.6 Flash Usage">
-                      🌟 3.6F: {usage.flash_3_6 || 0}
-                   </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_5_Limit ? 'bg-red-500/20 text-red-400' : 'bg-fuchsia-500/10 text-fuchsia-400'}`} title="Gemini 3.5 Flash Usage">
-                      ⭐ 3.5F: {usage.flash_3_5 || 0}
-                   </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_5_lite_Limit ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/10 text-emerald-400'}`} title="Gemini 3.5 Flash Lite Usage">
-                      💫 3.5L: {usage.flash_3_5_lite || 0}
-                   </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_Limit ? 'bg-red-500/20 text-red-400' : 'bg-cyan-500/10 text-cyan-400'}`} title="Gemini 3 Flash Usage">
-                      🔥 3F: {usage.flash_3}
-                   </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flashLimit ? 'bg-red-500/20 text-red-400' : 'bg-cyan-500/10 text-cyan-400'}`} title="Gemini 2.5 Flash Usage">
-                      ⚡ 2.5F: {usage.flash}
-                   </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${flash_3_1_lite_Limit ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/10 text-emerald-400'}`} title="Gemini 3.1 Flash Lite Usage">
-                      🚀 3.1L: {usage.flash_3_1_lite}
-                   </span>
-                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${liteLimit ? 'bg-red-500/20 text-red-400' : 'bg-amber-500/10 text-amber-400'}`} title="Gemini 2.5 Flash Lite Usage">
-                      💡 2.5L: {usage.lite}
-                   </span>
-
-                   {isCoolingDown && (
-                     <span className="text-[9px] bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded font-mono font-bold">
-                       {remainingSecs}s
-                     </span>
-                   )}
-                   {isDead && (
-                     <span className="text-[9px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded font-mono font-bold">
-                       FAILED
-                     </span>
-                   )}
-                </div>
-                <span className="text-[10px] text-slate-500 font-mono truncate block">
-                  {visibleKeys.has(k.id) ? k.key : `${k.key.substring(0, 6)}••••••••${k.key.substring(k.key.length - 4)}`}
-                </span>
-                
-
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                    onClick={() => onResetUsage(k.id)}
-                    className="text-slate-500 hover:text-amber-400 p-1.5 rounded-lg hover:bg-slate-700/50 transition-colors"
-                    title="Reset Usage"
-                >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-                </button>
-                <button 
-                  onClick={() => toggleVisibility(k.id)}
-                  className="text-slate-500 hover:text-purple-400 p-1.5 rounded-lg hover:bg-slate-700/50 transition-colors"
-                  title={visibleKeys.has(k.id) ? "Hide Key" : "Show Key"}
-                >
-                  {visibleKeys.has(k.id) ? (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24M1 1l22 22"/></svg>
-                  ) : (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-                  )}
-                </button>
-                <button 
-                  onClick={() => onRemove(k.id)}
-                  className="text-slate-600 hover:text-red-400 p-1.5 rounded-lg hover:bg-red-900/20 transition-colors"
-                  title="Remove"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                </button>
-              </div>
-            </div>
-          );
-        })}
-            </div>
-      )}
-
-      {/* API Key Routing Status */}
-      {activeTab === 'routing' && (
-          <div className="mt-4 pt-2">
-              <div className="space-y-4">
-                  <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
-                      <h4 className="font-bold text-sm text-slate-300 mb-2">TITLE / KEYWORD PREFERRED POOL ({Math.ceil(keys.length / 2)} keys)</h4>
-                      <ul className="text-xs space-y-1">
-                          {keys.slice(0, Math.ceil(keys.length / 2)).map(k => (
-                              <li key={k.id} className="flex justify-between">
-                                  <span className="text-slate-400">{k.label}</span>
-                                  <span className={k.errorCount >= 20 ? 'text-red-400' : (k.cooldownUntil && k.cooldownUntil > now) ? 'text-amber-400' : 'text-emerald-400'}>
-                                      {k.errorCount >= 20 ? 'Failed' : (k.cooldownUntil && k.cooldownUntil > now) ? 'Cooldown' : 'Healthy'}
-                                  </span>
-                              </li>
-                          ))}
-                      </ul>
-                  </div>
-                  <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
-                      <h4 className="font-bold text-sm text-slate-300 mb-2">CATEGORY PREFERRED POOL ({Math.floor(keys.length / 2)} keys)</h4>
-                      <ul className="text-xs space-y-1">
-                          {keys.slice(Math.ceil(keys.length / 2)).map(k => (
-                              <li key={k.id} className="flex justify-between">
-                                  <span className="text-slate-400">{k.label}</span>
-                                  <span className={k.errorCount >= 20 ? 'text-red-400' : (k.cooldownUntil && k.cooldownUntil > now) ? 'text-amber-400' : 'text-emerald-400'}>
-                                      {k.errorCount >= 20 ? 'Failed' : (k.cooldownUntil && k.cooldownUntil > now) ? 'Cooldown' : 'Healthy'}
-                                  </span>
-                              </li>
-                          ))}
-                      </ul>
-                  </div>
-                  
-                  <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 mt-4 space-y-2">
-                    <h4 className="font-bold text-sm text-slate-300">Global Fallback Status</h4>
-                    <p className="text-xs text-slate-400">
-                      Fallback activates ONLY when an entire dedicated pool has zero usable keys.
-                    </p>
-                    <div className="space-y-1">
-                      {(() => {
-                        const titlePool = keys.slice(0, Math.ceil(keys.length / 2));
-                        const categoryPool = keys.slice(Math.ceil(keys.length / 2));
-                        
-                        // "Usable" means not permanently failed. Safety limit is harder to check here, but errorCount < 20 is the main one.
-                        const titleUsable = titlePool.filter(k => k.errorCount < 20).length;
-                        const categoryUsable = categoryPool.filter(k => k.errorCount < 20).length;
-
-                        return (
-                          <>
-                            <div className="flex justify-between items-center text-xs">
-                              <span className="text-slate-500">Title Tasks:</span>
-                              <span className={titleUsable === 0 ? "text-amber-400 font-medium" : "text-slate-500"}>
-                                {titleUsable > 0 ? "STANDBY (Dedicated Keys Available)" : "ACTIVE (0 usable dedicated keys, using Category pool)"}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center text-xs">
-                              <span className="text-slate-500">Category Tasks:</span>
-                              <span className={categoryUsable === 0 ? "text-amber-400 font-medium" : "text-slate-500"}>
-                                {categoryUsable > 0 ? "STANDBY (Dedicated Keys Available)" : "ACTIVE (0 usable dedicated keys, using Title pool)"}
-                              </span>
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  </div>
-
-              </div>
-          </div>
-      )}
-
-      {/* API Key Health Status */}
-      {activeTab === 'health' && keys.length > 0 && (
-          <div className="mt-4 pt-2">
-              <div className="space-y-3">
-                  {keys.map(k => {
-                      const totalSuccess = Object.keys(k.usage).reduce((acc, key) => {
-                          if (key !== 'date' && typeof (k.usage)[key] === 'number') {
-                              return acc + (k.usage)[key];
-                          }
-                          return acc;
-                      }, 0);
-                      const totalAttempts = totalSuccess + k.errorCount;
-                      const successRate = totalAttempts > 0 ? (totalSuccess / totalAttempts) * 100 : 100;
-                      const health = Math.max(0, Math.min(100, successRate - (k.errorCount > 0 ? (k.errorCount / 20) * 100 : 0))); // penalize heavily for raw error count
-                      
-                      const isDead = k.errorCount >= 20;
-                      let colorClass = "bg-emerald-500";
-                      if (isDead) colorClass = "bg-red-600";
-                      else if (health < 50) colorClass = "bg-red-500";
-                      else if (health < 80) colorClass = "bg-amber-500";
-
-                      return (
-                          <div key={k.id} className="text-sm">
-                              <div className="flex justify-between items-center mb-1 px-1 text-xs">
-                                  <div className="flex flex-col">
-                                    <span className={`font-medium truncate max-w-[120px] ${isDead ? 'text-red-400' : 'text-slate-300'}`} title={k.label}>{k.label}</span>
-                                    <span className="text-[10px] text-slate-500 mt-0.5">Lifetime: {totalSuccess}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                      <span className="text-[10px] text-slate-500 font-mono" title="Errors">
-                                          {k.errorCount} err
-                                      </span>
-                                      <span className={`font-mono ${health >= 80 ? 'text-emerald-400' : health >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
-                                          {isDead ? 'DEAD' : `${health.toFixed(0)}%`}
-                                      </span>
-                                  </div>
-                              </div>
-                              <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                                  <div 
-                                      className={`h-full rounded-full transition-all duration-500 ${colorClass}`}
-                                      style={{ width: `${isDead ? 100 : health}%` }}
-                                  />
-                              </div>
-                          </div>
-                      );
-                  })}
-              </div>
-          </div>
-      )}
-      </>
-      )}
-
     </div>
   );
 };

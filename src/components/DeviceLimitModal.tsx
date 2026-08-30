@@ -85,29 +85,32 @@ export const DeviceLimitModal: React.FC = () => {
           </span>
 
           <div className="space-y-2">
-            {registeredIds.slice(0, 2).map((devId, idx) => (
-              <div
-                key={devId}
-                className="flex items-center justify-between p-3.5 bg-slate-800/60 rounded-xl border border-slate-700/60"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-slate-300">
-                    {idx === 0 ? <Laptop className="w-4 h-4" /> : <Smartphone className="w-4 h-4" />}
+            {registeredIds.slice(0, 2).map((devId, idx) => {
+              const meta = Array.isArray(userData?.devices) ? userData.devices.find(d => d.id === devId) : null;
+              return (
+                <div
+                  key={devId}
+                  className="flex items-center justify-between p-3.5 bg-slate-800/60 rounded-xl border border-slate-700/60"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-slate-700/50 flex items-center justify-center text-slate-300">
+                      {idx === 0 ? <Laptop className="w-4 h-4" /> : <Smartphone className="w-4 h-4" />}
+                    </div>
+                    <div>
+                      <span className="text-xs font-bold text-white block">
+                        {meta?.name || `Authorized Device #${idx + 1}`}
+                      </span>
+                      <span className="text-[11px] font-mono text-slate-400">
+                        ID: {formatDeviceId(devId)}
+                      </span>
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-xs font-bold text-white block">
-                      Authorized Device #{idx + 1}
-                    </span>
-                    <span className="text-[11px] font-mono text-slate-400">
-                      ID: {formatDeviceId(devId)}
-                    </span>
-                  </div>
+                  <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    Active
+                  </span>
                 </div>
-                <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  Active
-                </span>
-              </div>
-            ))}
+              );
+            })}
 
             {/* Current Unregistered Device */}
             <div className="flex items-center justify-between p-3.5 bg-rose-950/30 rounded-xl border border-rose-500/30">

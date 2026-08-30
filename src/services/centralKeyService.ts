@@ -530,6 +530,74 @@ export async function toggleCentralKeyStatus(
 }
 
 /**
+ * Toggles a batch of keys enabled/disabled status in Firestore and Server
+ */
+export async function toggleBatchCentralKeysStatus(
+  keyIds: string[],
+  enabled: boolean
+): Promise<void> {
+  if (!keyIds || keyIds.length === 0) return;
+  cachedCentralKeys = null; // Invalidate client cache
+
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
+    }
+
+    await fetch('/api/admin/keys/status-batch', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ keyIds, enabled, status: enabled ? 'active' : 'disabled' })
+    });
+  } catch (e) {
+    console.log('Server batch status warning:', e);
+  }
+
+  if (db) {
+    try {
+      const docRef = doc(db, 'central_keys', 'APIkeys');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const existingKeys: any[] = docSnap.data().keys || [];
+        const idSet = new Set(keyIds);
+        const now = new Date().toISOString();
+        let changed = false;
+
+        for (const k of existingKeys) {
+          if (idSet.has(k.id)) {
+            k.enabled = enabled;
+            if (enabled) {
+              k.isDead = false;
+              k.status = 'active';
+              k.deadReason = '';
+            } else {
+              k.status = k.isDead ? 'dead' : 'disabled';
+            }
+            k.lastTestedAt = now;
+            changed = true;
+          }
+        }
+
+        if (changed) {
+          await setDoc(docRef, {
+            keys: existingKeys,
+            totalCount: existingKeys.length,
+            updatedAt: now,
+            version: 1
+          }, { merge: true });
+          recordFirestoreWrite('central_keys', 1, 'toggleBatchCentralKeysStatus:direct');
+        }
+      }
+    } catch (fsErr) {
+      console.log('Direct Firestore batch key status notice:', fsErr);
+    }
+  }
+}
+
+/**
  * Marks a single key as dead (deactivated & stored, not deleted)
  */
 export async function markSingleCentralKeyDead(

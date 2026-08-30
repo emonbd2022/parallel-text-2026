@@ -244,6 +244,17 @@ try {
     console.error("[Server Boot] Init error:", e);
 }
 
+function getFirestoreDbCandidates(): string[] {
+    const candidates = new Set<string>();
+    const envDb = (process.env.VITE_FIREBASE_DATABASE_ID || process.env.FIREBASE_DATABASE_ID || '').trim();
+    if (envDb) {
+        candidates.add(envDb);
+    }
+    candidates.add('default');
+    candidates.add('(default)');
+    return Array.from(candidates);
+}
+
 /**
  * Fetches central keys from Firestore single document central_keys/APIkeys via REST API
  * Cached with CACHE_TTL_MS to eliminate redundant Firestore reads.
@@ -256,110 +267,118 @@ async function fetchKeysFromFirestore(idToken?: string, forceRefresh = false): P
 
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
     const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-    const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
 
     if (!projectId) {
         return cachedFirestoreStoredKeys;
     }
 
-    try {
-        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/APIkeys${apiKey ? `?key=${apiKey}` : ''}`;
-        const headers: Record<string, string> = {};
-        if (idToken) {
-            headers['Authorization'] = `Bearer ${idToken}`;
-        }
-        
-        const resp = await fetch(url, { headers });
-        if (!resp.ok) {
-            if (resp.status === 404) {
-                // Authoritative document does not exist -> strictly 0 keys
+    const dbCandidates = getFirestoreDbCandidates();
+
+    for (const dbId of dbCandidates) {
+        try {
+            const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/APIkeys${apiKey ? `?key=${apiKey}` : ''}`;
+            const headers: Record<string, string> = {};
+            if (idToken) {
+                headers['Authorization'] = `Bearer ${idToken}`;
+            }
+            
+            const resp = await fetch(url, { headers });
+            if (!resp.ok) {
+                const errText = await resp.text();
+                if (errText.includes('does not exist for project') || (errText.includes('NOT_FOUND') && errText.includes('databases/'))) {
+                    // Database candidate does not exist in project; try next candidate
+                    continue;
+                }
+                if (resp.status === 404) {
+                    // Valid database found, but doc doesn't exist -> strictly 0 keys
+                    cachedFirestoreStoredKeys = [];
+                    lastCentralKeysFetchTime = Date.now();
+                    return [];
+                }
+                if (resp.status === 403 && !idToken) {
+                    // Unauthenticated server-side probe on protected collection
+                    return cachedFirestoreStoredKeys;
+                }
+                console.log(`[Server] Firestore REST fetch (${dbId}) status ${resp.status}`);
+                continue;
+            }
+            const data = (await resp.json()) as any;
+            const fields = data.fields || {};
+            const rawKeysArray = fields.keys?.arrayValue?.values || [];
+
+            if (rawKeysArray.length === 0) {
+                // Authoritative document contains 0 keys
                 cachedFirestoreStoredKeys = [];
                 lastCentralKeysFetchTime = Date.now();
                 return [];
             }
-            if (resp.status === 403 && !idToken) {
-                // Unauthenticated server-side probe on protected collection
-                return cachedFirestoreStoredKeys;
-            }
-            console.log(`[Server] Firestore REST fetch status ${resp.status}`);
-            return cachedFirestoreStoredKeys;
-        }
-        const data = (await resp.json()) as any;
-        const fields = data.fields || {};
-        const rawKeysArray = fields.keys?.arrayValue?.values || [];
 
-        if (rawKeysArray.length === 0) {
-            // Authoritative document contains 0 keys
-            cachedFirestoreStoredKeys = [];
-            lastCentralKeysFetchTime = Date.now();
-            return [];
-        }
-
-        const items: StoredKey[] = [];
-        for (const item of rawKeysArray) {
-            const kf = item.mapValue?.fields || {};
-            const id = kf.id?.stringValue || crypto.randomUUID();
-            const label = kf.label?.stringValue || 'Central Key';
-            const rawKey = kf.key?.stringValue || '';
-            let encryptedKey = kf.encryptedKey?.stringValue || '';
-            const keyHash = kf.keyHash?.stringValue || '';
-            const enabled = kf.enabled?.booleanValue !== false;
-            const status = kf.status?.stringValue || (kf.isDead?.booleanValue ? 'dead' : (enabled ? 'active' : 'disabled'));
-            const isDead = kf.isDead?.booleanValue || status === 'dead';
-            const deadReason = kf.deadReason?.stringValue || '';
-            const lastTestedAt = kf.lastTestedAt?.stringValue || '';
-            const createdAt = kf.createdAt?.stringValue || new Date().toISOString();
-            const rawContributedBy = kf.contributedBy?.stringValue;
-            const rawContributorName = kf.contributorName?.stringValue;
-            const contributorEmail = kf.contributorEmail?.stringValue || '';
-            
-            let contributorName = '';
-            if (rawContributorName && rawContributorName !== label && rawContributorName !== 'central' && rawContributorName !== 'anonymous' && rawContributorName !== 'Community Contributor') {
-                contributorName = rawContributorName;
-            } else if (rawContributedBy && rawContributedBy !== label && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous' && rawContributedBy !== 'Community Contributor') {
-                contributorName = rawContributedBy;
-            } else if (contributorEmail) {
-                contributorName = contributorEmail.split('@')[0];
-            } else {
-                contributorName = label || 'Contributor';
-            }
-            const contributedBy = contributorName;
-
-            // Encrypt plaintext keys if needed
-            if (!encryptedKey && rawKey) {
-                if (rawKey.includes(':') && rawKey.length > 40) {
-                    encryptedKey = rawKey;
+            const items: StoredKey[] = [];
+            for (const item of rawKeysArray) {
+                const kf = item.mapValue?.fields || {};
+                const id = kf.id?.stringValue || crypto.randomUUID();
+                const label = kf.label?.stringValue || 'Central Key';
+                const rawKey = kf.key?.stringValue || '';
+                let encryptedKey = kf.encryptedKey?.stringValue || '';
+                const keyHash = kf.keyHash?.stringValue || '';
+                const enabled = kf.enabled?.booleanValue !== false;
+                const status = kf.status?.stringValue || (kf.isDead?.booleanValue ? 'dead' : (enabled ? 'active' : 'disabled'));
+                const isDead = kf.isDead?.booleanValue || status === 'dead';
+                const deadReason = kf.deadReason?.stringValue || '';
+                const lastTestedAt = kf.lastTestedAt?.stringValue || '';
+                const createdAt = kf.createdAt?.stringValue || new Date().toISOString();
+                const rawContributedBy = kf.contributedBy?.stringValue;
+                const rawContributorName = kf.contributorName?.stringValue;
+                const contributorEmail = kf.contributorEmail?.stringValue || '';
+                
+                let contributorName = '';
+                if (rawContributorName && rawContributorName !== label && rawContributorName !== 'central' && rawContributorName !== 'anonymous' && rawContributorName !== 'Community Contributor') {
+                    contributorName = rawContributorName;
+                } else if (rawContributedBy && rawContributedBy !== label && rawContributedBy !== 'central' && rawContributedBy !== 'anonymous' && rawContributedBy !== 'Community Contributor') {
+                    contributorName = rawContributedBy;
+                } else if (contributorEmail) {
+                    contributorName = contributorEmail.split('@')[0];
                 } else {
-                    encryptedKey = encrypt(rawKey);
+                    contributorName = label || 'Contributor';
+                }
+                const contributedBy = contributorName;
+
+                // Encrypt plaintext keys if needed
+                if (!encryptedKey && rawKey) {
+                    if (rawKey.includes(':') && rawKey.length > 40) {
+                        encryptedKey = rawKey;
+                    } else {
+                        encryptedKey = encrypt(rawKey);
+                    }
+                }
+
+                if (encryptedKey || rawKey) {
+                    items.push({
+                        id,
+                        label,
+                        encryptedKey: encryptedKey || encrypt(rawKey),
+                        keyHash: keyHash || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex'),
+                        enabled: isDead ? false : enabled,
+                        status: (isDead ? 'dead' : (enabled ? 'active' : 'disabled')) as any,
+                        isDead,
+                        deadReason,
+                        lastTestedAt,
+                        createdAt,
+                        contributedBy,
+                        contributorName,
+                        contributorEmail
+                    });
                 }
             }
-
-            if (encryptedKey || rawKey) {
-                items.push({
-                    id,
-                    label,
-                    encryptedKey: encryptedKey || encrypt(rawKey),
-                    keyHash: keyHash || crypto.createHash('sha256').update(rawKey || encryptedKey).digest('hex'),
-                    enabled: isDead ? false : enabled,
-                    status: (isDead ? 'dead' : (enabled ? 'active' : 'disabled')) as any,
-                    isDead,
-                    deadReason,
-                    lastTestedAt,
-                    createdAt,
-                    contributedBy,
-                    contributorName,
-                    contributorEmail
-                });
-            }
+            const deduplicated = deduplicateKeysByValue(items);
+            cachedFirestoreStoredKeys = deduplicated;
+            lastCentralKeysFetchTime = Date.now();
+            return deduplicated;
+        } catch (err) {
+            console.log(`[Server] Notice fetching Firestore (${dbId}):`, err);
         }
-        const deduplicated = deduplicateKeysByValue(items);
-        cachedFirestoreStoredKeys = deduplicated;
-        lastCentralKeysFetchTime = Date.now();
-        return deduplicated;
-    } catch (err) {
-        console.log("[Server] Notice fetching Firestore central_keys/APIkeys:", err);
-        return cachedFirestoreStoredKeys;
     }
+    return cachedFirestoreStoredKeys;
 }
 
 // In-memory mutex for Central Keys modification to prevent race conditions (overwriting)
@@ -388,73 +407,78 @@ async function withCentralKeysLock<T>(task: () => Promise<T>): Promise<T> {
 async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string): Promise<boolean> {
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
     const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-    const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
 
     if (!projectId) return false;
 
-    try {
-        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/APIkeys${apiKey ? `?key=${apiKey}` : ''}`;
-        const headers: Record<string, string> = {
-            'Content-Type': 'application/json'
-        };
-        if (idToken) {
-            headers['Authorization'] = `Bearer ${idToken}`;
-        }
+    const deduplicatedKeys = deduplicateKeysByValue(keys);
+    const dbCandidates = getFirestoreDbCandidates();
 
-        const deduplicatedKeys = deduplicateKeysByValue(keys);
-
-        const values = deduplicatedKeys.map(k => ({
-            mapValue: {
-                fields: {
-                    id: { stringValue: k.id || crypto.randomUUID() },
-                    label: { stringValue: k.label || 'Central Key' },
-                    encryptedKey: { stringValue: k.encryptedKey || '' },
-                    keyHash: { stringValue: k.keyHash || '' },
-                    enabled: { booleanValue: k.enabled !== false && !k.isDead && k.status !== 'dead' },
-                    createdAt: { stringValue: k.createdAt || new Date().toISOString() },
-                    contributedBy: { stringValue: k.contributedBy || 'central' },
-                    contributorName: { stringValue: k.contributorName || 'User' },
-                    contributorEmail: { stringValue: k.contributorEmail || '' },
-                    status: { stringValue: k.status || (k.isDead ? 'dead' : (k.enabled === false ? 'disabled' : 'active')) },
-                    isDead: { booleanValue: Boolean(k.isDead || k.status === 'dead') },
-                    deadReason: { stringValue: k.deadReason || '' },
-                    lastTestedAt: { stringValue: k.lastTestedAt || '' }
-                }
-            }
-        }));
-
-        const body = {
+    const values = deduplicatedKeys.map(k => ({
+        mapValue: {
             fields: {
-                keys: {
-                    arrayValue: {
-                        values
-                    }
-                },
-                totalCount: { integerValue: deduplicatedKeys.length.toString() },
-                updatedAt: { stringValue: new Date().toISOString() }
+                id: { stringValue: k.id || crypto.randomUUID() },
+                label: { stringValue: k.label || 'Central Key' },
+                encryptedKey: { stringValue: k.encryptedKey || '' },
+                keyHash: { stringValue: k.keyHash || '' },
+                enabled: { booleanValue: k.enabled !== false && !k.isDead && k.status !== 'dead' },
+                createdAt: { stringValue: k.createdAt || new Date().toISOString() },
+                contributedBy: { stringValue: k.contributedBy || 'central' },
+                contributorName: { stringValue: k.contributorName || 'User' },
+                contributorEmail: { stringValue: k.contributorEmail || '' },
+                status: { stringValue: k.status || (k.isDead ? 'dead' : (k.enabled === false ? 'disabled' : 'active')) },
+                isDead: { booleanValue: Boolean(k.isDead || k.status === 'dead') },
+                deadReason: { stringValue: k.deadReason || '' },
+                lastTestedAt: { stringValue: k.lastTestedAt || '' }
             }
-        };
-
-        const resp = await fetch(url, {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify(body)
-        });
-
-        if (resp.ok) {
-            console.log(`[Firestore Write: 1] Successfully saved ${deduplicatedKeys.length} central keys to central_keys/APIkeys document.`);
-            cachedFirestoreStoredKeys = deduplicatedKeys;
-            lastCentralKeysFetchTime = Date.now();
-            return true;
-        } else {
-            const errText = await resp.text();
-            console.warn(`[Firestore Write Failed] Status ${resp.status}:`, errText);
-            return false;
         }
-    } catch (e) {
-        console.error('[Server] Error saving central_keys/APIkeys to Firestore:', e);
-        return false;
+    }));
+
+    const body = {
+        fields: {
+            keys: {
+                arrayValue: {
+                    values
+                }
+            },
+            totalCount: { integerValue: deduplicatedKeys.length.toString() },
+            updatedAt: { stringValue: new Date().toISOString() }
+        }
+    };
+
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+    };
+    if (idToken) {
+        headers['Authorization'] = `Bearer ${idToken}`;
     }
+
+    for (const dbId of dbCandidates) {
+        try {
+            const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/APIkeys${apiKey ? `?key=${apiKey}` : ''}`;
+            const resp = await fetch(url, {
+                method: 'PATCH',
+                headers,
+                body: JSON.stringify(body)
+            });
+
+            if (resp.ok) {
+                console.log(`[Firestore Write: 1] Successfully saved ${deduplicatedKeys.length} central keys to central_keys/APIkeys document (database: ${dbId}).`);
+                cachedFirestoreStoredKeys = deduplicatedKeys;
+                lastCentralKeysFetchTime = Date.now();
+                return true;
+            } else {
+                const errText = await resp.text();
+                if (errText.includes('does not exist for project') || (errText.includes('NOT_FOUND') && errText.includes('databases/'))) {
+                    continue;
+                }
+                console.warn(`[Firestore Write Failed] Status ${resp.status} (${dbId}):`, errText);
+            }
+        } catch (e) {
+            console.error(`[Server] Error saving central_keys/APIkeys to Firestore (${dbId}):`, e);
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -488,9 +512,13 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
             // If Firestore answered with an authoritative document
             if (firestoreKeys !== null) {
                 if (firestoreKeys.length === 0) {
-                    if (diskKeys.length > 0) {
-                        console.log(`[Server] Firestore registry doc is empty. Seeding with ${diskKeys.length} persistent disk keys...`);
-                        const seedSuccess = await saveKeysToFirestoreDocument(diskKeys, idToken).catch(e => { console.error("Firestore seed error:", e); return false; });
+                    console.log(`[Server] Authoritative Central API registry is empty: 0 keys available.`);
+                    centralKeys = [];
+                    cachedFirestoreStoredKeys = [];
+                    lastCentralKeysFetchTime = Date.now();
+                    
+                    if (isDevSeedEnabled() && diskKeys.length > 0) {
+                        console.log(`[Server] Development mode: Loading ${diskKeys.length} persistent disk keys into memory (NOT saving to Firestore).`);
                         const active = diskKeys.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
                             let decryptedKey = '';
                             try {
@@ -506,31 +534,17 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                             return { id: data.id, key: decryptedKey };
                         }).filter(k => k.key && k.key.length > 0);
                         centralKeys = active;
-                        if (seedSuccess) {
-                            cachedFirestoreStoredKeys = diskKeys;
-                        }
-                        lastCentralKeysFetchTime = Date.now();
-                        return centralKeys;
+                        cachedFirestoreStoredKeys = diskKeys;
                     }
-                    // Both are empty
-                    centralKeys = [];
-                    cachedFirestoreStoredKeys = [];
-                    lastCentralKeysFetchTime = Date.now();
-                    console.log(`[Server] Authoritative Central API registry is empty: 0 keys available.`);
-                    return [];
+                    return centralKeys;
                 }
 
-                // Authoritative registry has keys -> merge and deduplicate with disk keys
-                const merged = deduplicateKeysByValue([...firestoreKeys, ...diskKeys]);
-                saveStoredKeys(merged);
+                // Authoritative registry has keys -> use them directly. DO NOT merge with diskKeys or sync back to Firestore on startup!
+                // We just keep our local cache in sync with Firestore.
+                const deduplicated = deduplicateKeysByValue(firestoreKeys);
+                saveStoredKeys(deduplicated);
 
-                let syncSuccess = true;
-                if (merged.length > firestoreKeys.length) {
-                    // Sync any disk-only keys back to Firestore document
-                    syncSuccess = await saveKeysToFirestoreDocument(merged, idToken).catch(e => { console.error("Firestore sync back error:", e); return false; });
-                }
-
-                const active = merged.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
+                const active = deduplicated.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
                     let decryptedKey = '';
                     try {
                         decryptedKey = decrypt(data.encryptedKey || (data as any).key);
@@ -546,13 +560,9 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                 }).filter(k => k.key && k.key.length > 0);
 
                 centralKeys = active;
-                if (syncSuccess) {
-                    cachedFirestoreStoredKeys = merged;
-                } else {
-                    cachedFirestoreStoredKeys = firestoreKeys;
-                }
+                cachedFirestoreStoredKeys = deduplicated;
                 lastCentralKeysFetchTime = Date.now();
-                console.log(`[Server] Central API key registry active count: ${centralKeys.length} nodes`);
+                console.log(`[Server] Central API key registry active count: ${centralKeys.length} nodes (Firestore authoritative)`);
                 return centralKeys;
             }
 
@@ -604,23 +614,32 @@ async function verifyUserDevice(idToken: string | undefined, deviceId: string | 
     if (!uid || !idToken || !deviceId) return false;
     
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
-    const dbId = process.env.VITE_FIREBASE_DATABASE_ID || '(default)';
     if (!projectId) return true;
     
-    try {
-        const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/users/${uid}`;
-        const headers: Record<string, string> = { 'Authorization': `Bearer ${idToken}` };
-        const resp = await fetch(url, { headers });
-        if (!resp.ok) return false;
-        
-        const data = await resp.json();
-        const fields = data.fields || {};
-        const deviceIds = fields.deviceIds?.arrayValue?.values?.map((v: any) => v.stringValue) || [];
-        return deviceIds.includes(deviceId);
-    } catch (e) {
-        console.error("verifyUserDevice error:", e);
-        return false;
+    const dbCandidates = getFirestoreDbCandidates();
+
+    for (const dbId of dbCandidates) {
+        try {
+            const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/users/${uid}`;
+            const headers: Record<string, string> = { 'Authorization': `Bearer ${idToken}` };
+            const resp = await fetch(url, { headers });
+            if (!resp.ok) {
+                const errText = await resp.text();
+                if (errText.includes('does not exist for project') || (errText.includes('NOT_FOUND') && errText.includes('databases/'))) {
+                    continue;
+                }
+                return false;
+            }
+            
+            const data = await resp.json();
+            const fields = data.fields || {};
+            const deviceIds = fields.deviceIds?.arrayValue?.values?.map((v: any) => v.stringValue) || [];
+            return deviceIds.includes(deviceId);
+        } catch (e) {
+            console.error(`verifyUserDevice error (${dbId}):`, e);
+        }
     }
+    return false;
 }
 
 function getUserIdentity(req: express.Request, bodyUser?: any): { id: string; email?: string; isAdmin: boolean } {
@@ -1087,6 +1106,8 @@ Return a strictly valid JSON array where each object contains:
         }
 
         const results: Record<string, any> = {};
+        let successfulImagesCount = 0;
+        
         jsonArray.forEach((resItem: any) => {
             const idx = resItem.index;
             if (idx >= 0 && idx < items.length) {
@@ -1098,11 +1119,14 @@ Return a strictly valid JSON array where each object contains:
                     title: resItem.title,
                     keywords: keywordsStr,
                 };
+                successfulImagesCount++;
             }
         });
 
-        // Record successful request consumption
-        recordUserUsage(identity.id, 1);
+        // Record successful request consumption (1 image = 2 requests: generate + category)
+        if (successfulImagesCount > 0) {
+            recordUserUsage(identity.id, successfulImagesCount * 2);
+        }
 
         res.json(results);
     } catch (error: any) {
@@ -1269,8 +1293,8 @@ Return a strictly valid JSON array where each object contains:
             }
         });
 
-        // Record successful request consumption
-        recordUserUsage(identity.id, 1);
+        // Usage is tracked upfront in /central-generate (1 image = 2 requests). 
+        // We do not double-bill here.
 
         res.json(results);
     } catch (error: any) {
@@ -1846,6 +1870,57 @@ apiRouter.post("/admin/keys/mark-dead-batch", async (req, res) => {
     });
 });
 
+apiRouter.post("/admin/keys/status-batch", async (req, res) => {
+    withCentralKeysLock(async () => {
+        try {
+            const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+            const { keyIds, enabled, status } = body;
+            if (!Array.isArray(keyIds) || keyIds.length === 0) {
+                return res.json({ success: true, count: 0 });
+            }
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+            const fetchedKeys = await fetchKeysFromFirestore(idToken, true);
+            if (fetchedKeys === null) {
+                return res.status(503).json({ success: false, error: "Database temporarily unavailable." });
+            }
+            const idSet = new Set(keyIds);
+            let updatedCount = 0;
+            const targetEnabled = typeof enabled === 'boolean' ? enabled : true;
+
+            for (const k of fetchedKeys) {
+                if (idSet.has(k.id)) {
+                    k.enabled = targetEnabled;
+                    if (targetEnabled) {
+                        k.isDead = false;
+                        k.status = status || 'active';
+                        k.deadReason = '';
+                    } else {
+                        k.status = status || (k.status === 'dead' ? 'dead' : 'disabled');
+                    }
+                    updatedCount++;
+                }
+            }
+
+            if (updatedCount > 0) {
+                const saveSuccess = await saveKeysToFirestoreDocument(fetchedKeys, idToken);
+                if (!saveSuccess) {
+                    return res.status(500).json({ success: false, error: "Failed to persist key statuses to database." });
+                }
+                saveStoredKeys(fetchedKeys);
+                invalidateCentralCache();
+                await syncCentralKeys(true, idToken);
+            }
+
+            console.log(`[Server] Updated ${updatedCount} API keys enabled state to ${targetEnabled}.`);
+            res.json({ success: true, count: updatedCount });
+        } catch (e: any) {
+            console.error("Error updating keys status batch:", e);
+            res.status(500).json({ success: false, error: String(e?.message || e) });
+        }
+    });
+});
+
 apiRouter.post("/admin/keys/delete-batch", async (req, res) => {
     withCentralKeysLock(async () => {
         try {
@@ -1965,6 +2040,74 @@ apiRouter.patch("/admin/keys/:id", async (req, res) => {
             res.status(500).json({ error: e.message });
         }
     });
+});
+
+apiRouter.post("/user/sync-device", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+        const { uid, deviceId, deviceMeta, isFirstAdmin } = req.body || {};
+        
+        if (!uid) {
+            return res.status(400).json({ success: false, error: 'Missing uid' });
+        }
+
+        const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+        const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+        if (!projectId) {
+            return res.json({ success: true, localOnly: true });
+        }
+
+        const dbCandidates = getFirestoreDbCandidates();
+        for (const dbId of dbCandidates) {
+            try {
+                const getUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/users/${uid}${apiKey ? `?key=${apiKey}` : ''}`;
+                const headers: Record<string, string> = {};
+                if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+                
+                const getResp = await fetch(getUrl, { headers });
+                if (getResp.ok) {
+                    const existingDoc = await getResp.json();
+                    const fields = existingDoc.fields || {};
+                    let existingIds = fields.deviceIds?.arrayValue?.values?.map((v: any) => v.stringValue).filter(Boolean) || [];
+                    if (deviceId && !existingIds.includes(deviceId)) {
+                        existingIds.push(deviceId);
+                        if (existingIds.length > 2) existingIds = existingIds.slice(-2);
+                    }
+
+                    const updateMask = ['deviceIds', 'lastActiveAt'];
+                    const nowIso = new Date().toISOString();
+                    const patchFields: any = {
+                        deviceIds: {
+                            arrayValue: {
+                                values: existingIds.map((id: string) => ({ stringValue: id }))
+                            }
+                        },
+                        lastActiveAt: { stringValue: nowIso }
+                    };
+
+                    if (isFirstAdmin) {
+                        patchFields.role = { stringValue: 'admin' };
+                        patchFields.blocked = { booleanValue: false };
+                        updateMask.push('role', 'blocked');
+                    }
+
+                    const patchUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/users/${uid}?${updateMask.map(m => `updateMask.fieldPaths=${m}`).join('&')}${apiKey ? `&key=${apiKey}` : ''}`;
+                    await fetch(patchUrl, {
+                        method: 'PATCH',
+                        headers: { ...headers, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ fields: patchFields })
+                    });
+                    return res.json({ success: true });
+                }
+            } catch (err) {
+                console.warn(`[Server] sync-device notice (${dbId}):`, err);
+            }
+        }
+        return res.json({ success: true });
+    } catch (e: any) {
+        return res.status(500).json({ success: false, error: e?.message || 'Failed to sync device' });
+    }
 });
 
 // Mount the API Router under /api

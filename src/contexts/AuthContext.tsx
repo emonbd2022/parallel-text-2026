@@ -3,7 +3,7 @@ import { User, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
-import { getOrCreateDeviceId, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
+import { getOrCreateDeviceId, detectDeviceMetadata, DeviceMetadata, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
 
 export interface UserData {
   uid: string;
@@ -21,6 +21,7 @@ export interface UserData {
   planStartDate?: string;
   planEndDate?: string;
   deviceIds?: string[];
+  devices?: DeviceMetadata[];
   centralApiAccess?: boolean;
   deviceLimitReached?: boolean;
 }
@@ -394,10 +395,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const userRef = doc(db, 'users', uidToReset);
       const isSelf = !targetUid || targetUid === user?.uid;
       const currentDevId = getOrCreateDeviceId();
+      const currentMeta = detectDeviceMetadata(currentDevId);
       const newDeviceIds = isSelf ? [currentDevId] : [];
+      const newDevices = isSelf ? [{ ...currentMeta, registeredAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }] : [];
 
       await updateDoc(userRef, {
         deviceIds: newDeviceIds,
+        devices: newDevices,
         lastActiveAt: new Date().toISOString()
       });
       recordFirestoreWrite('users', 1, 'AuthContext:resetUserDevices');
@@ -406,6 +410,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const updated: UserData = {
           ...userData,
           deviceIds: newDeviceIds,
+          devices: newDevices,
           deviceLimitReached: false
         };
         setUserData(updated);
@@ -423,6 +428,256 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    const checkAndSyncUserDoc = async (currentUser: User) => {
+      if (!db) return;
+      try {
+        const userRef = doc(db, 'users', currentUser.uid);
+        const docSnap = await getDoc(userRef);
+        recordFirestoreRead('users', 1, 'AuthContext:getUserDoc');
+        
+        if (docSnap.exists()) {
+          const d = docSnap.data();
+
+          // Device ID Policy Enforcement: 1 Account = Max 2 Devices
+          const deviceId = getOrCreateDeviceId();
+          const currentMeta = detectDeviceMetadata(deviceId);
+          let dbDeviceIds: string[] = Array.isArray(d.deviceIds) ? [...d.deviceIds].filter(Boolean) : [];
+          let dbDevices: DeviceMetadata[] = Array.isArray(d.devices) ? [...d.devices].filter(Boolean) : [];
+          let shouldUpdateDoc = false;
+          const isFirstAdmin = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+          let role = d.role || (isFirstAdmin ? 'admin' : 'user');
+          let isBlocked = !!d.blocked;
+          let deviceLimitReached = false;
+
+          // Auto-unblock hardcoded admins
+          if (isFirstAdmin && isBlocked) {
+            isBlocked = false;
+            shouldUpdateDoc = true;
+          }
+
+          if (isFirstAdmin && d.role !== 'admin') {
+            role = 'admin';
+            shouldUpdateDoc = true;
+          }
+
+          // Device Authorization Logic (Enforced on initial check & recurring visits)
+          if (dbDeviceIds.includes(deviceId)) {
+            // Current device is already registered in slot 1 or 2
+            deviceLimitReached = false;
+
+            // Ensure device metadata is up to date in devices array
+            const existingIdx = dbDevices.findIndex(dev => dev.id === deviceId);
+            if (existingIdx >= 0) {
+              if (dbDevices[existingIdx].name !== currentMeta.name || !dbDevices[existingIdx].lastActiveAt) {
+                dbDevices[existingIdx] = {
+                  ...dbDevices[existingIdx],
+                  name: currentMeta.name,
+                  browser: currentMeta.browser,
+                  os: currentMeta.os,
+                  lastActiveAt: new Date().toISOString()
+                };
+                shouldUpdateDoc = true;
+              }
+            } else {
+              dbDevices.push({
+                ...currentMeta,
+                registeredAt: new Date().toISOString(),
+                lastActiveAt: new Date().toISOString()
+              });
+              shouldUpdateDoc = true;
+            }
+          } else if (dbDeviceIds.length < MAX_DEVICES_PER_ACCOUNT) {
+            // New authorized device occupying an open slot (Slot 1 or Slot 2)
+            dbDeviceIds.push(deviceId);
+            dbDevices.push({
+              ...currentMeta,
+              registeredAt: new Date().toISOString(),
+              lastActiveAt: new Date().toISOString()
+            });
+            shouldUpdateDoc = true;
+            deviceLimitReached = false;
+          } else {
+            // 2 Device slots already registered
+            if (role === 'admin') {
+              // Admin override: ensure active slots are tracked and visible without locking admin out
+              dbDeviceIds = [dbDeviceIds[dbDeviceIds.length - 1], deviceId];
+              dbDevices = [
+                ...dbDevices.filter(m => dbDeviceIds.includes(m.id)),
+                { ...currentMeta, registeredAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }
+              ].slice(-2);
+              shouldUpdateDoc = true;
+              deviceLimitReached = false;
+            } else {
+              // Standard user 3rd device attempt: enforce limit
+              deviceLimitReached = true;
+            }
+          }
+
+          if (deviceLimitReached) {
+            localStorage.setItem('deviceLimitError', 'true');
+          } else {
+            localStorage.removeItem('deviceLimitError');
+          }
+
+          if (shouldUpdateDoc) {
+            let updateSucceeded = false;
+            try {
+              const updates: any = { 
+                deviceIds: dbDeviceIds,
+                devices: dbDevices,
+                lastActiveAt: new Date().toISOString()
+              };
+              if (isFirstAdmin && d.role !== 'admin') {
+                updates.role = 'admin';
+              }
+              if (isFirstAdmin && d.blocked) {
+                updates.blocked = false;
+              }
+              await updateDoc(userRef, updates);
+              recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
+              updateSucceeded = true;
+            } catch (e: any) {
+              // If full update failed due to permission restriction (e.g. role or devices field), try minimal deviceIds update
+              try {
+                await updateDoc(userRef, {
+                  deviceIds: dbDeviceIds,
+                  lastActiveAt: new Date().toISOString()
+                });
+                recordFirestoreWrite('users', 1, 'AuthContext:updateUserDocMinimal');
+                updateSucceeded = true;
+              } catch (fallbackErr) {
+                // Seamlessly notify server to sync device registration
+                try {
+                  const idToken = await currentUser.getIdToken(false);
+                  await fetch('/api/user/sync-device', {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${idToken}`
+                    },
+                    body: JSON.stringify({
+                      uid: currentUser.uid,
+                      deviceId,
+                      deviceMeta: currentMeta,
+                      isFirstAdmin
+                    })
+                  });
+                  updateSucceeded = true;
+                } catch {
+                  // Non-fatal: local session remains authenticated and functional
+                }
+              }
+            }
+          }
+
+          const isFirstUser = isFirstAdmin;
+          const serverData: UserData = {
+            uid: currentUser.uid,
+            email: d.email || currentUser.email || '',
+            name: d.name || currentUser.displayName || '',
+            photoURL: d.photoURL || currentUser.photoURL || '',
+            nickname: d.nickname || currentUser.displayName?.split(' ')[0] || 'User',
+            credits: typeof d.credits === 'number' ? d.credits : 100,
+            unlimited: !!d.unlimited,
+            totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
+            joinDate: d.joinDate || new Date().toISOString(),
+            blocked: isBlocked,
+            role: d.role === 'admin' ? 'admin' : (isFirstUser ? 'admin' : 'user'),
+            plan: d.plan || 'free',
+            planStartDate: d.planStartDate,
+            planEndDate: d.planEndDate,
+            deviceIds: dbDeviceIds,
+            devices: dbDevices,
+            centralApiAccess: d.role === 'admin' || isFirstUser ? true : Boolean(d.centralApiAccess),
+            deviceLimitReached,
+          };
+
+          // Update state & cache if data is changed or freshly fetched
+          setUserData(prev => {
+            const isDifferent = !prev || 
+              prev.uid !== serverData.uid ||
+              prev.credits !== serverData.credits ||
+              prev.totalProcessedImages !== serverData.totalProcessedImages ||
+              prev.plan !== serverData.plan ||
+              prev.blocked !== serverData.blocked ||
+              prev.nickname !== serverData.nickname ||
+              prev.role !== serverData.role ||
+              prev.unlimited !== serverData.unlimited ||
+              prev.centralApiAccess !== serverData.centralApiAccess ||
+              prev.deviceLimitReached !== serverData.deviceLimitReached ||
+              JSON.stringify(prev.deviceIds || []) !== JSON.stringify(serverData.deviceIds || []) ||
+              JSON.stringify(prev.devices || []) !== JSON.stringify(serverData.devices || []);
+
+            if (isDifferent) {
+              saveUserDataToCache(serverData);
+              return serverData;
+            }
+            return prev;
+          });
+        } else {
+          // Genuinely NEW user: create initial user document and admin notification atomically in ONE writeBatch
+          const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+          const userName = currentUser.displayName || 'User';
+          const userEmail = currentUser.email || '';
+          const nowISO = new Date().toISOString();
+
+          const deviceId = getOrCreateDeviceId();
+          const currentMeta = detectDeviceMetadata(deviceId);
+
+          const newUserData: UserData = {
+            uid: currentUser.uid,
+            email: userEmail,
+            name: userName,
+            photoURL: currentUser.photoURL || '',
+            nickname: userName.split(' ')[0] || 'User',
+            credits: 100,
+            unlimited: false,
+            totalProcessedImages: 0,
+            joinDate: nowISO,
+            blocked: false,
+            role: isFirstUser ? 'admin' : 'user',
+            plan: 'free',
+            deviceIds: [deviceId],
+            devices: [{ ...currentMeta, registeredAt: nowISO, lastActiveAt: nowISO }],
+            centralApiAccess: isFirstUser ? true : false,
+            deviceLimitReached: false,
+          };
+
+          const notifId = `signup_${currentUser.uid}`;
+          const notifRef = doc(db, 'notifications', notifId);
+          const notifData: AppNotification = {
+            id: notifId,
+            targetUid: 'admin',
+            type: 'signup',
+            message: `New User Signup\nName: ${userName}\nEmail: ${userEmail}`,
+            userName,
+            userEmail,
+            createdAt: nowISO,
+            read: false,
+          };
+
+          // Atomic batch commit: guarantees both docs exist together without extra reads
+          const batch = writeBatch(db);
+          batch.set(userRef, newUserData);
+          batch.set(notifRef, notifData);
+          await batch.commit();
+          recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');
+          recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
+          console.log(`[Auth] Atomically registered new user (${currentUser.uid}) and created admin notification (${notifId})`);
+
+          setUserData(newUserData);
+          saveUserDataToCache(newUserData);
+        }
+      } catch (error: any) {
+        console.error("CRITICAL: Failed to initialize new user and signup notification in Firestore:", error);
+        if (error?.code) {
+          console.error(`Firebase Error Code: ${error.code}, Message: ${error.message}`);
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       
@@ -433,197 +688,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setUserData(localCached);
         }
 
-        // Step 2: Exactly ONE Firestore check per user session/reload
-        if (checkedUserUidRef.current !== currentUser.uid && db) {
-          checkedUserUidRef.current = currentUser.uid;
-
-          try {
-            const userRef = doc(db, 'users', currentUser.uid);
-            const docSnap = await getDoc(userRef);
-            recordFirestoreRead('users', 1, 'AuthContext:getUserDoc');
-            
-            if (docSnap.exists()) {
-              const d = docSnap.data();
-
-              // Device ID Policy Enforcement: 1 Gmail = Max 2 Devices
-              const deviceId = getOrCreateDeviceId();
-              let dbDeviceIds = Array.isArray(d.deviceIds) ? [...d.deviceIds] : [];
-              let shouldUpdateDoc = false;
-              const isFirstAdmin = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
-              let role = d.role || (isFirstAdmin ? 'admin' : 'user');
-              let isBlocked = !!d.blocked;
-              let deviceLimitReached = false;
-
-              // Auto-unblock hardcoded admins
-              if (isFirstAdmin && isBlocked) {
-                isBlocked = false;
-                shouldUpdateDoc = true;
-              }
-
-              if (isFirstAdmin && d.role !== 'admin') {
-                role = 'admin';
-                shouldUpdateDoc = true;
-              }
-
-              if (role !== 'admin') {
-                if (dbDeviceIds.includes(deviceId)) {
-                  // Device is already authorized
-                  deviceLimitReached = false;
-                } else if (dbDeviceIds.length < MAX_DEVICES_PER_ACCOUNT) {
-                  // New authorized device (slot 1 or 2)
-                  dbDeviceIds.push(deviceId);
-                  shouldUpdateDoc = true;
-                  deviceLimitReached = false;
-                } else {
-                  // 3rd device attempt: limit reached, block session only without permanently corrupting account
-                  deviceLimitReached = true;
-                }
-              } else {
-                deviceLimitReached = false;
-              }
-
-              if (deviceLimitReached) {
-                // Strict 2-device enforcement: Sign out immediately before granting access
-                await signOut(auth);
-                setUser(null);
-                setUserData(null);
-                setLoading(false);
-                // Save flag to local storage for Login component to read
-                localStorage.setItem('deviceLimitError', 'true');
-                return;
-              }
-
-              if (shouldUpdateDoc) {
-                try {
-                  const updates: any = { 
-                    deviceIds: dbDeviceIds,
-                    lastActiveAt: new Date().toISOString()
-                  };
-                  if (isFirstAdmin && d.role !== 'admin') {
-                    updates.role = 'admin';
-                  }
-                  if (isFirstAdmin && d.blocked) {
-                    updates.blocked = false;
-                  }
-                  await updateDoc(userRef, updates);
-                  recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
-                } catch (e) {
-                  console.error('Failed to update user doc with device info', e);
-                }
-              }
-
-              const isFirstUser = isFirstAdmin;
-              const serverData: UserData = {
-                uid: currentUser.uid,
-                email: d.email || currentUser.email || '',
-                name: d.name || currentUser.displayName || '',
-                photoURL: d.photoURL || currentUser.photoURL || '',
-                nickname: d.nickname || currentUser.displayName?.split(' ')[0] || 'User',
-                credits: typeof d.credits === 'number' ? d.credits : 100,
-                unlimited: !!d.unlimited,
-                totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
-                joinDate: d.joinDate || new Date().toISOString(),
-                blocked: isBlocked,
-                role: d.role === 'admin' ? 'admin' : (isFirstUser ? 'admin' : 'user'),
-                plan: d.plan || 'free',
-                planStartDate: d.planStartDate,
-                planEndDate: d.planEndDate,
-                deviceIds: dbDeviceIds,
-                centralApiAccess: d.role === 'admin' || isFirstUser ? true : Boolean(d.centralApiAccess),
-                deviceLimitReached,
-              };
-
-              // Update state & cache if data is changed or freshly fetched
-              setUserData(prev => {
-                const isDifferent = !prev || 
-                  prev.uid !== serverData.uid ||
-                  prev.credits !== serverData.credits ||
-                  prev.totalProcessedImages !== serverData.totalProcessedImages ||
-                  prev.plan !== serverData.plan ||
-                  prev.blocked !== serverData.blocked ||
-                  prev.nickname !== serverData.nickname ||
-                  prev.role !== serverData.role ||
-                  prev.unlimited !== serverData.unlimited ||
-                  prev.centralApiAccess !== serverData.centralApiAccess ||
-                  prev.deviceLimitReached !== serverData.deviceLimitReached;
-
-                if (isDifferent) {
-                  saveUserDataToCache(serverData);
-                  return serverData;
-                }
-                return prev;
-              });
-            } else {
-              // Genuinely NEW user: create initial user document and admin notification atomically in ONE writeBatch
-              const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
-              const userName = currentUser.displayName || 'User';
-              const userEmail = currentUser.email || '';
-              const nowISO = new Date().toISOString();
-
-              const deviceId = getOrCreateDeviceId();
-
-              const newUserData: UserData = {
-                uid: currentUser.uid,
-                email: userEmail,
-                name: userName,
-                photoURL: currentUser.photoURL || '',
-                nickname: userName.split(' ')[0] || 'User',
-                credits: 100,
-                unlimited: false,
-                totalProcessedImages: 0,
-                joinDate: nowISO,
-                blocked: false,
-                role: isFirstUser ? 'admin' : 'user',
-                plan: 'free',
-                deviceIds: [deviceId],
-                centralApiAccess: isFirstUser ? true : false,
-                deviceLimitReached: false,
-              };
-
-              const notifId = `signup_${currentUser.uid}`;
-              const notifRef = doc(db, 'notifications', notifId);
-              const notifData: AppNotification = {
-                id: notifId,
-                targetUid: 'admin',
-                type: 'signup',
-                message: `New User Signup\nName: ${userName}\nEmail: ${userEmail}`,
-                userName,
-                userEmail,
-                createdAt: nowISO,
-                read: false,
-              };
-
-              // Atomic batch commit: guarantees both docs exist together without extra reads
-              const batch = writeBatch(db);
-              batch.set(userRef, newUserData);
-              batch.set(notifRef, notifData);
-              await batch.commit();
-              recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');
-              recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
-              console.log(`[Auth] Atomically registered new user (${currentUser.uid}) and created admin notification (${notifId})`);
-
-              setUserData(newUserData);
-              saveUserDataToCache(newUserData);
-            }
-          } catch (error: any) {
-            console.error("CRITICAL: Failed to initialize new user and signup notification in Firestore:", error);
-            if (error?.code) {
-              console.error(`Firebase Error Code: ${error.code}, Message: ${error.message}`);
-            }
-          }
-        }
+        // Step 2: Sync and validate user doc & device registration
+        await checkAndSyncUserDoc(currentUser);
       } else {
         // User logged out: Reset current user state but keep persisted cache in localStorage
         setUser(null);
         setUserData(null);
         setNotifications([]);
         checkedUserUidRef.current = null;
+        setLoading(false);
       }
-      setLoading(false);
+    });
+
+    // Step 3: Sync on window focus / tab re-activation
+    const handleFocusSync = () => {
+      if (auth.currentUser) {
+        checkAndSyncUserDoc(auth.currentUser);
+      }
+    };
+
+    window.addEventListener('focus', handleFocusSync);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && auth.currentUser) {
+        checkAndSyncUserDoc(auth.currentUser);
+      }
     });
 
     return () => {
       unsubscribe();
+      window.removeEventListener('focus', handleFocusSync);
     };
   }, []);
 

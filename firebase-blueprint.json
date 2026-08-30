@@ -1,0 +1,65 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Account",
+      "description": "Essential user account details and device metadata.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "nickname": { "type": "string" },
+        "credits": { "type": "number" },
+        "unlimited": { "type": "boolean" },
+        "totalProcessedImages": { "type": "number" },
+        "joinDate": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "blocked": { "type": "boolean" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "plan": { "type": "string", "enum": ["free", "starter", "pro", "elite", "unlimited"] },
+        "planStartDate": { "type": "string" },
+        "planEndDate": { "type": "string" },
+        "deviceIds": { "type": "array" },
+        "devices": { "type": "array" },
+        "centralApiAccess": { "type": "boolean" },
+        "lastActiveAt": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "System alert or user signup announcement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "targetUid": { "type": "string" },
+        "type": { "type": "string" },
+        "message": { "type": "string" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "read": { "type": "boolean" }
+      },
+      "required": ["id", "targetUid", "type", "message", "createdAt", "read"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Stores user credentials, credits, and authorized device IDs."
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "System and admin alerts."
+    },
+    "/settings/{document}": {
+      "schema": "object",
+      "description": "System settings such as maintenanceMode and centralModeEnabled."
+    },
+    "/central_keys/{keyDocId}": {
+      "schema": "object",
+      "description": "Shared crowd-sourced and admin-provided central API key pool."
+    }
+  }
+}

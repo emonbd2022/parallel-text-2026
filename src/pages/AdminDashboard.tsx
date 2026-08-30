@@ -1,13 +1,14 @@
 import { motion } from 'motion/react';
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch } from 'firebase/firestore';
+import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch, getAggregateFromServer, sum } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Laptop, Smartphone, ShieldCheck, Flame } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Laptop, Smartphone, ShieldCheck, Flame, Power, CheckSquare, Square, SlidersHorizontal } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
-  toggleCentralKeyStatus, 
+  toggleCentralKeyStatus,
+  toggleBatchCentralKeysStatus,
   deleteCentralKeyFromFirestore,
   deduplicateCentralKeysOnServer,
   CentralKeyRecord 
@@ -100,6 +101,9 @@ export const AdminDashboard: React.FC = () => {
   const [addKeyError, setAddKeyError] = useState<string | null>(null);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [keySearchTerm, setKeySearchTerm] = useState('');
+  const [togglingKeyId, setTogglingKeyId] = useState<string | null>(null);
+  const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
+  const [keyStatusFilter, setKeyStatusFilter] = useState<'all' | 'active' | 'disabled' | 'dead'>('all');
 
   const fetchCentralKeys = async (forceRefresh = false) => {
     setLoadingKeys(true);
@@ -156,17 +160,60 @@ export const AdminDashboard: React.FC = () => {
 
   const toggleKeyStatus = async (id: string, currentEnabled: boolean, currentStatus?: string) => {
     try {
+      setTogglingKeyId(id);
       const nextEnabled = !currentEnabled;
       const nextStatus = nextEnabled ? 'active' : 'disabled';
-      await toggleCentralKeyStatus(id, nextEnabled, { status: nextStatus });
+      
+      // Optimistic update in UI
       setCentralKeys(prev => prev.map(k => k.id === id ? { 
         ...k, 
         enabled: nextEnabled,
         status: nextStatus,
-        isDead: nextEnabled ? false : k.isDead
+        isDead: nextEnabled ? false : k.isDead,
+        deadReason: nextEnabled ? '' : k.deadReason
       } : k));
+
+      await toggleCentralKeyStatus(id, nextEnabled, { 
+        status: nextStatus, 
+        isDead: false, 
+        deadReason: '' 
+      });
+      await fetchCentralKeys(true);
     } catch (e) {
       console.error("Failed to toggle central key status:", e);
+    } finally {
+      setTogglingKeyId(null);
+    }
+  };
+
+  const handleBatchToggleStatus = async (enable: boolean, specificIds?: string[]) => {
+    const idsToUpdate = specificIds || (selectedKeyIds.length > 0 ? selectedKeyIds : centralKeys.map(k => k.id));
+    if (idsToUpdate.length === 0) return;
+
+    const actionName = enable ? 'ENABLE' : 'DISABLE';
+    const confirmMsg = specificIds || selectedKeyIds.length > 0
+      ? `Are you sure you want to ${actionName} ${idsToUpdate.length} selected Central API key(s)?`
+      : `Are you sure you want to ${actionName} ALL ${idsToUpdate.length} Central API keys?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      setLoadingKeys(true);
+      const idSet = new Set(idsToUpdate);
+      setCentralKeys(prev => prev.map(k => idSet.has(k.id) ? {
+        ...k,
+        enabled: enable,
+        status: enable ? 'active' : (k.status === 'dead' ? 'dead' : 'disabled'),
+        isDead: enable ? false : k.isDead,
+        deadReason: enable ? '' : k.deadReason
+      } : k));
+
+      await toggleBatchCentralKeysStatus(idsToUpdate, enable);
+      await fetchCentralKeys(true);
+      setSelectedKeyIds([]);
+    } catch (e: any) {
+      alert(`Failed to ${actionName.toLowerCase()} keys: ` + (e?.message || e));
+    } finally {
+      setLoadingKeys(false);
     }
   };
 
@@ -482,6 +529,10 @@ export const AdminDashboard: React.FC = () => {
           joinDate: d.joinDate || d.createdAt || '',
           createdAt: d.createdAt || d.joinDate || '',
           lastActiveAt: d.lastActiveAt || d.lastLoginAt || d.lastSeen || '',
+          deviceIds: d.deviceIds || [],
+          devices: d.devices || [],
+          centralApiAccess: Boolean(d.centralApiAccess),
+          deviceLimitReached: Boolean(d.deviceLimitReached)
         } as UserData);
       });
 
@@ -532,7 +583,31 @@ export const AdminDashboard: React.FC = () => {
         const snap = await getDocs(collection(db, 'users'));
         recordFirestoreRead('users', snap.docs.length || 1, 'AdminDashboard:searchUsers');
         const list: UserData[] = [];
-        snap.forEach(d => list.push(d.data() as UserData));
+        snap.forEach(docSnap => {
+          const d = docSnap.data();
+          list.push({
+            uid: d.uid || docSnap.id,
+            name: d.name || 'User',
+            email: d.email || '',
+            photoURL: d.photoURL || '',
+            nickname: d.nickname || '',
+            credits: typeof d.credits === 'number' ? d.credits : 0,
+            unlimited: Boolean(d.unlimited),
+            totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
+            plan: d.plan || (d.unlimited ? 'unlimited' : 'free'),
+            planStartDate: d.planStartDate || '',
+            planEndDate: d.planEndDate || '',
+            blocked: Boolean(d.blocked),
+            role: d.role || 'user',
+            joinDate: d.joinDate || d.createdAt || '',
+            createdAt: d.createdAt || d.joinDate || '',
+            lastActiveAt: d.lastActiveAt || d.lastLoginAt || d.lastSeen || '',
+            deviceIds: d.deviceIds || [],
+            devices: d.devices || [],
+            centralApiAccess: Boolean(d.centralApiAccess),
+            deviceLimitReached: Boolean(d.deviceLimitReached)
+          } as UserData);
+        });
         candidateUsers = list;
         setAllUsers(list);
         try {
@@ -683,21 +758,17 @@ export const AdminDashboard: React.FC = () => {
     setIsCalculatingTotal(true);
     setTotalProcessedImagesGlobal(null);
     try {
-      let candidateUsers = allUsers;
-      if (!candidateUsers || candidateUsers.length === 0) {
-        const snap = await getDocs(collection(db, 'users'));
-        recordFirestoreRead('users', snap.docs.length || 1, 'AdminDashboard:calculateTotalImages');
-        const list: UserData[] = [];
-        snap.forEach(d => list.push(d.data() as UserData));
-        candidateUsers = list;
-        setAllUsers(list);
-        try {
-          sessionStorage.setItem('adminCachedAllUsers', JSON.stringify(list));
-        } catch {}
+      if (allUsers && allUsers.length > 0) {
+        const total = allUsers.reduce((acc, user) => acc + (user.totalProcessedImages || 0), 0);
+        setTotalProcessedImagesGlobal(total);
+      } else {
+        const coll = collection(db, 'users');
+        const snapshot = await getAggregateFromServer(coll, {
+          totalImages: sum('totalProcessedImages')
+        });
+        recordFirestoreRead('users', 1, 'AdminDashboard:calculateTotalImages:aggregate');
+        setTotalProcessedImagesGlobal(snapshot.data().totalImages || 0);
       }
-      
-      const total = candidateUsers.reduce((acc, user) => acc + (user.totalProcessedImages || 0), 0);
-      setTotalProcessedImagesGlobal(total);
     } catch (e) {
       console.error("Failed to calculate total images:", e);
     } finally {
@@ -752,7 +823,11 @@ export const AdminDashboard: React.FC = () => {
             role: raw.role || 'user',
             joinDate: raw.joinDate || raw.createdAt || new Date().toISOString(),
             createdAt: raw.createdAt || raw.joinDate || new Date().toISOString(),
-            photoURL: raw.photoURL || ''
+            photoURL: raw.photoURL || '',
+            lastActiveAt: raw.lastActiveAt || raw.lastLoginAt || raw.lastSeen || '',
+            deviceIds: raw.deviceIds || [],
+            devices: raw.devices || [],
+            deviceLimitReached: Boolean(raw.deviceLimitReached)
           };
 
           batch.set(doc(db, 'users', d.id), cleanDoc);
@@ -1849,6 +1924,39 @@ export const AdminDashboard: React.FC = () => {
           </div>
 
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+            {/* System Diagnostic Information Banner */}
+            <div className="p-4 bg-slate-950/90 border border-purple-500/20 rounded-xl space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-purple-400" />
+                  <span className="text-xs font-bold text-slate-200 tracking-wider uppercase font-mono">
+                    Authoritative Central Registry Diagnostics
+                  </span>
+                </div>
+                <span className="text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
+                  DEV & PROD Synced
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                <div className="p-2.5 bg-slate-900/80 rounded-lg border border-slate-800">
+                  <span className="text-[10px] text-slate-500 block">Firestore Project</span>
+                  <span className="font-mono font-semibold text-purple-300">parallel-text-2026</span>
+                </div>
+                <div className="p-2.5 bg-slate-900/80 rounded-lg border border-slate-800">
+                  <span className="text-[10px] text-slate-500 block">Database ID</span>
+                  <span className="font-mono font-semibold text-slate-300">(default)</span>
+                </div>
+                <div className="p-2.5 bg-slate-900/80 rounded-lg border border-slate-800">
+                  <span className="text-[10px] text-slate-500 block">Document Path</span>
+                  <span className="font-mono font-semibold text-amber-300">central_keys/APIkeys</span>
+                </div>
+                <div className="p-2.5 bg-slate-900/80 rounded-lg border border-slate-800">
+                  <span className="text-[10px] text-slate-500 block">Live Pool Count</span>
+                  <span className="font-mono font-semibold text-emerald-400">{centralKeys.length} Keys Synced</span>
+                </div>
+              </div>
+            </div>
+
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h3 className="text-xl font-bold text-white flex items-center gap-2">
@@ -1875,10 +1983,10 @@ export const AdminDashboard: React.FC = () => {
                   onClick={() => setShowDeadApiModal(true)}
                   disabled={loadingKeys || centralKeys.length === 0}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-gradient-to-r from-rose-500/20 via-red-500/20 to-orange-500/20 hover:from-rose-500/30 hover:via-red-500/30 hover:to-orange-500/30 text-rose-300 border border-rose-500/40 rounded-xl text-sm font-bold transition-all shadow-lg shadow-rose-950/40 active:scale-95 disabled:opacity-50 cursor-pointer"
-                  title="Test API validity with Gemini 3.1 Flash Lite model against a demo image. Dead keys are labeled and deactivated (never deleted, preventing automatic re-add on login)."
+                  title="Scan all Central API keys sequentially from first to last using Gemini verification. Deactivates keys failing 3 attempts."
                 >
                   <Flame className="w-4 h-4 text-rose-400" />
-                  <span>Dead API Scanner</span>
+                  <span>Dead API Cleaner</span>
                 </button>
 
                 <button
@@ -2006,26 +2114,135 @@ export const AdminDashboard: React.FC = () => {
               </form>
             )}
 
-            {/* Search and Table */}
+            {/* Central API Filter Tabs, Batch Privileges, and Search */}
             <div className="space-y-4">
-              <div className="flex items-center gap-3 bg-slate-950 p-2 rounded-xl border border-slate-800 max-w-md">
-                <Search className="w-4 h-4 text-slate-500 ml-2 shrink-0" />
-                <input 
-                  type="text" 
-                  placeholder="Filter keys by label or masked identifier..." 
-                  value={keySearchTerm}
-                  onChange={(e) => setKeySearchTerm(e.target.value)}
-                  className="bg-transparent border-none outline-none text-slate-200 w-full py-1 text-sm placeholder:text-slate-500"
-                />
-                {keySearchTerm && (
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-950/60 p-3 rounded-2xl border border-slate-800/80">
+                {/* Status Filter Tabs */}
+                <div className="flex items-center gap-1.5 overflow-x-auto">
                   <button
                     type="button"
-                    onClick={() => setKeySearchTerm('')}
-                    className="text-xs text-slate-400 hover:text-slate-200 px-2 py-0.5"
+                    onClick={() => setKeyStatusFilter('all')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      keyStatusFilter === 'all'
+                        ? 'bg-purple-600 text-white shadow-md shadow-purple-600/20'
+                        : 'bg-slate-900 text-slate-400 hover:bg-slate-800 hover:text-slate-200 border border-slate-800'
+                    }`}
                   >
-                    Clear
+                    All ({centralKeys.length})
                   </button>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => setKeyStatusFilter('active')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      keyStatusFilter === 'active'
+                        ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20'
+                        : 'bg-slate-900 text-emerald-400 hover:bg-slate-800 border border-slate-800'
+                    }`}
+                  >
+                    Active ({centralKeys.filter(k => k.enabled && !k.isDead && k.status !== 'dead').length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setKeyStatusFilter('disabled')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      keyStatusFilter === 'disabled'
+                        ? 'bg-slate-700 text-white shadow-md shadow-slate-700/20'
+                        : 'bg-slate-900 text-slate-400 hover:bg-slate-800 border border-slate-800'
+                    }`}
+                  >
+                    Disabled ({centralKeys.filter(k => !k.enabled && !k.isDead && k.status !== 'dead').length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setKeyStatusFilter('dead')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      keyStatusFilter === 'dead'
+                        ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
+                        : 'bg-slate-900 text-rose-400 hover:bg-slate-800 border border-slate-800'
+                    }`}
+                  >
+                    Dead ({centralKeys.filter(k => k.isDead || k.status === 'dead').length})
+                  </button>
+                </div>
+
+                {/* Admin Quick Batch Privileges & Search */}
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {selectedKeyIds.length > 0 ? (
+                    <div className="flex items-center gap-2 bg-slate-900 p-1 rounded-xl border border-purple-500/30">
+                      <span className="text-[11px] font-semibold text-purple-300 px-2">
+                        {selectedKeyIds.length} Selected
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleBatchToggleStatus(true)}
+                        className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                        title="Enable selected keys"
+                      >
+                        <Power className="w-3 h-3 text-emerald-400" />
+                        <span>Enable Selected</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBatchToggleStatus(false)}
+                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                        title="Disable selected keys"
+                      >
+                        <Power className="w-3 h-3 text-slate-400" />
+                        <span>Disable Selected</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedKeyIds([])}
+                        className="px-2 py-1 text-slate-500 hover:text-slate-300 text-xs"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleBatchToggleStatus(true)}
+                        disabled={centralKeys.length === 0 || loadingKeys}
+                        className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        title="Admin Privilege: Enable all central API keys for generation"
+                      >
+                        <Power className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Enable All</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBatchToggleStatus(false)}
+                        disabled={centralKeys.length === 0 || loadingKeys}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        title="Admin Privilege: Disable all central API keys from rotation"
+                      >
+                        <Power className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Disable All</span>
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-800 w-full sm:w-64">
+                    <Search className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <input 
+                      type="text" 
+                      placeholder="Search label, masked ID, owner..." 
+                      value={keySearchTerm}
+                      onChange={(e) => setKeySearchTerm(e.target.value)}
+                      className="bg-transparent border-none outline-none text-slate-200 w-full text-xs placeholder:text-slate-500"
+                    />
+                    {keySearchTerm && (
+                      <button
+                        type="button"
+                        onClick={() => setKeySearchTerm('')}
+                        className="text-xs text-slate-400 hover:text-slate-200"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {centralKeys.length === 0 && !loadingKeys ? (
@@ -2041,17 +2258,45 @@ export const AdminDashboard: React.FC = () => {
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-900/80 text-slate-400 text-xs uppercase tracking-wider">
+                        <th className="p-4 w-10">
+                          <input
+                            type="checkbox"
+                            checked={
+                              centralKeys.length > 0 &&
+                              selectedKeyIds.length === centralKeys.length
+                            }
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedKeyIds(centralKeys.map(k => k.id));
+                              } else {
+                                setSelectedKeyIds([]);
+                              }
+                            }}
+                            className="rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-0 cursor-pointer"
+                            title="Select all keys"
+                          />
+                        </th>
                         <th className="p-4 font-semibold">Label / Origin</th>
                         <th className="p-4 font-semibold">Masked API Key</th>
                         <th className="p-4 font-semibold">Contributor</th>
                         <th className="p-4 font-semibold">Added On</th>
-                        <th className="p-4 font-semibold">Status</th>
-                        <th className="p-4 font-semibold text-right">Actions</th>
+                        <th className="p-4 font-semibold">Admin Status & Switch</th>
+                        <th className="p-4 font-semibold text-right">Privilege Actions</th>
                       </tr>
                     </thead>
                     <tbody className="text-sm text-slate-300 divide-y divide-slate-800/50">
                       {centralKeys
                         .filter(k => {
+                          // Apply Status Filter
+                          if (keyStatusFilter === 'active') {
+                            if (!k.enabled || k.isDead || k.status === 'dead') return false;
+                          } else if (keyStatusFilter === 'disabled') {
+                            if (k.enabled || k.isDead || k.status === 'dead') return false;
+                          } else if (keyStatusFilter === 'dead') {
+                            if (!k.isDead && k.status !== 'dead') return false;
+                          }
+
+                          // Apply Search Filter
                           if (!keySearchTerm) return true;
                           const q = keySearchTerm.toLowerCase();
                           return (
@@ -2063,114 +2308,177 @@ export const AdminDashboard: React.FC = () => {
                             k.id.toLowerCase().includes(q)
                           );
                         })
-                        .map((key, idx) => (
-                          <tr key={key.id} className="hover:bg-slate-800/20 transition-colors group">
-                            <td className="p-4 font-medium text-slate-200">
-                              <div className="flex items-center gap-2">
-                                <div className="w-7 h-7 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 text-xs font-bold shrink-0">
-                                  #{idx + 1}
+                        .map((key, idx) => {
+                          const isKeyEnabled = Boolean(key.enabled && !key.isDead && key.status !== 'dead');
+                          const isKeyDead = Boolean(key.isDead || key.status === 'dead');
+                          const isToggling = togglingKeyId === key.id;
+                          const isSelected = selectedKeyIds.includes(key.id);
+
+                          return (
+                            <tr key={key.id} className={`hover:bg-slate-800/20 transition-colors group ${isSelected ? 'bg-purple-950/20' : ''}`}>
+                              <td className="p-4">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedKeyIds(prev => [...prev, key.id]);
+                                    } else {
+                                      setSelectedKeyIds(prev => prev.filter(id => id !== key.id));
+                                    }
+                                  }}
+                                  className="rounded border-slate-700 bg-slate-900 text-purple-600 focus:ring-0 cursor-pointer"
+                                />
+                              </td>
+
+                              <td className="p-4 font-medium text-slate-200">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-7 h-7 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 text-xs font-bold shrink-0">
+                                    #{idx + 1}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <span className="truncate block font-semibold text-slate-100">{key.label || 'User Contributed Key'}</span>
+                                    <span className="text-[10px] text-slate-500 font-mono">ID: {key.id.slice(0, 8)}...</span>
+                                  </div>
                                 </div>
-                                <div className="min-w-0">
-                                  <span className="truncate block font-semibold text-slate-100">{key.label || 'User Contributed Key'}</span>
-                                  <span className="text-[10px] text-slate-500 font-mono">ID: {key.id.slice(0, 8)}...</span>
-                                </div>
-                              </div>
-                            </td>
+                              </td>
 
-                            <td className="p-4">
-                              <div className="flex items-center gap-2">
-                                <span className="font-mono text-xs text-slate-300 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 break-all max-w-[200px]">
-                                  {revealedKeys[key.id] || key.maskedKey || '••••••••'}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => copyKeyIdentifier(key.id, revealedKeys[key.id] || key.maskedKey || key.id)}
-                                  className="p-1 hover:bg-slate-800 text-slate-500 hover:text-slate-300 rounded transition-colors"
-                                  title="Copy Key Identifier"
-                                >
-                                  {copiedKeyId === key.id ? (
-                                    <Check className="w-3.5 h-3.5 text-emerald-400" />
-                                  ) : (
-                                    <Copy className="w-3.5 h-3.5" />
-                                  )}
-                                </button>
-                              </div>
-                            </td>
-
-                            <td className="p-4 text-xs text-slate-300">
-                              <div className="flex flex-col gap-0.5">
-                                <span className="font-semibold text-purple-300 inline-flex items-center gap-1.5">
-                                  <User className="w-3 h-3 text-purple-400 shrink-0" />
-                                  <span className="truncate max-w-[170px]">
-                                    {(() => {
-                                      const email = key.contributorEmail || '';
-                                      if (key.contributorName && key.contributorName !== key.label && key.contributorName !== 'central' && key.contributorName !== 'anonymous') {
-                                        return key.contributorName;
-                                      }
-                                      if (key.contributedBy && key.contributedBy !== key.label && key.contributedBy !== 'central' && key.contributedBy !== 'anonymous') {
-                                        return key.contributedBy;
-                                      }
-                                      if (email) {
-                                        return email.split('@')[0];
-                                      }
-                                      return 'Community Contributor';
-                                    })()}
+                              <td className="p-4">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-xs text-slate-300 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 break-all max-w-[200px]">
+                                    {revealedKeys[key.id] || key.maskedKey || '••••••••'}
                                   </span>
-                                </span>
-                                {key.contributorEmail && (
-                                  <span className="text-[10px] text-slate-500 font-mono truncate max-w-[170px]">
-                                    {key.contributorEmail}
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-
-                            <td className="p-4 text-xs text-slate-400">
-                              {key.createdAt ? new Date(key.createdAt).toLocaleString() : 'N/A'}
-                            </td>
-
-                            <td className="p-4">
-                              {key.isDead || key.status === 'dead' ? (
-                                <div className="flex flex-col gap-1 items-start">
-                                  <button 
-                                    onClick={() => toggleKeyStatus(key.id, key.enabled, key.status)}
-                                    className="px-2.5 py-1 text-[11px] font-bold rounded-full uppercase transition-all cursor-pointer bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 border border-rose-500/40 inline-flex items-center gap-1.5"
-                                    title={`Dead Key (${key.deadReason || 'Verification failed'}). Click to force re-activate.`}
+                                  <button
+                                    type="button"
+                                    onClick={() => copyKeyIdentifier(key.id, revealedKeys[key.id] || key.maskedKey || key.id)}
+                                    className="p-1 hover:bg-slate-800 text-slate-500 hover:text-slate-300 rounded transition-colors cursor-pointer"
+                                    title="Copy Key Identifier"
                                   >
-                                    <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
-                                    <span>Dead (Deactivated)</span>
+                                    {copiedKeyId === key.id ? (
+                                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                    ) : (
+                                      <Copy className="w-3.5 h-3.5" />
+                                    )}
                                   </button>
-                                  {key.deadReason && (
-                                    <span className="text-[10px] text-rose-400/80 truncate max-w-[170px]" title={key.deadReason}>
-                                      {key.deadReason}
+                                </div>
+                              </td>
+
+                              <td className="p-4 text-xs text-slate-300">
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="font-semibold text-purple-300 inline-flex items-center gap-1.5">
+                                    <User className="w-3 h-3 text-purple-400 shrink-0" />
+                                    <span className="truncate max-w-[170px]">
+                                      {(() => {
+                                        const email = key.contributorEmail || '';
+                                        if (key.contributorName && key.contributorName !== key.label && key.contributorName !== 'central' && key.contributorName !== 'anonymous') {
+                                          return key.contributorName;
+                                        }
+                                        if (key.contributedBy && key.contributedBy !== key.label && key.contributedBy !== 'central' && key.contributedBy !== 'anonymous') {
+                                          return key.contributedBy;
+                                        }
+                                        if (email) {
+                                          return email.split('@')[0];
+                                        }
+                                        return 'Community Contributor';
+                                      })()}
+                                    </span>
+                                  </span>
+                                  {key.contributorEmail && (
+                                    <span className="text-[10px] text-slate-500 font-mono truncate max-w-[170px]">
+                                      {key.contributorEmail}
                                     </span>
                                   )}
                                 </div>
-                              ) : (
-                                <button 
-                                  onClick={() => toggleKeyStatus(key.id, key.enabled, key.status)}
-                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-full uppercase transition-all cursor-pointer ${
-                                    key.enabled 
-                                      ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 border border-emerald-500/30' 
-                                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700 border border-slate-700'
-                                  }`}
-                                >
-                                  {key.enabled ? 'Active / Enabled' : 'Disabled'}
-                                </button>
-                              )}
-                            </td>
+                              </td>
 
-                            <td className="p-4 text-right">
-                              <button
-                                onClick={() => deleteKey(key.id)}
-                                className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
-                                title="Delete Key from Central Pool"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                              <td className="p-4 text-xs text-slate-400">
+                                {key.createdAt ? new Date(key.createdAt).toLocaleString() : 'N/A'}
+                              </td>
+
+                              {/* Admin Status & Switch Column */}
+                              <td className="p-4">
+                                <div className="flex items-center gap-3">
+                                  {/* Interactive iOS Switch */}
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleKeyStatus(key.id, key.enabled, key.status)}
+                                    disabled={isToggling}
+                                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                      isKeyEnabled 
+                                        ? 'bg-emerald-500 shadow-sm shadow-emerald-500/40' 
+                                        : isKeyDead 
+                                          ? 'bg-rose-950/80 border-rose-600/40' 
+                                          : 'bg-slate-800'
+                                    }`}
+                                    title={isKeyEnabled ? "Click to Disable API Key" : isKeyDead ? "Dead Key. Click to Force Re-enable." : "Click to Enable API Key"}
+                                  >
+                                    <span
+                                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                        isKeyEnabled ? 'translate-x-5' : 'translate-x-0'
+                                      }`}
+                                    />
+                                  </button>
+
+                                  {/* Status Label Badge */}
+                                  <div>
+                                    {isKeyDead ? (
+                                      <div className="flex flex-col">
+                                        <span className="px-2 py-0.5 text-[10px] font-bold rounded-full uppercase bg-rose-500/20 text-rose-300 border border-rose-500/40 inline-flex items-center gap-1">
+                                          <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
+                                          Dead (Deactivated)
+                                        </span>
+                                        {key.deadReason && (
+                                          <span className="text-[9px] text-rose-400/80 truncate max-w-[140px] mt-0.5" title={key.deadReason}>
+                                            {key.deadReason}
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : isKeyEnabled ? (
+                                      <span className="px-2 py-0.5 text-[10px] font-bold rounded-full uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 inline-flex items-center gap-1">
+                                        <CheckCircle className="w-2.5 h-2.5 text-emerald-400" />
+                                        Active / Enabled
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 text-[10px] font-bold rounded-full uppercase bg-slate-800 text-slate-400 border border-slate-700">
+                                        Disabled
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Action Buttons Column */}
+                              <td className="p-4 text-right">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {/* Admin Enable / Disable Privilege Quick Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleKeyStatus(key.id, key.enabled, key.status)}
+                                    disabled={isToggling}
+                                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer ${
+                                      isKeyEnabled
+                                        ? 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                        : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    }`}
+                                    title={isKeyEnabled ? "Admin Action: Disable API Key" : "Admin Action: Enable API Key"}
+                                  >
+                                    <Power className={`w-3.5 h-3.5 ${isKeyEnabled ? 'text-amber-400' : 'text-emerald-400'}`} />
+                                    <span>{isKeyEnabled ? 'Disable' : 'Enable'}</span>
+                                  </button>
+
+                                  {/* Delete Button */}
+                                  <button
+                                    onClick={() => deleteKey(key.id)}
+                                    className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
+                                    title="Delete Key from Central Pool"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                     </tbody>
                   </table>
                 </div>

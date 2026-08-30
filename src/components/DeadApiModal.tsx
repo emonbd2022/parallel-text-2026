@@ -17,9 +17,12 @@ import {
   StopCircle,
   CheckCircle,
   Eye,
-  Info
+  Info,
+  Clock,
+  Layers
 } from 'lucide-react';
 import { CentralKeyRecord, testSingleCentralKey, markSingleCentralKeyDead } from '../services/centralKeyService';
+import { getAttemptModel, getModelDisplayName, formatScanErrorMessage, SCAN_FALLBACK_MODELS } from '../utils/scanModelWaterfall';
 
 // Default lightweight sample image (1x1 transparent PNG)
 const DEFAULT_DEMO_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
@@ -58,6 +61,8 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
   const [scanFinished, setScanFinished] = useState<boolean>(false);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
   const [currentAttempt, setCurrentAttempt] = useState<number>(0);
+  const [activeAttemptModel, setActiveAttemptModel] = useState<string>('gemini-3.1-flash-lite-preview');
+  const [cooldownCountdown, setCooldownCountdown] = useState<number | null>(null);
   const [testResults, setTestResults] = useState<KeyTestResult[]>([]);
   const [logMessages, setLogMessages] = useState<{ id: string; time: string; text: string; type: 'info' | 'success' | 'warn' | 'error' }[]>([]);
 
@@ -65,6 +70,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
   const isPausedRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const scanStartedRef = useRef<boolean>(false);
 
   useEffect(() => {
     isPausedRef.current = isPaused;
@@ -76,6 +82,17 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
       logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [logMessages]);
+
+  // Auto-start scan from 1st key to last key immediately every time modal opens
+  useEffect(() => {
+    if (isOpen && centralKeys.length > 0 && !isScanning && !scanStartedRef.current) {
+      scanStartedRef.current = true;
+      startScan();
+    }
+    if (!isOpen) {
+      scanStartedRef.current = false;
+    }
+  }, [isOpen, centralKeys]);
 
   if (!isOpen) return null;
 
@@ -178,7 +195,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
 
     setTestResults(initialResults);
     addLog(`Starting Dead API Scan across ${centralKeys.length} Central API keys.`, 'info');
-    addLog(`Target Model: ${selectedModel} • Max 3 tries per key.`, 'info');
+    addLog(`Multi-Model Waterfall: Try 1 (${getModelDisplayName(getAttemptModel(selectedModel, 1))}) -> Try 2 (${getModelDisplayName(getAttemptModel(selectedModel, 2))}) -> Try 3 (${getModelDisplayName(getAttemptModel(selectedModel, 3))}).`, 'info');
 
     let healthyCount = 0;
     let deadCount = 0;
@@ -197,6 +214,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
 
       const currentKey = centralKeys[i];
       setCurrentIndex(i);
+      setCooldownCountdown(null);
 
       setTestResults(prev => prev.map((r, idx) => idx === i ? { ...r, status: 'testing', attempt: 1 } : r));
       addLog(`[${i + 1}/${centralKeys.length}] Testing key "${currentKey.label}" (${currentKey.maskedKey})...`, 'info');
@@ -205,36 +223,72 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
       let generatedTitle = '';
       let lastErrorMessage = '';
       let attemptNumber = 0;
+      let hadRateLimit = false;
 
-      // Up to 3 attempts
+      // Up to 3 attempts with distinct models and 5s delays
       for (let attempt = 1; attempt <= 3; attempt++) {
         if (stopRequestedRef.current) break;
         attemptNumber = attempt;
         setCurrentAttempt(attempt);
 
+        const currentModelForAttempt = getAttemptModel(selectedModel, attempt);
+        setActiveAttemptModel(currentModelForAttempt);
+
         setTestResults(prev => prev.map((r, idx) => idx === i ? { ...r, attempt } : r));
-        addLog(`  -> Attempt ${attempt}/3: Calling Gemini API (${selectedModel}) with demo image...`, 'info');
+        addLog(`  -> Attempt ${attempt}/3: Calling Gemini API (${getModelDisplayName(currentModelForAttempt)}) with demo image...`, 'info');
 
         try {
-          const testRes = await testSingleCentralKey(currentKey.id, demoImage, selectedModel);
+          const testRes = await testSingleCentralKey(currentKey.id, demoImage, currentModelForAttempt);
           if (testRes.success && testRes.title) {
             passed = true;
             generatedTitle = testRes.title;
-            addLog(`  ✓ Attempt ${attempt}/3 PASSED: "${generatedTitle.substring(0, 55)}..."`, 'success');
+            addLog(`  ✓ Attempt ${attempt}/3 PASSED with ${getModelDisplayName(currentModelForAttempt)}: "${generatedTitle.substring(0, 55)}..."`, 'success');
             break;
           } else {
             lastErrorMessage = testRes.error || 'Failed to generate title';
-            addLog(`  ✗ Attempt ${attempt}/3 FAILED: ${lastErrorMessage}`, 'warn');
-            if (attempt < 3) {
-              // Wait 1 second backoff before next attempt
-              await new Promise(r => setTimeout(r, 1000));
+            const cleanErr = formatScanErrorMessage(lastErrorMessage);
+            if (lastErrorMessage.includes('429') || lastErrorMessage.includes('RESOURCE_EXHAUSTED')) {
+              hadRateLimit = true;
+            }
+            addLog(`  ✗ Attempt ${attempt}/3 FAILED [${getModelDisplayName(currentModelForAttempt)}]: ${cleanErr}`, 'warn');
+
+            if (attempt < 3 && !stopRequestedRef.current) {
+              const nextAttemptModel = getAttemptModel(selectedModel, attempt + 1);
+              addLog(`  ⏳ Waiting 5s cooldown before starting Attempt ${attempt + 1}/3 with alternate model (${getModelDisplayName(nextAttemptModel)})...`, 'warn');
+              
+              // 5 second cooldown countdown
+              for (let s = 5; s >= 1; s--) {
+                if (stopRequestedRef.current) break;
+                while (isPausedRef.current && !stopRequestedRef.current) {
+                  await new Promise(r => setTimeout(r, 400));
+                }
+                setCooldownCountdown(s);
+                await new Promise(r => setTimeout(r, 1000));
+              }
+              setCooldownCountdown(null);
             }
           }
         } catch (err: any) {
           lastErrorMessage = err?.message || 'Network exception';
-          addLog(`  ✗ Attempt ${attempt}/3 EXCEPTION: ${lastErrorMessage}`, 'warn');
-          if (attempt < 3) {
-            await new Promise(r => setTimeout(r, 1000));
+          const cleanErr = formatScanErrorMessage(lastErrorMessage);
+          if (lastErrorMessage.includes('429') || lastErrorMessage.includes('RESOURCE_EXHAUSTED')) {
+            hadRateLimit = true;
+          }
+          addLog(`  ✗ Attempt ${attempt}/3 EXCEPTION [${getModelDisplayName(currentModelForAttempt)}]: ${cleanErr}`, 'warn');
+
+          if (attempt < 3 && !stopRequestedRef.current) {
+            const nextAttemptModel = getAttemptModel(selectedModel, attempt + 1);
+            addLog(`  ⏳ Waiting 5s cooldown before starting Attempt ${attempt + 1}/3 with alternate model (${getModelDisplayName(nextAttemptModel)})...`, 'warn');
+            
+            for (let s = 5; s >= 1; s--) {
+              if (stopRequestedRef.current) break;
+              while (isPausedRef.current && !stopRequestedRef.current) {
+                await new Promise(r => setTimeout(r, 400));
+              }
+              setCooldownCountdown(s);
+              await new Promise(r => setTimeout(r, 1000));
+            }
+            setCooldownCountdown(null);
           }
         }
       }
@@ -249,11 +303,12 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
         } : r));
       } else {
         deadCount++;
-        addLog(`  🚨 KEY MARKED DEAD (Failed 3/3 attempts). Deactivating "${currentKey.label}" and storing...`, 'error');
+        const finalCleanErr = formatScanErrorMessage(lastErrorMessage);
+        addLog(`  🚨 KEY MARKED DEAD (Failed all 3 model tiers). Deactivating "${currentKey.label}" and storing in database...`, 'error');
         
         // Mark dead key as DEAD (deactivated and stored, not deleted)
         try {
-          await markSingleCentralKeyDead(currentKey.id, lastErrorMessage || 'Failed 3/3 Gemini API verification attempts');
+          await markSingleCentralKeyDead(currentKey.id, finalCleanErr || 'Failed 3/3 Gemini API multi-model verification attempts');
           addLog(`  🏷️ Key "${currentKey.label}" labeled as DEAD & disabled (kept in database to prevent login re-add).`, 'error');
         } catch (delErr: any) {
           addLog(`  ⚠️ Failed to mark key as dead: ${delErr?.message}`, 'error');
@@ -262,21 +317,22 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
         setTestResults(prev => prev.map((r, idx) => idx === i ? {
           ...r,
           status: 'dead',
-          error: lastErrorMessage || 'Failed 3/3 attempts to generate metadata',
+          error: finalCleanErr || 'Failed 3/3 model attempts',
           attempt: attemptNumber,
           markedDead: true
         } : r));
       }
 
-      // Small cooldown between keys
-      await new Promise(r => setTimeout(r, 400));
+      // Safe pacing between separate keys to prevent rate limit cascade
+      const keyCooldown = hadRateLimit ? 3500 : 1500;
+      await new Promise(r => setTimeout(r, keyCooldown));
     }
 
     setIsScanning(false);
     setScanFinished(true);
     setCurrentIndex(-1);
     setCurrentAttempt(0);
-    addLog(`🏁 Scan complete! Healthy Active: ${healthyCount}, Dead Deactivated: ${deadCount}`, 'success');
+    addLog(`🏁 Scan cycle finished. Verified all ${centralKeys.length} keys (Active: ${healthyCount}, Dead Deactivated: ${deadCount}).`, 'success');
     onScanComplete();
   };
 
@@ -284,7 +340,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
     stopRequestedRef.current = true;
     setIsScanning(false);
     setIsPaused(false);
-    addLog("Stopping scan...", "warn");
+    addLog("Scan stopped by user.", "warn");
   };
 
   const healthyCount = testResults.filter(r => r.status === 'healthy').length;
@@ -509,7 +565,11 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-300 font-medium">
-                    {scanFinished ? 'Scan Completed' : isScanning ? `Scanning Key ${currentIndex + 1} of ${centralKeys.length}` : 'Scan Progress'}
+                    {isScanning 
+                      ? `Testing Key ${currentIndex + 1} of ${centralKeys.length}` 
+                      : scanFinished 
+                        ? `All ${centralKeys.length} Keys Processed • Active: ${healthyCount}, Deactivated: ${deadCount}` 
+                        : `Ready to Scan ${centralKeys.length} Keys (1st to Last)`}
                   </span>
                   <span className="font-mono text-purple-400 font-bold">{progressPercent}%</span>
                 </div>
@@ -523,7 +583,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
 
               {/* Active Testing Card */}
               {isScanning && currentKeyItem && (
-                <div className="p-4 bg-slate-950/90 border border-purple-500/40 rounded-2xl flex items-center justify-between shadow-lg shadow-purple-500/5 animate-pulse">
+                <div className="p-4 bg-slate-950/90 border border-purple-500/40 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg shadow-purple-500/5">
                   <div className="flex items-center gap-3">
                     <Loader2 className="w-5 h-5 text-purple-400 animate-spin shrink-0" />
                     <div>
@@ -533,16 +593,26 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
                           {currentKeyItem.maskedKey}
                         </span>
                       </div>
-                      <span className="text-xs text-purple-300 block mt-0.5">
-                        Testing with demo image • Evaluating metadata response...
-                      </span>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-purple-300">
+                          Testing with demo image • Model: <strong className="text-white font-mono">{getModelDisplayName(activeAttemptModel)}</strong>
+                        </span>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <span className="px-3 py-1 bg-purple-500/20 text-purple-300 border border-purple-500/30 text-xs font-bold rounded-lg">
-                      Attempt {currentAttempt} of 3
-                    </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {cooldownCountdown !== null ? (
+                      <span className="px-3 py-1 bg-amber-500/20 text-amber-300 border border-amber-500/40 text-xs font-bold rounded-lg flex items-center gap-1.5 animate-pulse">
+                        <Clock className="w-3.5 h-3.5" />
+                        Next Model Retry in {cooldownCountdown}s
+                      </span>
+                    ) : (
+                      <span className="px-3 py-1 bg-purple-500/20 text-purple-300 border border-purple-500/30 text-xs font-bold rounded-lg flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5" />
+                        Attempt {currentAttempt} of 3
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -648,17 +718,17 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
         <div className="p-6 border-t border-slate-800 bg-slate-950/60 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-xs text-slate-400">
             {scanFinished ? (
-              <span className="text-emerald-400 font-semibold flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4" />
-                Scan complete. Database synchronized.
+              <span className="text-slate-300 font-medium flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                Verified all {centralKeys.length} Central API keys ({healthyCount} Active, {deadCount} Deactivated) • Database updated
               </span>
             ) : isScanning ? (
               <span className="text-purple-300 flex items-center gap-1.5">
                 <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
-                Scanning in progress... Please keep this window open.
+                Scanning from first to last API ({currentIndex + 1}/{centralKeys.length})...
               </span>
             ) : (
-              <span>Ready to test {centralKeys.length} Central API keys.</span>
+              <span>Ready to test {centralKeys.length} Central API keys sequentially.</span>
             )}
           </div>
 
@@ -684,13 +754,26 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
                 </button>
               </>
             ) : scanFinished ? (
-              <button
-                type="button"
-                onClick={onClose}
-                className="w-full sm:w-auto px-6 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-purple-600/20 cursor-pointer"
-              >
-                Close & Refresh Table
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="flex-1 sm:flex-initial px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm font-semibold transition-colors cursor-pointer"
+                >
+                  Close & Refresh Table
+                </button>
+
+                <button
+                  type="button"
+                  onClick={startScan}
+                  disabled={centralKeys.length === 0}
+                  className="flex-1 sm:flex-initial px-5 py-2.5 bg-gradient-to-r from-rose-600 to-purple-600 hover:from-rose-500 hover:to-purple-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-rose-600/20 active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
+                  title="Restart scan from the 1st key to the last key"
+                >
+                  <Flame className="w-4 h-4" />
+                  <span>Rescan All Keys ({centralKeys.length})</span>
+                </button>
+              </>
             ) : (
               <>
                 <button
@@ -708,7 +791,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
                   className="flex-1 sm:flex-initial px-6 py-2.5 bg-gradient-to-r from-rose-600 to-purple-600 hover:from-rose-500 hover:to-purple-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-rose-600/20 active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Flame className="w-4 h-4" />
-                  <span>Start Dead API Scan ({centralKeys.length})</span>
+                  <span>Start Scan from 1st Key ({centralKeys.length})</span>
                 </button>
               </>
             )}

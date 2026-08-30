@@ -23,15 +23,15 @@ service cloud.firestore {
       );
     }
 
-    // Strict allowlist of essential account fields.
-    // Enforced for BOTH normal users and administrators.
+    // Strict allowlist of essential account fields for newly created documents.
     function hasOnlyEssentialAccountFields() {
       return request.resource.data.keys().hasOnly([
         'uid', 'email', 'name', 'photoURL', 'nickname',
         'credits', 'unlimited', 'totalProcessedImages',
         'joinDate', 'createdAt', 'blocked', 'role',
         'plan', 'planStartDate', 'planEndDate',
-        'deviceIds', 'centralApiAccess', 'lastActiveAt'
+        'deviceIds', 'devices', 'centralApiAccess', 'lastActiveAt',
+        'deviceLimitReached'
       ]);
     }
 
@@ -85,20 +85,25 @@ service cloud.firestore {
             (
               !('deviceIds' in request.resource.data) ||
               (request.resource.data.deviceIds is list && request.resource.data.deviceIds.size() <= 2)
+            ) &&
+            (
+              !('devices' in request.resource.data) ||
+              (request.resource.data.devices is list && request.resource.data.devices.size() <= 2)
             )
           )
         );
 
-      // Update: Enforces schema allowlist for ALL users.
-      // Normal users can update credits, processed counts, profile fields, and up to 2 registered deviceIds.
+      // Update: Prohibits local-first data while allowing profile/device metadata updates
       allow update: if isAuthenticated() && 
-        hasOnlyEssentialAccountFields() && 
         hasNoForbiddenLocalData() && 
         (
           isAdmin() ||
           (
             request.auth.uid == userId &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['credits', 'totalProcessedImages', 'deviceIds', 'lastActiveAt', 'nickname', 'name', 'photoURL']) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'credits', 'totalProcessedImages', 'deviceIds', 'devices', 
+              'lastActiveAt', 'nickname', 'name', 'photoURL', 'deviceLimitReached'
+            ]) &&
             (
               !('credits' in request.resource.data.diff(resource.data).affectedKeys()) ||
               (
@@ -119,8 +124,14 @@ service cloud.firestore {
               !('deviceIds' in request.resource.data.diff(resource.data).affectedKeys()) ||
               (
                 request.resource.data.deviceIds is list &&
-                request.resource.data.deviceIds.size() <= 2 &&
-                (!('deviceIds' in resource.data) || request.resource.data.deviceIds.hasAll(resource.data.deviceIds))
+                request.resource.data.deviceIds.size() <= 2
+              )
+            ) &&
+            (
+              !('devices' in request.resource.data.diff(resource.data).affectedKeys()) ||
+              (
+                request.resource.data.devices is list &&
+                request.resource.data.devices.size() <= 2
               )
             )
           )
