@@ -1322,7 +1322,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               totalProcessedImages: increment(numExported)
           };
           if (!userData.unlimited) {
-              updates.credits = increment(-numExported);
+              updates.credits = increment(-(numExported * 2));
           }
           
           // Single atomic updateDoc on users document only
@@ -1344,7 +1344,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
           setUserData(prev => prev ? {
               ...prev,
               totalProcessedImages: prev.totalProcessedImages + numExported,
-              credits: prev.unlimited ? prev.credits : (prev.credits - numExported)
+              credits: prev.unlimited ? prev.credits : (prev.credits - (numExported * 2))
           } : null);
           
           // Mark items as exported locally to prevent duplicate writes

@@ -119,7 +119,14 @@ export const ApiKeyManager: React.FC<Props> = ({
   }, [centralModeEnabled, apiMode, onChangeApiMode, onShowToast, isAdmin]);
 
   // Central API Usage State
-  const [usageStats, setUsageStats] = useState<CentralUsageStats | null>(null);
+  const [usageStats, setUsageStats] = useState<CentralUsageStats | null>(() => {
+    try {
+      const saved = localStorage.getItem('centralUsageStats');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [isLoadingUsage, setIsLoadingUsage] = useState(false);
 
   // Derive estimated fallback if server stats are loading
@@ -138,6 +145,7 @@ export const ApiKeyManager: React.FC<Props> = ({
       });
       if (stats) {
         setUsageStats(stats);
+        localStorage.setItem('centralUsageStats', JSON.stringify(stats));
       }
     } catch (e) {
       console.warn('Could not fetch usage stats:', e);
