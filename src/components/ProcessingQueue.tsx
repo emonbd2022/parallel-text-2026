@@ -1,4 +1,4 @@
-import { Cat, Maximize, Minimize } from 'lucide-react';
+import { Cat, Maximize, Minimize, ChevronDown } from 'lucide-react';
 import React, { useState, useEffect } from 'react';
 import { ProcessingItem } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
@@ -261,35 +261,38 @@ export const ProcessingQueue: React.FC<Props> = ({ items, onRemove, onUpdate, on
                       <div className="flex justify-between items-end">
                         <label className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Category</label>
                       </div>
-                      <select 
-                        value={item.category || ""}
-                        onChange={(e) => onUpdate(item.id, 'category', e.target.value)}
-                        disabled={item.status === 'processing' || item.status === 'compressing'}
-                        className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:border-purple-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-purple-500/50 outline-none transition-all shadow-inner appearance-none"
-                      >
-                        <option value="">Select a category...</option>
-                        <option value="Animals">Animals</option>
-                        <option value="Buildings and Architecture">Buildings and Architecture</option>
-                        <option value="Business">Business</option>
-                        <option value="Drinks">Drinks</option>
-                        <option value="The Environment">The Environment</option>
-                        <option value="States of Mind">States of Mind</option>
-                        <option value="Food">Food</option>
-                        <option value="Graphic Resources">Graphic Resources</option>
-                        <option value="Hobbies and Leisure">Hobbies and Leisure</option>
-                        <option value="Industry">Industry</option>
-                        <option value="Landscapes">Landscapes</option>
-                        <option value="Lifestyle">Lifestyle</option>
-                        <option value="People">People</option>
-                        <option value="Plants and Flowers">Plants and Flowers</option>
-                        <option value="Culture and Religion">Culture and Religion</option>
-                        <option value="Science">Science</option>
-                        <option value="Social Issues">Social Issues</option>
-                        <option value="Sports">Sports</option>
-                        <option value="Technology">Technology</option>
-                        <option value="Transport">Transport</option>
-                        <option value="Travel">Travel</option>
-                      </select>
+                      <div className="relative">
+                        <select 
+                          value={item.category || ""}
+                          onChange={(e) => onUpdate(item.id, 'category', e.target.value)}
+                          disabled={item.status === 'processing' || item.status === 'compressing'}
+                          className="w-full bg-slate-900/50 border border-slate-700/50 rounded-xl px-3.5 py-2.5 pr-8 text-xs text-slate-200 focus:border-purple-500/50 focus:bg-slate-900 focus:ring-1 focus:ring-purple-500/50 outline-none transition-all shadow-inner appearance-none cursor-pointer disabled:cursor-not-allowed"
+                        >
+                          <option value="">Select a category...</option>
+                          <option value="Animals">Animals</option>
+                          <option value="Buildings and Architecture">Buildings and Architecture</option>
+                          <option value="Business">Business</option>
+                          <option value="Drinks">Drinks</option>
+                          <option value="The Environment">The Environment</option>
+                          <option value="States of Mind">States of Mind</option>
+                          <option value="Food">Food</option>
+                          <option value="Graphic Resources">Graphic Resources</option>
+                          <option value="Hobbies and Leisure">Hobbies and Leisure</option>
+                          <option value="Industry">Industry</option>
+                          <option value="Landscapes">Landscapes</option>
+                          <option value="Lifestyle">Lifestyle</option>
+                          <option value="People">People</option>
+                          <option value="Plants and Flowers">Plants and Flowers</option>
+                          <option value="Culture and Religion">Culture and Religion</option>
+                          <option value="Science">Science</option>
+                          <option value="Social Issues">Social Issues</option>
+                          <option value="Sports">Sports</option>
+                          <option value="Technology">Technology</option>
+                          <option value="Transport">Transport</option>
+                          <option value="Travel">Travel</option>
+                        </select>
+                        <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      </div>
                   </div>
             </div>
           </div>

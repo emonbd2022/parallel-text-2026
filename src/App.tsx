@@ -7,7 +7,7 @@ import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
 import { generateCategoriesBatch } from './services/geminiCategoryService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
-import { Clock, Key, Hourglass, Cat, Layers, Upload, Maximize, Minimize, ArrowUp, Activity } from 'lucide-react';
+import { Clock, Key, Hourglass, Cat, Layers, Upload, Maximize, Minimize, ArrowUp, Activity, CheckCircle2, AlertTriangle, AlertCircle, Info, X } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from './contexts/AuthContext';
@@ -105,6 +105,32 @@ export default function App() {
   const navigate = useNavigate();
   // --- State ---
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const showNotification = (title: string, message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
+    // 1. In-app toast
+    const id = Math.random().toString(36).slice(2);
+    setToasts(prev => [...prev, { id, title, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 4500);
+
+    // 2. OS Notification (if permitted)
+    try {
+      if ("Notification" in window) {
+        if (Notification.permission === "granted") {
+          new Notification(title, { body: message, icon: '/vite.svg' });
+        } else if (Notification.permission !== "denied") {
+          Notification.requestPermission().then(permission => {
+            if (permission === "granted") {
+              new Notification(title, { body: message, icon: '/vite.svg' });
+            }
+          }).catch(() => {});
+        }
+      }
+    } catch (e) {
+      // Ignore notification errors in restrictive iframe environments
+    }
+  };
 
     const [filter, setFilter] = useState<'all' | 'ongoing' | 'completed' | 'uncompleted' | 'failed'>('all');
     const [localKeys, setLocalKeys] = useState<ApiKey[]>(() => {
@@ -503,21 +529,21 @@ export default function App() {
 
   const handleRefreshCentralKeys = async () => {
     try {
-      showNotification("Refreshing Central Pool", "Pulling latest Central API keys from server...");
+      showNotification("Refreshing Central Pool", "Pulling latest Central API keys from server...", "info");
       const pool = await fetchCentralKeysPool(true);
       if (pool.length > 0) {
-        showNotification("Central Pool Refreshed", `Successfully loaded ${pool.length} active worker nodes.`);
+        showNotification("Central Pool Refreshed", `Successfully loaded ${pool.length} active worker nodes.`, "success");
       } else {
         const uniqueKeysCount = new Set(localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20)).size;
         const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
         if (!isAdmin && uniqueKeysCount < 4 && !userData?.centralApiAccess) {
-          showNotification("Eligibility Notice", "Central API access requires at least 4 unique local API keys or Administrator approval.");
+          showNotification("Eligibility Notice", "Central API access requires at least 4 unique local API keys or Administrator approval.", "warning");
         } else {
-          showNotification("Refresh Notice", "No central nodes returned from server. Check network connection.");
+          showNotification("Refresh Notice", "No central nodes returned from server. Check network connection.", "warning");
         }
       }
     } catch (err: any) {
-      showNotification("Refresh Error", err?.message || "Failed to refresh central keys.");
+      showNotification("Refresh Error", err?.message || "Failed to refresh central keys.", "error");
     }
   };
 
@@ -526,7 +552,7 @@ export default function App() {
     const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
     if (centralModeEnabled === false && config.apiMode === 'central' && !isAdmin) {
       setConfig(prev => ({ ...prev, apiMode: 'local' }));
-      showNotification('Central API Locked', 'Central API mode has been disabled by the administrator. Switched to Local API mode.');
+      showNotification('Central API Locked', 'Central API mode has been disabled by the administrator. Switched to Local API mode.', 'warning');
     }
   }, [centralModeEnabled, config.apiMode, userData?.role, user?.email]);
 
@@ -1465,7 +1491,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     if (userData && !userData.unlimited && userData.credits <= 0) {
         setIsProcessing(false);
         setStatusMsg('Processing stopped. Insufficient credits.');
-        showNotification('Insufficient Credits', 'Please purchase more credits to continue processing.');
+        showNotification('Insufficient Credits', 'Please purchase more credits to continue processing.', 'warning');
         return;
     }
 
@@ -1505,16 +1531,16 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                 if (config.autoExport) {
                     handleExport();
                 } else {
-                    showNotification('Processing Complete', 'All items have been processed successfully.');
+                    showNotification('Processing Complete', 'All items have been processed successfully.', 'success');
                 }
             } else {
                 const missingBlobs = items.some(i => i.status === 'pending' && !i.thumb);
                 if (missingBlobs) {
                     setStatusMsg('Stopped. Some pending items are missing image data. Please re-upload them.');
-                    showNotification('Processing Stopped', 'Some pending items are missing image data.');
+                    showNotification('Processing Stopped', 'Some pending items are missing image data.', 'warning');
                 } else {
                     setStatusMsg('Processing stopped (some items failed or hit limits).');
-                    showNotification('Processing Stopped', 'Some items failed or hit API limits.');
+                    showNotification('Processing Stopped', 'Some items failed or hit API limits.', 'warning');
                 }
             }
         } else {
@@ -1753,7 +1779,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     } catch (error) {
         console.error("Save failed", error);
         setStatusMsg("Failed to save project.");
-        alert("Failed to save project. Storage might be full.");
+        showNotification("Save Failed", "Failed to save project. Storage might be full.", "error");
     }
   };
 
@@ -1772,28 +1798,6 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               setStatusMsg("Items cleared, but storage cleanup had issues.");
           }
       }
-  };
-  
-  const showNotification = (title: string, message: string) => {
-    // 1. In-app toast
-    const id = Math.random().toString(36).slice(2);
-    setToasts(prev => [...prev, { id, title, message, type: 'success' }]);
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 5000);
-
-    // 2. OS Notification
-    if (!("Notification" in window)) return;
-    
-    if (Notification.permission === "granted") {
-      new Notification(title, { body: message, icon: '/vite.svg' });
-    } else if (Notification.permission !== "denied") {
-      Notification.requestPermission().then(permission => {
-        if (permission === "granted") {
-          new Notification(title, { body: message, icon: '/vite.svg' });
-        }
-      });
-    }
   };
 
   const handleStartStop = async () => {
@@ -2409,7 +2413,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               <div className="mt-4 flex justify-center">
                 <button 
                   onClick={() => {
-                    alert('Check your Downloads folder for the CSV file. Depending on your browser, it has been saved to your default download location.');
+                    showNotification('File Download Location', 'Check your Downloads folder for the CSV file. Depending on your browser, it has been saved to your default download location.', 'info');
                   }}
                   className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg text-xs font-semibold text-slate-300 transition-colors flex items-center gap-2"
                 >
@@ -2442,27 +2446,60 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       </main>
 
       {/* Global Toast Notifications Container */}
-      <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
-        {toasts.map(toast => (
-          <div 
-            key={toast.id} 
-            className="pointer-events-auto bg-slate-800 border border-white/10 shadow-2xl rounded-xl p-4 min-w-[300px] flex items-start gap-3 transform transition-all animate-in slide-in-from-right-8 fade-in"
-          >
-            <div className="text-purple-400 mt-0.5 shrink-0">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            </div>
-            <div className="flex-1">
-              <h4 className="text-sm font-bold text-slate-100">{toast.title}</h4>
-              <p className="text-xs text-slate-300 mt-1">{toast.message}</p>
-            </div>
-            <button 
-              onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
-              className="text-slate-400 hover:text-white transition-colors"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </div>
-        ))}
+      <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none max-w-sm w-full sm:w-auto">
+        <AnimatePresence>
+          {toasts.map(toast => {
+            const isSuccess = toast.type === 'success';
+            const isError = toast.type === 'error';
+            const isWarning = toast.type === 'warning';
+            const isInfo = !toast.type || toast.type === 'info';
+
+            return (
+              <motion.div 
+                key={toast.id} 
+                initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                transition={{ duration: 0.2 }}
+                className={`pointer-events-auto shadow-2xl rounded-2xl p-4 min-w-[300px] flex items-start gap-3 border backdrop-blur-xl ${
+                  isSuccess 
+                    ? 'bg-slate-900/95 border-emerald-500/30 text-slate-100 shadow-emerald-950/30' 
+                    : isError 
+                    ? 'bg-slate-900/95 border-red-500/30 text-slate-100 shadow-red-950/30' 
+                    : isWarning 
+                    ? 'bg-slate-900/95 border-amber-500/30 text-slate-100 shadow-amber-950/30' 
+                    : 'bg-slate-900/95 border-blue-500/30 text-slate-100 shadow-blue-950/30'
+                }`}
+              >
+                <div className={`mt-0.5 shrink-0 ${
+                  isSuccess 
+                    ? 'text-emerald-400' 
+                    : isError 
+                    ? 'text-red-400' 
+                    : isWarning 
+                    ? 'text-amber-400' 
+                    : 'text-blue-400'
+                }`}>
+                  {isSuccess && <CheckCircle2 className="w-5 h-5" />}
+                  {isError && <AlertCircle className="w-5 h-5" />}
+                  {isWarning && <AlertTriangle className="w-5 h-5" />}
+                  {isInfo && <Info className="w-5 h-5" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-sm font-bold text-white truncate">{toast.title}</h4>
+                  <p className="text-xs text-slate-300 mt-0.5 leading-relaxed break-words">{toast.message}</p>
+                </div>
+                <button 
+                  onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+                  className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors shrink-0"
+                  title="Dismiss"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
       </div>
 
     </motion.div>

@@ -676,6 +676,55 @@ export async function markBatchCentralKeysAsDead(
 }
 
 /**
+ * Deletes ALL keys from Firestore single document and Server authoritative registry
+ */
+export async function deleteAllCentralKeys(): Promise<{ success: boolean; error?: string }> {
+  cachedCentralKeys = null; // Invalidate client cache
+
+  let serverSuccess = false;
+  try {
+    const headers: Record<string, string> = {};
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken(true)}`;
+      } catch {}
+    }
+
+    const res = await fetch('/api/admin/keys', {
+      method: 'DELETE',
+      headers
+    });
+    if (res.ok) {
+      serverSuccess = true;
+    }
+  } catch (e) {
+    console.log('[Central Key Service] Server clear-all warning:', e);
+  }
+
+  // Also directly update Firestore document central_keys/APIkeys using client SDK to guarantee atomic wipe
+  if (db) {
+    try {
+      const docRef = doc(db, 'central_keys', 'APIkeys');
+      await setDoc(docRef, {
+        keys: [],
+        totalCount: 0,
+        updatedAt: new Date().toISOString(),
+        version: 1
+      });
+      recordFirestoreWrite('central_keys', 1, 'deleteAllCentralKeys:direct');
+      return { success: true };
+    } catch (fsErr: any) {
+      console.error('[Central Key Service] Direct Firestore clear-all error:', fsErr);
+      if (!serverSuccess) {
+        return { success: false, error: fsErr?.message || 'Failed to clear central keys in Firestore' };
+      }
+    }
+  }
+
+  return { success: serverSuccess };
+}
+
+/**
  * Deletes a key from Firestore and Server
  */
 export async function deleteCentralKeyFromFirestore(keyId: string): Promise<void> {

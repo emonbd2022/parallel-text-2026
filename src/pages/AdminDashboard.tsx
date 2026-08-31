@@ -10,6 +10,7 @@ import {
   toggleCentralKeyStatus,
   toggleBatchCentralKeysStatus,
   deleteCentralKeyFromFirestore,
+  deleteAllCentralKeys,
   deduplicateCentralKeysOnServer,
   parseCentralKeysCSV,
   importCentralKeys,
@@ -312,19 +313,26 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const [isClearingAll, setIsClearingAll] = useState(false);
   const handleClearAll = async () => {
-    if (!window.confirm("CRITICAL WARNING: Are you sure you want to PERMANENTLY DELETE ALL Central API keys from the authoritative server registry? This cannot be undone and will break Central API for all users!")) return;
+    if (!window.confirm("CRITICAL WARNING: Are you sure you want to PERMANENTLY DELETE ALL Central API keys from the authoritative server registry and Firestore database? This cannot be undone and will clear all central keys for all users!")) return;
+    setIsClearingAll(true);
     try {
-      let idToken = '';
-      if (auth.currentUser) idToken = await auth.currentUser.getIdToken(true);
-      const res = await fetch('/api/admin/keys', {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${idToken}` }
-      });
-      if (!res.ok) throw new Error("Failed to clear central keys");
+      const res = await deleteAllCentralKeys();
+      if (res.success) {
+        setCentralKeys([]);
+        setSelectedKeyIds([]);
+        setRevealedKeys({});
+        setImportResult("All Central API keys have been permanently deleted from server and database.");
+        setTimeout(() => setImportResult(null), 6000);
+      } else {
+        throw new Error(res.error || "Failed to clear central keys");
+      }
+    } catch (e: any) {
+      alert("Error clearing central keys: " + (e?.message || e));
+    } finally {
+      setIsClearingAll(false);
       await fetchCentralKeys(true);
-    } catch (e) {
-      alert("Error clearing central keys: " + e);
     }
   };
 
@@ -2096,12 +2104,12 @@ export const AdminDashboard: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleClearAll}
-                  disabled={centralKeys.length === 0}
+                  disabled={centralKeys.length === 0 || isClearingAll}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 cursor-pointer ml-auto"
                   title="Permanently delete all central keys from the server"
                 >
-                  <Trash2 className="w-4 h-4 text-rose-400" />
-                  <span>All Clear</span>
+                  {isClearingAll ? <Loader2 className="w-4 h-4 animate-spin text-rose-400" /> : <Trash2 className="w-4 h-4 text-rose-400" />}
+                  <span>{isClearingAll ? 'Clearing...' : 'Clear All'}</span>
                 </button>
               </div>
             </div>

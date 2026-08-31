@@ -219,27 +219,11 @@ function saveStoredKeys(keys: StoredKey[]) {
     }
 }
 
-// Initialize in-memory keys and usage from persistent disk immediately on server boot
+// Initialize server state and sync from authoritative Firestore
 try {
-    const initialDiskKeys = loadStoredKeys();
-    if (initialDiskKeys.length > 0) {
-        centralKeys = initialDiskKeys.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
-            let decryptedKey = '';
-            try {
-                decryptedKey = decrypt(data.encryptedKey || (data as any).key);
-            } catch (e) {
-                if (data.encryptedKey && (data.encryptedKey.startsWith('AIza') || data.encryptedKey.startsWith('AQ.'))) {
-                    decryptedKey = data.encryptedKey;
-                }
-            }
-            if (!decryptedKey && (data as any).key) {
-                decryptedKey = (data as any).key;
-            }
-            return { id: data.id, key: decryptedKey };
-        }).filter(k => k.key && k.key.length > 0);
-        console.log(`[Server Boot] Loaded ${centralKeys.length} central API keys from persistent central-keys.json.`);
-    }
     loadDailyUsage();
+    // Non-blocking initial sync from Firestore on startup
+    syncCentralKeys(true).catch(e => console.log('[Server Boot] Sync notice:', e));
 } catch (e) {
     console.error("[Server Boot] Init error:", e);
 }
@@ -435,10 +419,12 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
 
     const body = {
         fields: {
-            keys: {
+            keys: values.length > 0 ? {
                 arrayValue: {
                     values
                 }
+            } : {
+                arrayValue: {}
             },
             totalCount: { integerValue: deduplicatedKeys.length.toString() },
             updatedAt: { stringValue: new Date().toISOString() }
@@ -515,27 +501,8 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                     console.log(`[Server] Authoritative Central API registry is empty: 0 keys available.`);
                     centralKeys = [];
                     cachedFirestoreStoredKeys = [];
+                    saveStoredKeys([]);
                     lastCentralKeysFetchTime = Date.now();
-                    
-                    if (isDevSeedEnabled() && diskKeys.length > 0) {
-                        console.log(`[Server] Development mode: Loading ${diskKeys.length} persistent disk keys into memory (NOT saving to Firestore).`);
-                        const active = diskKeys.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
-                            let decryptedKey = '';
-                            try {
-                                decryptedKey = decrypt(data.encryptedKey || (data as any).key);
-                            } catch (e) {
-                                if (data.encryptedKey && (data.encryptedKey.startsWith('AIza') || data.encryptedKey.startsWith('AQ.'))) {
-                                    decryptedKey = data.encryptedKey;
-                                }
-                            }
-                            if (!decryptedKey && (data as any).key) {
-                                decryptedKey = (data as any).key;
-                            }
-                            return { id: data.id, key: decryptedKey };
-                        }).filter(k => k.key && k.key.length > 0);
-                        centralKeys = active;
-                        cachedFirestoreStoredKeys = diskKeys;
-                    }
                     return centralKeys;
                 }
 
@@ -1669,7 +1636,6 @@ apiRouter.delete("/admin/keys", async (req, res) => {
         try {
             const authHeader = req.headers.authorization;
             const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-            // Verify admin access via Firestore write
             const storedKeys: StoredKey[] = [];
             
             const success = await saveKeysToFirestoreDocument(storedKeys, idToken);
@@ -1677,6 +1643,9 @@ apiRouter.delete("/admin/keys", async (req, res) => {
                return res.status(403).json({ success: false, error: "Unauthorized" });
             }
             saveStoredKeys(storedKeys);
+            centralKeys = [];
+            cachedFirestoreStoredKeys = [];
+            lastCentralKeysFetchTime = Date.now();
             invalidateCentralCache();
             res.json({ success: true });
         } catch (e: any) {
