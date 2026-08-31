@@ -819,3 +819,225 @@ export async function deleteBatchCentralKeys(keyIds: string[]): Promise<void> {
   }
 }
 
+export interface ParsedCsvKey {
+  label: string;
+  key: string;
+  contributorName: string;
+  contributorEmail: string;
+}
+
+/**
+ * Parses CSV text into an array of Central Key items according to standard format:
+ * "api label,api key,contributor name,contributor gmail"
+ */
+export function parseCentralKeysCSV(csvText: string): ParsedCsvKey[] {
+  const lines: string[][] = [];
+  let currentRow: string[] = [];
+  let currentField = '';
+  let insideQuotes = false;
+
+  for (let i = 0; i < csvText.length; i++) {
+    const char = csvText[i];
+    const nextChar = csvText[i + 1];
+
+    if (char === '"') {
+      if (insideQuotes && nextChar === '"') {
+        currentField += '"';
+        i++; // skip escaped quote
+      } else {
+        insideQuotes = !insideQuotes;
+      }
+    } else if (char === ',' && !insideQuotes) {
+      currentRow.push(currentField.trim());
+      currentField = '';
+    } else if ((char === '\r' || char === '\n') && !insideQuotes) {
+      if (char === '\r' && nextChar === '\n') {
+        i++;
+      }
+      currentRow.push(currentField.trim());
+      currentField = '';
+      if (currentRow.some(field => field.length > 0)) {
+        lines.push(currentRow);
+      }
+      currentRow = [];
+    } else {
+      currentField += char;
+    }
+  }
+  if (currentField || currentRow.length > 0) {
+    currentRow.push(currentField.trim());
+    if (currentRow.some(field => field.length > 0)) {
+      lines.push(currentRow);
+    }
+  }
+
+  if (lines.length === 0) return [];
+
+  // Detect header indices
+  let startIndex = 0;
+  let labelIdx = 0;
+  let keyIdx = 1;
+  let nameIdx = 2;
+  let emailIdx = 3;
+
+  const firstRow = lines[0].map(c => c.toLowerCase().trim());
+  const hasHeader = firstRow.some(c => 
+    c.includes('api') || 
+    c.includes('label') || 
+    c.includes('key') || 
+    c.includes('contributor') || 
+    c.includes('gmail') || 
+    c.includes('email')
+  );
+
+  if (hasHeader) {
+    startIndex = 1;
+    const lIdx = firstRow.findIndex(c => c.includes('label') || c === 'api label');
+    const kIdx = firstRow.findIndex(c => c.includes('key') || c === 'api key');
+    const nIdx = firstRow.findIndex(c => c.includes('name') || c === 'contributor name');
+    const eIdx = firstRow.findIndex(c => c.includes('gmail') || c.includes('email') || c === 'contributor gmail' || c === 'contributor email');
+    
+    if (lIdx !== -1) labelIdx = lIdx;
+    if (kIdx !== -1) keyIdx = kIdx;
+    if (nIdx !== -1) nameIdx = nIdx;
+    if (eIdx !== -1) emailIdx = eIdx;
+  }
+
+  const results: ParsedCsvKey[] = [];
+
+  for (let i = startIndex; i < lines.length; i++) {
+    const row = lines[i];
+    const key = (row[keyIdx] || '').trim();
+    if (!key || key.length < 8) continue; // Skip invalid or empty keys
+
+    const label = (row[labelIdx] || '').trim() || 'Central Key';
+    const contributorName = (row[nameIdx] || '').trim() || 'Admin';
+    const contributorEmail = (row[emailIdx] || '').trim() || '';
+
+    results.push({
+      label,
+      key,
+      contributorName,
+      contributorEmail
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Imports an array of keys into the server central pool and Firestore database
+ */
+export async function importCentralKeys(
+  keys: ParsedCsvKey[]
+): Promise<{ success: boolean; addedCount: number; skippedCount: number; totalKeys: number; error?: string }> {
+  if (!keys || keys.length === 0) {
+    return { success: false, addedCount: 0, skippedCount: 0, totalKeys: 0, error: "No keys to import." };
+  }
+
+  cachedCentralKeys = null; // Invalidate client cache
+
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
+    }
+
+    const res = await fetch('/api/admin/keys/import-csv', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ keys })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success) {
+        return {
+          success: true,
+          addedCount: data.addedCount || 0,
+          skippedCount: data.skippedCount || 0,
+          totalKeys: data.totalKeys || 0
+        };
+      }
+    }
+  } catch (err: any) {
+    console.log('[Central Key Service] Server import-csv notice:', err);
+  }
+
+  // Fallback to direct Firestore single doc update
+  if (db) {
+    try {
+      const docRef = doc(db, 'central_keys', 'APIkeys');
+      const docSnap = await getDoc(docRef);
+      let existingKeys: any[] = [];
+      if (docSnap.exists()) {
+        existingKeys = docSnap.data().keys || [];
+      }
+
+      let addedCount = 0;
+      let skippedCount = 0;
+
+      for (const item of keys) {
+        const trimmedKey = item.key.trim();
+        const hash = await computeKeySha256(trimmedKey);
+        const docId = `ck_${hash.substring(0, 24)}`;
+        
+        const exists = existingKeys.some((ex: any) => 
+          ex.keyHash === hash || 
+          ex.id === docId || 
+          (ex.key && ex.key.trim() === trimmedKey)
+        );
+
+        if (!exists) {
+          existingKeys.push({
+            id: docId,
+            label: item.label || 'Central Key',
+            key: trimmedKey,
+            maskedKey: maskApiKey(trimmedKey),
+            keyHash: hash,
+            enabled: true,
+            createdAt: new Date().toISOString(),
+            contributedBy: item.contributorName || 'Admin',
+            contributorName: item.contributorName || 'Admin',
+            contributorEmail: item.contributorEmail || ''
+          });
+          addedCount++;
+        } else {
+          skippedCount++;
+        }
+      }
+
+      if (addedCount > 0) {
+        await setDoc(docRef, {
+          keys: existingKeys,
+          totalCount: existingKeys.length,
+          updatedAt: new Date().toISOString(),
+          version: 1
+        }, { merge: true });
+        recordFirestoreWrite('central_keys', 1, 'importCentralKeys:direct');
+      }
+
+      return {
+        success: true,
+        addedCount,
+        skippedCount,
+        totalKeys: existingKeys.length
+      };
+    } catch (fsErr: any) {
+      console.error('[Central Key Service] Direct Firestore import error:', fsErr);
+      return {
+        success: false,
+        addedCount: 0,
+        skippedCount: 0,
+        totalKeys: 0,
+        error: fsErr?.message || "Failed to save imported keys to Firestore."
+      };
+    }
+  }
+
+  return { success: false, addedCount: 0, skippedCount: 0, totalKeys: 0, error: "Database not available." };
+}
+
+

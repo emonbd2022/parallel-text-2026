@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch, getAggregateFromServer, sum } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Laptop, Smartphone, ShieldCheck, Flame, Power, CheckSquare, Square, SlidersHorizontal } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Upload, Laptop, Smartphone, ShieldCheck, Flame, Power, CheckSquare, Square, SlidersHorizontal } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
@@ -11,6 +11,8 @@ import {
   toggleBatchCentralKeysStatus,
   deleteCentralKeyFromFirestore,
   deduplicateCentralKeysOnServer,
+  parseCentralKeysCSV,
+  importCentralKeys,
   CentralKeyRecord 
 } from '../services/centralKeyService';
 import { DeadApiModal } from '../components/DeadApiModal';
@@ -246,6 +248,46 @@ export const AdminDashboard: React.FC = () => {
     } finally {
       setIsDeduplicating(false);
       setTimeout(() => setDedupResult(null), 6000);
+    }
+  };
+
+  const [isImportingCSV, setIsImportingCSV] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
+  const csvFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleImportCSVFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsImportingCSV(true);
+    setImportResult(null);
+
+    try {
+      const text = await file.text();
+      const parsedKeys = parseCentralKeysCSV(text);
+
+      if (parsedKeys.length === 0) {
+        setImportResult("No valid API keys found in CSV. Please verify the CSV format: api label,api key,contributor name,contributor gmail");
+        return;
+      }
+
+      const res = await importCentralKeys(parsedKeys);
+      if (res.success) {
+        const msg = `Successfully imported ${res.addedCount} key(s).${res.skippedCount > 0 ? ` (${res.skippedCount} duplicates/invalid skipped)` : ''} Total central keys: ${res.totalKeys}.`;
+        setImportResult(msg);
+        await fetchCentralKeys(true);
+      } else {
+        setImportResult(`Import failed: ${res.error || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      console.error("CSV import error:", err);
+      setImportResult(`Error parsing or importing CSV: ${err?.message || err}`);
+    } finally {
+      setIsImportingCSV(false);
+      if (csvFileInputRef.current) {
+        csvFileInputRef.current.value = '';
+      }
+      setTimeout(() => setImportResult(null), 8000);
     }
   };
 
@@ -2002,11 +2044,31 @@ export const AdminDashboard: React.FC = () => {
 
                 <button 
                   onClick={() => fetchCentralKeys(true)}
-                  disabled={loadingKeys || isDeduplicating}
+                  disabled={loadingKeys || isDeduplicating || isImportingCSV}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold transition-colors border border-slate-700 disabled:opacity-50 cursor-pointer"
                 >
                   {loadingKeys ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4 text-purple-400" />}
                   <span>Refresh</span>
+                </button>
+
+                {/* Hidden File Input for CSV Import */}
+                <input
+                  type="file"
+                  ref={csvFileInputRef}
+                  onChange={handleImportCSVFile}
+                  accept=".csv,text/csv"
+                  className="hidden"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => csvFileInputRef.current?.click()}
+                  disabled={isImportingCSV || loadingKeys}
+                  className="flex items-center justify-center gap-2 px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 cursor-pointer"
+                  title="Import API keys from CSV (format: api label,api key,contributor name,contributor gmail)"
+                >
+                  {isImportingCSV ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <Upload className="w-4 h-4 text-emerald-400" />}
+                  <span>{isImportingCSV ? 'Importing...' : 'Import CSV'}</span>
                 </button>
 
                 <button
@@ -2048,6 +2110,13 @@ export const AdminDashboard: React.FC = () => {
               <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-200 flex items-center gap-2 animate-in fade-in">
                 <Info className="w-4 h-4 text-amber-400 shrink-0" />
                 <span>{dedupResult}</span>
+              </div>
+            )}
+
+            {importResult && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-200 flex items-center gap-2 animate-in fade-in">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{importResult}</span>
               </div>
             )}
 

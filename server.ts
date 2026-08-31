@@ -1685,6 +1685,97 @@ apiRouter.delete("/admin/keys", async (req, res) => {
     });
 });
 
+apiRouter.post("/admin/keys/import-csv", async (req, res) => {
+    withCentralKeysLock(async () => {
+        try {
+            const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+            const { keys } = body;
+            if (!Array.isArray(keys) || keys.length === 0) {
+                return res.status(400).json({ success: false, error: "No valid keys provided for import." });
+            }
+
+            const authHeader = req.headers.authorization;
+            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+
+            const fetchedKeys = await fetchKeysFromFirestore(idToken);
+            if (fetchedKeys === null) {
+                return res.status(503).json({ success: false, error: "Database temporarily unavailable, could not safely import keys." });
+            }
+            const currentFirestoreKeys = fetchedKeys;
+
+            // Collect existing raw/decrypted keys set to avoid duplicates
+            const existingKeyValues = new Set<string>();
+            for (const sk of currentFirestoreKeys) {
+                const dec = decrypt(sk.encryptedKey) || (sk as any).key || '';
+                if (dec.trim()) {
+                    existingKeyValues.add(dec.trim());
+                }
+            }
+
+            let addedCount = 0;
+            let skippedCount = 0;
+
+            for (const item of keys) {
+                const cleanKey = (item.key || '').trim();
+                if (!cleanKey || cleanKey.length < 8) {
+                    skippedCount++;
+                    continue;
+                }
+
+                if (existingKeyValues.has(cleanKey)) {
+                    skippedCount++;
+                    continue;
+                }
+
+                existingKeyValues.add(cleanKey);
+
+                const encryptedKey = encrypt(cleanKey);
+                const keyHash = crypto.createHash('sha256').update(cleanKey).digest('hex');
+                const label = (item.label || '').trim() || 'Central Key';
+                const exactContributor = (item.contributorName || item.contributedBy || '').trim() || (item.contributorEmail ? item.contributorEmail.split('@')[0] : '') || 'Admin';
+                const contribEmail = (item.contributorEmail || '').trim();
+
+                const newKey: StoredKey = {
+                    id: crypto.randomUUID(),
+                    label,
+                    encryptedKey,
+                    keyHash,
+                    enabled: true,
+                    createdAt: new Date().toISOString(),
+                    contributedBy: exactContributor,
+                    contributorName: exactContributor,
+                    contributorEmail: contribEmail || 'admin'
+                };
+
+                currentFirestoreKeys.push(newKey);
+                addedCount++;
+            }
+
+            const deduplicated = deduplicateKeysByValue(currentFirestoreKeys);
+
+            if (addedCount > 0) {
+                const saveSuccess = await saveKeysToFirestoreDocument(deduplicated, idToken);
+                if (!saveSuccess) {
+                    return res.status(500).json({ success: false, error: "Failed to save imported keys to database." });
+                }
+                saveStoredKeys(deduplicated);
+                invalidateCentralCache();
+                await syncCentralKeys(true, idToken);
+            }
+
+            res.json({
+                success: true,
+                addedCount,
+                skippedCount,
+                totalKeys: deduplicated.length
+            });
+        } catch (e: any) {
+            console.error("Error importing central keys CSV:", e);
+            res.status(500).json({ success: false, error: String(e?.message || e) });
+        }
+    });
+});
+
 apiRouter.get("/admin/keys/export-csv", async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
