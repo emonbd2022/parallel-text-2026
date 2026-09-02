@@ -713,6 +713,7 @@ export const AdminDashboard: React.FC = () => {
     try {
       await updateDoc(doc(db, 'users', targetUser.uid), {
         deviceIds: [],
+        devices: [],
         lastActiveAt: new Date().toISOString()
       });
       recordFirestoreWrite('users', 1, 'AdminDashboard:resetUserDevices');
@@ -721,12 +722,21 @@ export const AdminDashboard: React.FC = () => {
         const next = { ...prev };
         for (const p of Object.keys(next)) {
           const pageNum = Number(p);
-          next[pageNum] = (next[pageNum] || []).map(u => u.uid === targetUser.uid ? { ...u, deviceIds: [] } : u);
+          next[pageNum] = (next[pageNum] || []).map(u => u.uid === targetUser.uid ? { ...u, deviceIds: [], devices: [] } : u);
         }
+        try {
+          sessionStorage.setItem('adminCachedUsersByPage', JSON.stringify(next));
+        } catch {}
         return next;
       });
-      setAllUsers(prev => prev.map(u => u.uid === targetUser.uid ? { ...u, deviceIds: [] } : u));
-      alert(`Device slots successfully reset for ${targetName}.`);
+      setAllUsers(prev => {
+        const next = prev.map(u => u.uid === targetUser.uid ? { ...u, deviceIds: [], devices: [] } : u);
+        try {
+          sessionStorage.setItem('adminCachedAllUsers', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      alert(`Device authorization slots successfully reset for ${targetName}. The user can now register new devices upon login.`);
     } catch (error: any) {
       console.error("Error resetting devices:", error);
       alert(`Failed to reset devices: ${error?.message || 'Unknown error'}`);

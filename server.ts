@@ -2159,8 +2159,17 @@ apiRouter.post("/user/sync-device", async (req, res) => {
                     const fields = existingDoc.fields || {};
                     let existingIds = fields.deviceIds?.arrayValue?.values?.map((v: any) => v.stringValue).filter(Boolean) || [];
                     if (deviceId && !existingIds.includes(deviceId)) {
-                        existingIds.push(deviceId);
-                        if (existingIds.length > 2) existingIds = existingIds.slice(-2);
+                        if (existingIds.length < 2) {
+                            existingIds.push(deviceId);
+                        } else if (isFirstAdmin) {
+                            existingIds = [existingIds[existingIds.length - 1], deviceId];
+                        } else {
+                            // 3rd device attempt by regular user: reject registration
+                            return res.status(403).json({
+                                success: false,
+                                error: 'Device limit reached. Only an administrator can re-authorize or reset devices.'
+                            });
+                        }
                     }
 
                     const updateMask = ['deviceIds', 'lastActiveAt'];

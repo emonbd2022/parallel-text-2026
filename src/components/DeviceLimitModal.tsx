@@ -41,13 +41,13 @@ export const DeviceLimitModal: React.FC = () => {
         </div>
 
         {/* Status Explanation */}
-        <div className="p-4 bg-slate-950/70 rounded-2xl border border-slate-800 space-y-2">
+        <div className="p-4 bg-slate-950/70 rounded-2xl border border-slate-800 space-y-2.5">
           <p className="text-slate-300 text-sm leading-relaxed">
-            Your account <strong className="text-white font-mono bg-slate-800 px-1.5 py-0.5 rounded text-xs">{user?.email || userData?.email || 'this account'}</strong> has already reached the maximum limit of <strong className="text-rose-400">{MAX_DEVICES_PER_ACCOUNT} authorized devices</strong>.
+            Your account <strong className="text-white font-mono bg-slate-800 px-1.5 py-0.5 rounded text-xs">{user?.email || userData?.email || 'this account'}</strong> already has <strong className="text-rose-400">{MAX_DEVICES_PER_ACCOUNT} registered devices</strong>.
           </p>
-          <p className="text-slate-400 text-xs leading-relaxed">
-            To protect your account and maintain fair resource usage, new sessions on a 3rd distinct browser or computer are blocked until an old device is released by an administrator.
-          </p>
+          <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-200 leading-relaxed font-medium">
+            Strict multi-device protection is enabled. The 3rd device cannot log in or re-authorize devices. Only an administrator can re-authorize devices or reset your device authorization slots.
+          </div>
         </div>
 
         {/* Device Status Breakdown */}
