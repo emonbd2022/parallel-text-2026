@@ -123,7 +123,7 @@ export const Sidebar: React.FC<Props> = ({
                     label: l, 
                     key: k, 
                     errorCount: 0,
-                    usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+                    usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0, flash_3_8: 0 }
                   };
                   if (setLocalKeys) {
                     setLocalKeys(prev => [...prev, newKey]);
@@ -148,7 +148,8 @@ export const Sidebar: React.FC<Props> = ({
                       flash_3_5: 0, 
                       flash_3_5_lite: 0, 
                       flash_3_6: 0, 
-                      flash_3_7: 0 
+                      flash_3_7: 0,
+                      flash_3_8: 0 
                     }
                   }));
                   if (setLocalKeys) {

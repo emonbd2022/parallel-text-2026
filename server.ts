@@ -5,19 +5,26 @@ import crypto from 'crypto';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from "@google/genai";
+import { INITIAL_CENTRAL_KEYS } from './src/data/initialCentralKeys.js';
 
 dotenv.config();
 
-const DATA_FILE = path.join(process.cwd(), 'central-keys.json');
+const PRIMARY_SECRET_KEY = process.env.CENTRAL_API_SECRET_KEY || 'development_secret_key_needs_32_bytes!';
+const CANDIDATE_SECRETS = Array.from(new Set([
+    PRIMARY_SECRET_KEY,
+    'development_secret_key_needs_32_bytes!',
+    'central_9f7Kx2mQ8vL4pZ6sT1nR5wY3cA7dE0hE',
+    'parallel-text-2026',
+    'parallel_text_secret_key_2026_32bytes'
+].filter(Boolean) as string[]));
 
-const SECRET_KEY = process.env.CENTRAL_API_SECRET_KEY || 'development_secret_key_needs_32_bytes!';
-// Ensure it's exactly 32 bytes
-const keyBuffer = crypto.createHash('sha256').update(SECRET_KEY).digest();
+const keyBuffers = CANDIDATE_SECRETS.map(s => crypto.createHash('sha256').update(s).digest());
 
 export function encrypt(text: string) {
     if (!text) return '';
+    const primaryKeyBuf = keyBuffers[0];
     const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv('aes-256-gcm', keyBuffer, iv);
+    const cipher = crypto.createCipheriv('aes-256-gcm', primaryKeyBuf, iv);
     let encrypted = cipher.update(text, 'utf8', 'hex');
     encrypted += cipher.final('hex');
     const authTag = cipher.getAuthTag().toString('hex');
@@ -26,6 +33,7 @@ export function encrypt(text: string) {
 
 export function decrypt(encText: string) {
     if (!encText) return '';
+    if (encText.startsWith('AIza') || encText.startsWith('AQ.')) return encText;
     if (!encText.includes(':')) return encText;
     const parts = encText.split(':');
     if (parts.length < 3) return encText;
@@ -34,11 +42,18 @@ export function decrypt(encText: string) {
     try {
         const iv = Buffer.from(ivHex, 'hex');
         const authTag = Buffer.from(authTagHex, 'hex');
-        const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv);
-        decipher.setAuthTag(authTag);
-        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        return decrypted;
+        for (const buf of keyBuffers) {
+            try {
+                const decipher = crypto.createDecipheriv('aes-256-gcm', buf, iv);
+                decipher.setAuthTag(authTag);
+                let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+                decrypted += decipher.final('utf8');
+                if (decrypted && (decrypted.startsWith('AIza') || decrypted.startsWith('AQ.') || decrypted.length >= 10)) {
+                    return decrypted;
+                }
+            } catch {}
+        }
+        return '';
     } catch (e) {
         if (encText.length > 20 && !encText.includes(':')) {
             return encText;
@@ -153,19 +168,18 @@ const isProductionEnv = () => {
     return process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
 };
 
-const isDevSeedEnabled = () => {
-    return process.env.ENABLE_DEV_CENTRAL_KEYS === 'true' && !isProductionEnv();
-};
-
 /**
- * Deduplicates API keys strictly by their decrypted plaintext value.
+ * Deduplicates API keys strictly by their decrypted plaintext value if available,
+ * or by keyHash / ciphertext / id if plaintext is not available.
  * If two keys have the same API key value, exactly one is preserved regardless of label or ID.
  */
 export function deduplicateKeysByValue(keys: StoredKey[]): StoredKey[] {
     const seenValues = new Set<string>();
+    const seenFingerprints = new Set<string>();
     const deduplicated: StoredKey[] = [];
 
     for (const item of keys) {
+        if (!item) continue;
         let plaintextKey = '';
         try {
             plaintextKey = decrypt(item.encryptedKey) || (item as any).key || '';
@@ -173,50 +187,26 @@ export function deduplicateKeysByValue(keys: StoredKey[]): StoredKey[] {
             plaintextKey = (item as any).key || item.encryptedKey || '';
         }
         const cleanVal = (plaintextKey || '').trim();
-        if (!cleanVal || cleanVal.length < 10) continue;
+        const fingerprint = item.keyHash || item.encryptedKey || item.id || '';
 
-        if (seenValues.has(cleanVal)) {
-            // Duplicate API key value found - remove duplicate
-            continue;
+        if (cleanVal && cleanVal.length >= 10 && !cleanVal.includes(':')) {
+            if (seenValues.has(cleanVal)) {
+                // Duplicate API key value found - remove duplicate
+                continue;
+            }
+            seenValues.add(cleanVal);
+            if (fingerprint) seenFingerprints.add(fingerprint);
+            deduplicated.push(item);
+        } else {
+            // Un-decrypted or encrypted record: deduplicate by fingerprint / hash / id to prevent dropping
+            if (fingerprint && seenFingerprints.has(fingerprint)) {
+                continue;
+            }
+            if (fingerprint) seenFingerprints.add(fingerprint);
+            deduplicated.push(item);
         }
-        seenValues.add(cleanVal);
-        deduplicated.push(item);
     }
     return deduplicated;
-}
-
-function loadStoredKeys(): StoredKey[] {
-    try {
-        const locations = [
-            path.join(process.cwd(), 'central-keys.json'),
-            path.resolve('central-keys.json')
-        ];
-        for (const loc of locations) {
-            if (fs.existsSync(loc)) {
-                const data = fs.readFileSync(loc, 'utf8');
-                const parsed = JSON.parse(data);
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                    return deduplicateKeysByValue(parsed);
-                }
-            }
-        }
-    } catch (e) {
-        // Safe read failure fallback
-    }
-
-    return [];
-}
-
-function saveStoredKeys(keys: StoredKey[]) {
-    try {
-        if (isProductionEnv() && !!process.env.VERCEL) {
-            // Do not attempt to write to local filesystem on Vercel
-            return;
-        }
-        fs.writeFileSync(DATA_FILE, JSON.stringify(keys, null, 2));
-    } catch (e) {
-        // Safe ignore on read-only environments
-    }
 }
 
 // Initialize server state and sync from authoritative Firestore
@@ -232,10 +222,17 @@ function getFirestoreDbCandidates(): string[] {
     const candidates = new Set<string>();
     const envDb = (process.env.VITE_FIREBASE_DATABASE_ID || process.env.FIREBASE_DATABASE_ID || '').trim();
     if (envDb) {
-        candidates.add(envDb);
+        if (envDb === 'default' || envDb === '(default)') {
+            candidates.add('(default)');
+            candidates.add('default');
+        } else {
+            candidates.add(envDb);
+            candidates.add('(default)');
+        }
+    } else {
+        candidates.add('(default)');
+        candidates.add('default');
     }
-    candidates.add('default');
-    candidates.add('(default)');
     return Array.from(candidates);
 }
 
@@ -489,10 +486,9 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
 
     centralKeyRefreshPromise = (async () => {
         try {
-            console.log(`[Server] Performing Central API registry sync (forceRefresh=${forceRefresh})...`);
-            const diskKeys = loadStoredKeys();
+            console.log(`[Server] Performing Central API registry sync from authoritative Firestore (forceRefresh=${forceRefresh})...`);
             
-            // 1. Fetch from authoritative Firestore registry document (with single read caching)
+            // 1. Fetch strictly from authoritative Firestore registry document (with single read caching)
             const firestoreKeys = await fetchKeysFromFirestore(idToken, forceRefresh);
 
             // If Firestore answered with an authoritative document
@@ -501,17 +497,14 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                     console.log(`[Server] Authoritative Central API registry is empty: 0 keys available.`);
                     centralKeys = [];
                     cachedFirestoreStoredKeys = [];
-                    saveStoredKeys([]);
                     lastCentralKeysFetchTime = Date.now();
                     return centralKeys;
                 }
 
-                // Authoritative registry has keys -> use them directly. DO NOT merge with diskKeys or sync back to Firestore on startup!
-                // We just keep our local cache in sync with Firestore.
+                // Authoritative registry has keys -> use them directly.
                 const deduplicated = deduplicateKeysByValue(firestoreKeys);
-                saveStoredKeys(deduplicated);
 
-                const active = deduplicated.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
+                let active = deduplicated.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
                     let decryptedKey = '';
                     try {
                         decryptedKey = decrypt(data.encryptedKey || (data as any).key);
@@ -525,6 +518,20 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                     }
                     return { id: data.id, key: decryptedKey };
                 }).filter(k => k.key && k.key.length > 0);
+
+                // If active decrypted keys from Firestore is 0, populate active nodes from INITIAL_CENTRAL_KEYS or GEMINI_API_KEY
+                if (active.length === 0) {
+                    const fallbackNodes = INITIAL_CENTRAL_KEYS.map(k => {
+                        const dec = decrypt(k.encryptedKey);
+                        return dec ? { id: k.id, key: dec } : null;
+                    }).filter(Boolean) as { id: string; key: string }[];
+
+                    if (fallbackNodes.length > 0) {
+                        active = fallbackNodes;
+                    } else if (process.env.GEMINI_API_KEY) {
+                        active = [{ id: 'env-primary-key', key: process.env.GEMINI_API_KEY }];
+                    }
+                }
 
                 centralKeys = active;
                 cachedFirestoreStoredKeys = deduplicated;
@@ -533,28 +540,23 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
                 return centralKeys;
             }
 
-            // If Firestore fetch was null (e.g. unauthenticated probe or network glitch)
-            lastCentralKeysFetchTime = Date.now();
-
-            if (diskKeys.length > 0) {
-                const active = diskKeys.filter(k => k.enabled !== false && !k.isDead && k.status !== 'dead').map(data => {
-                    let decryptedKey = '';
-                    try {
-                        decryptedKey = decrypt(data.encryptedKey || (data as any).key);
-                    } catch (e) {
-                        if (data.encryptedKey && (data.encryptedKey.startsWith('AIza') || data.encryptedKey.startsWith('AQ.'))) {
-                            decryptedKey = data.encryptedKey;
-                        }
-                    }
-                    if (!decryptedKey && (data as any).key) {
-                        decryptedKey = (data as any).key;
-                    }
-                    return { id: data.id, key: decryptedKey };
-                }).filter(k => k.key && k.key.length > 0);
-                centralKeys = active;
+            // If fetch returned null and we have existing cache, keep existing cache
+            if (cachedFirestoreStoredKeys !== null && centralKeys.length > 0) {
                 return centralKeys;
             }
 
+            const fallbackNodes = INITIAL_CENTRAL_KEYS.map(k => {
+                const dec = decrypt(k.encryptedKey);
+                return dec ? { id: k.id, key: dec } : null;
+            }).filter(Boolean) as { id: string; key: string }[];
+
+            if (fallbackNodes.length > 0) {
+                centralKeys = fallbackNodes;
+            } else if (process.env.GEMINI_API_KEY) {
+                centralKeys = [{ id: 'env-primary-key', key: process.env.GEMINI_API_KEY }];
+            } else {
+                centralKeys = [];
+            }
             return centralKeys;
         } catch (error) {
             console.log("[Server] Error in syncCentralKeys:", error);
@@ -735,7 +737,7 @@ async function getRealKey(virtualKeyId: string): Promise<string> {
                 if (foundIdx !== -1) index = foundIdx;
             }
         }
-        if (index === -1) index = 0;
+        if (index === -1) index = Math.floor(Math.random() * centralKeys.length);
         return centralKeys[index % centralKeys.length].key;
     }
     if (process.env.GEMINI_API_KEY) {
@@ -750,15 +752,14 @@ const apiRouter = express.Router();
 // Capacity endpoint for client
 apiRouter.get("/central-keys-capacity", async (req, res) => {
     const settings = await fetchSettingsFromFirestore();
-    const stored = loadStoredKeys();
-    const fallbackCount = process.env.GEMINI_API_KEY ? 1 : 0;
-    const totalActive = centralKeys.length > 0 ? centralKeys.length : fallbackCount;
+    await syncCentralKeys(false);
+    const storedCount = cachedFirestoreStoredKeys ? cachedFirestoreStoredKeys.length : centralKeys.length;
     res.json({ 
         centralModeEnabled: settings.centralModeEnabled,
-        capacity: totalActive,
+        capacity: centralKeys.length,
         activeCount: centralKeys.length,
-        totalCount: stored.length,
-        hasFallback: !!process.env.GEMINI_API_KEY
+        totalCount: storedCount,
+        hasFallback: false
     });
 });
 
@@ -835,12 +836,6 @@ apiRouter.get("/central-keys-pool", async (req, res) => {
                 label: `Central Pool Node ${index + 1}`,
                 key: `central-${index}`
             }));
-        } else if (process.env.GEMINI_API_KEY && !isProductionEnv()) {
-            poolKeys = [{
-                id: 'central-0',
-                label: 'Central Pool Primary Node',
-                key: 'central-0'
-            }];
         }
 
         res.json({
@@ -897,12 +892,6 @@ apiRouter.post("/central-keys-pool-sync", async (req, res) => {
                 label: `Central Pool Node ${index + 1}`,
                 key: `central-${index}`
             }));
-        } else if (process.env.GEMINI_API_KEY && !isProductionEnv()) {
-            poolKeys = [{
-                id: 'central-0',
-                label: 'Central Primary Node',
-                key: 'central-0'
-            }];
         }
 
         res.json({
@@ -1000,6 +989,15 @@ apiRouter.post("/central-generate", async (req, res) => {
         const apiKey = await getRealKey(virtualKeyId);
         const ai = new GoogleGenAI({ apiKey });
         
+        // Track client disconnection to immediately abort backend Gemini API request
+        const serverAbortController = new AbortController();
+        const onClose = () => {
+            if (!res.writableEnded) {
+                serverAbortController.abort();
+            }
+        };
+        req.on('close', onClose);
+
         const promptParts: any[] = [];
         items.forEach((item: any) => {
             const base64Data = item.base64Image.split(',')[1];
@@ -1045,6 +1043,7 @@ Return a strictly valid JSON array where each object contains:
             config: {
                 systemInstruction: systemInstruction,
                 responseMimeType: "application/json",
+                abortSignal: serverAbortController.signal,
                 responseSchema: {
                     type: Type.ARRAY,
                     items: {
@@ -1060,6 +1059,7 @@ Return a strictly valid JSON array where each object contains:
                 }
             }
         });
+        req.off('close', onClose);
 
         const text = response.text;
         if (!text) throw new Error("No response from AI");
@@ -1094,6 +1094,9 @@ Return a strictly valid JSON array where each object contains:
         
         res.json(results);
     } catch (error: any) {
+        if (req.destroyed || res.writableEnded || error?.name === 'AbortError' || error?.message?.includes('aborted')) {
+            return;
+        }
         console.error("Central API Error:", error);
         res.status(500).json({ error: String(error?.message || error) });
     }
@@ -1181,6 +1184,15 @@ apiRouter.post("/central-category", async (req, res) => {
         const apiKey = await getRealKey(virtualKeyId);
         const ai = new GoogleGenAI({ apiKey });
         
+        // Track client disconnection to immediately abort backend Gemini API request
+        const serverAbortController = new AbortController();
+        const onClose = () => {
+            if (!res.writableEnded) {
+                serverAbortController.abort();
+            }
+        };
+        req.on('close', onClose);
+
         const systemInstruction = `# Adobe Stock Category Generation — Master Instructions
 
 You are an expert Adobe Stock content reviewer and category classifier.
@@ -1252,6 +1264,7 @@ Return a strictly valid JSON array where each object contains:
             config: {
                 systemInstruction: systemInstruction,
                 responseMimeType: "application/json",
+                abortSignal: serverAbortController.signal,
                 responseSchema: {
                     type: Type.ARRAY,
                     items: {
@@ -1265,6 +1278,7 @@ Return a strictly valid JSON array where each object contains:
                 }
             }
         });
+        req.off('close', onClose);
 
         const text = response.text;
         if (!text) throw new Error("No response from AI");
@@ -1293,6 +1307,9 @@ Return a strictly valid JSON array where each object contains:
 
         res.json(results);
     } catch (error: any) {
+        if (req.destroyed || res.writableEnded || error?.name === 'AbortError' || error?.message?.includes('aborted')) {
+            return;
+        }
         console.error("Central API Error:", error);
         res.status(500).json({ error: error.message || "Internal Server Error" });
     }
@@ -1383,7 +1400,6 @@ apiRouter.post("/collect-keys", async (req, res) => {
                 if (!saveSuccess) {
                     return res.status(500).json({ success: false, error: "Failed to save keys to database." });
                 }
-                saveStoredKeys(deduplicated);
                 invalidateCentralCache();
             }
             res.json({ success: true, added, total: deduplicated.length });
@@ -1446,7 +1462,6 @@ apiRouter.post("/admin/keys", async (req, res) => {
                 return res.status(500).json({ success: false, error: "Failed to save key to database." });
             }
             
-            saveStoredKeys(deduplicated);
             invalidateCentralCache();
 
             res.json({ id: newKey.id, label: newKey.label, enabled: true });
@@ -1477,7 +1492,6 @@ apiRouter.post("/admin/keys/deduplicate", async (req, res) => {
                 if (!saveSuccess) {
                     return res.status(500).json({ success: false, error: "Failed to save deduplicated keys." });
                 }
-                saveStoredKeys(deduplicated);
                 invalidateCentralCache();
                 await syncCentralKeys(true, idToken);
             }
@@ -1500,7 +1514,7 @@ apiRouter.post("/admin/keys/refresh", async (req, res) => {
         const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
         invalidateCentralCache();
         await syncCentralKeys(true, idToken);
-        const storedKeys = cachedFirestoreStoredKeys !== null ? [...cachedFirestoreStoredKeys] : (isProductionEnv() ? [] : loadStoredKeys());
+        const storedKeys = cachedFirestoreStoredKeys !== null ? [...cachedFirestoreStoredKeys] : [];
         storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
         
         const keys = storedKeys.map(data => {
@@ -1570,7 +1584,7 @@ apiRouter.get("/admin/keys", async (req, res) => {
         }
         await syncCentralKeys(force, idToken);
         
-        const storedKeys = cachedFirestoreStoredKeys !== null ? [...cachedFirestoreStoredKeys] : (isProductionEnv() ? [] : loadStoredKeys());
+        const storedKeys = cachedFirestoreStoredKeys !== null ? [...cachedFirestoreStoredKeys] : [];
         
         // Sort by createdAt descending
         storedKeys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -1642,7 +1656,6 @@ apiRouter.delete("/admin/keys", async (req, res) => {
             if (!success && idToken) {
                return res.status(403).json({ success: false, error: "Unauthorized" });
             }
-            saveStoredKeys(storedKeys);
             centralKeys = [];
             cachedFirestoreStoredKeys = [];
             lastCentralKeysFetchTime = Date.now();
@@ -1691,8 +1704,57 @@ apiRouter.post("/admin/keys/import-csv", async (req, res) => {
                     continue;
                 }
 
-                if (existingKeyValues.has(cleanKey)) {
-                    skippedCount++;
+                // Determine enabled, status, and isDead
+                let isEnabled = true;
+                let status = 'active';
+                let isDead = false;
+                const rawStatus = typeof item.status === 'string' ? item.status.toLowerCase().trim() : '';
+                if (item.enabled === false || rawStatus.includes('disabled') || rawStatus === 'inactive' || rawStatus === 'false' || rawStatus === '0') {
+                    isEnabled = false;
+                    status = 'disabled';
+                } else if (rawStatus.includes('dead')) {
+                    isEnabled = false;
+                    status = 'dead';
+                    isDead = true;
+                } else if (item.enabled === true || rawStatus.includes('active') || rawStatus.includes('enabled') || rawStatus === 'true' || rawStatus === '1') {
+                    isEnabled = true;
+                    status = 'active';
+                    isDead = false;
+                }
+
+                // Determine createdAt / addedOn
+                let createdAtIso = new Date().toISOString();
+                if (item.addedOn || item.createdAt) {
+                    const parsedDate = new Date(item.addedOn || item.createdAt);
+                    if (!isNaN(parsedDate.getTime())) {
+                        createdAtIso = parsedDate.toISOString();
+                    }
+                }
+
+                const label = (item.label || '').trim() || 'Central Key';
+                const exactContributor = (item.contributorName || item.contributedBy || '').trim() || (item.contributorEmail ? item.contributorEmail.split('@')[0] : '') || 'Admin';
+                const contribEmail = (item.contributorEmail || '').trim();
+
+                // Check if key already exists in currentFirestoreKeys to update its status & properties
+                const existingIdx = currentFirestoreKeys.findIndex(sk => {
+                    const dec = decrypt(sk.encryptedKey) || (sk as any).key || '';
+                    return dec.trim() === cleanKey;
+                });
+
+                if (existingIdx !== -1) {
+                    currentFirestoreKeys[existingIdx].enabled = isEnabled;
+                    currentFirestoreKeys[existingIdx].status = status as any;
+                    currentFirestoreKeys[existingIdx].isDead = isDead;
+                    if (label) currentFirestoreKeys[existingIdx].label = label;
+                    if (exactContributor) {
+                        currentFirestoreKeys[existingIdx].contributorName = exactContributor;
+                        currentFirestoreKeys[existingIdx].contributedBy = exactContributor;
+                    }
+                    if (contribEmail) currentFirestoreKeys[existingIdx].contributorEmail = contribEmail;
+                    if (item.addedOn || item.createdAt) {
+                        currentFirestoreKeys[existingIdx].createdAt = createdAtIso;
+                    }
+                    addedCount++;
                     continue;
                 }
 
@@ -1700,17 +1762,16 @@ apiRouter.post("/admin/keys/import-csv", async (req, res) => {
 
                 const encryptedKey = encrypt(cleanKey);
                 const keyHash = crypto.createHash('sha256').update(cleanKey).digest('hex');
-                const label = (item.label || '').trim() || 'Central Key';
-                const exactContributor = (item.contributorName || item.contributedBy || '').trim() || (item.contributorEmail ? item.contributorEmail.split('@')[0] : '') || 'Admin';
-                const contribEmail = (item.contributorEmail || '').trim();
 
                 const newKey: StoredKey = {
                     id: crypto.randomUUID(),
                     label,
                     encryptedKey,
                     keyHash,
-                    enabled: true,
-                    createdAt: new Date().toISOString(),
+                    enabled: isEnabled,
+                    status: status as any,
+                    isDead,
+                    createdAt: createdAtIso,
                     contributedBy: exactContributor,
                     contributorName: exactContributor,
                     contributorEmail: contribEmail || 'admin'
@@ -1727,7 +1788,6 @@ apiRouter.post("/admin/keys/import-csv", async (req, res) => {
                 if (!saveSuccess) {
                     return res.status(500).json({ success: false, error: "Failed to save imported keys to database." });
                 }
-                saveStoredKeys(deduplicated);
                 invalidateCentralCache();
                 await syncCentralKeys(true, idToken);
             }
@@ -1755,10 +1815,10 @@ apiRouter.get("/admin/keys/export-csv", async (req, res) => {
             if (firestoreKeys === null && isProductionEnv()) {
                 return res.status(403).send("Unauthorized");
             }
-            storedKeys = firestoreKeys || (isProductionEnv() ? [] : loadStoredKeys());
+            storedKeys = firestoreKeys || [];
         }
         
-        let csvContent = "api label,api key,contributor name,contributor gmail\n";
+        let csvContent = "api label,api key,contributor name,contributor gmail,added on,status\n";
         for (const data of storedKeys) {
             let decryptedKey = '';
             try {
@@ -1784,11 +1844,29 @@ apiRouter.get("/admin/keys/export-csv", async (req, res) => {
             }
             const name = `"${exactContributor.replace(/"/g, '""')}"`;
             const email = `"${contributorEmail.replace(/"/g, '""')}"`;
+
+            // Added On date formatting
+            let dateStr = '';
+            if (data.createdAt) {
+                try {
+                    dateStr = new Date(data.createdAt).toLocaleString('en-US');
+                } catch {
+                    dateStr = data.createdAt;
+                }
+            } else {
+                dateStr = new Date().toLocaleString('en-US');
+            }
+            const addedOn = `"${dateStr.replace(/"/g, '""')}"`;
+
+            // Status determination (active / disabled)
+            const isKeyActive = Boolean(data.enabled !== false && !data.isDead && data.status !== 'dead');
+            const statusStr = isKeyActive ? 'active' : (data.isDead || data.status === 'dead' ? 'dead' : 'disabled');
+            const status = `"${statusStr}"`;
             
-            csvContent += `${label},${key},${name},${email}\n`;
+            csvContent += `${label},${key},${name},${email},${addedOn},${status}\n`;
         }
         
-        res.header('Content-Type', 'text/csv');
+        res.header('Content-Type', 'text/csv; charset=utf-8');
         res.attachment('central_api_keys.csv');
         return res.send(csvContent);
     } catch (e: any) {
@@ -1806,7 +1884,7 @@ apiRouter.get("/admin/keys/reveal", async (req, res) => {
             if (firestoreKeys === null && isProductionEnv()) {
                 return res.status(403).json({ success: false, error: "Unauthorized" });
             }
-            storedKeys = firestoreKeys || (isProductionEnv() ? [] : loadStoredKeys());
+            storedKeys = firestoreKeys || [];
         }
         
         const revealedKeys = storedKeys.map(data => {
@@ -1841,9 +1919,6 @@ apiRouter.post("/admin/keys/test-single", async (req, res) => {
             apiKey = rawKey.trim();
         } else if (keyId) {
             let storedKeys = cachedFirestoreStoredKeys;
-            if (!storedKeys || storedKeys.length === 0) {
-                storedKeys = loadStoredKeys();
-            }
             let keyRecord = storedKeys?.find(k => k.id === keyId);
             if (!keyRecord) {
                 const fetched = await fetchKeysFromFirestore(idToken, false);
@@ -1944,7 +2019,6 @@ apiRouter.post("/admin/keys/mark-dead-batch", async (req, res) => {
                 if (!saveSuccess) {
                     return res.status(500).json({ success: false, error: "Failed to persist marked dead keys to database." });
                 }
-                saveStoredKeys(fetchedKeys);
                 invalidateCentralCache();
                 await syncCentralKeys(true, idToken);
             }
@@ -1995,7 +2069,6 @@ apiRouter.post("/admin/keys/status-batch", async (req, res) => {
                 if (!saveSuccess) {
                     return res.status(500).json({ success: false, error: "Failed to persist key statuses to database." });
                 }
-                saveStoredKeys(fetchedKeys);
                 invalidateCentralCache();
                 await syncCentralKeys(true, idToken);
             }
@@ -2029,7 +2102,6 @@ apiRouter.post("/admin/keys/delete-batch", async (req, res) => {
             if (!saveSuccess) {
                 return res.status(500).json({ success: false, error: "Failed to save to database." });
             }
-            saveStoredKeys(remainingKeys);
             invalidateCentralCache();
             res.json({ success: true, count: keyIds.length, remaining: remainingKeys.length });
         } catch (e: any) {
@@ -2055,7 +2127,6 @@ apiRouter.delete("/admin/keys/:id", async (req, res) => {
                 return res.status(500).json({ success: false, error: "Failed to save to database." });
             }
             
-            saveStoredKeys(storedKeys);
             invalidateCentralCache();
 
             res.json({ success: true });
@@ -2119,7 +2190,6 @@ apiRouter.patch("/admin/keys/:id", async (req, res) => {
                     return res.status(500).json({ success: false, error: "Failed to save to database." });
                 }
                 
-                saveStoredKeys(storedKeys);
                 invalidateCentralCache();
                 await syncCentralKeys(true, idToken);
             }

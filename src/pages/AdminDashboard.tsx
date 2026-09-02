@@ -268,13 +268,13 @@ export const AdminDashboard: React.FC = () => {
       const parsedKeys = parseCentralKeysCSV(text);
 
       if (parsedKeys.length === 0) {
-        setImportResult("No valid API keys found in CSV. Please verify the CSV format: api label,api key,contributor name,contributor gmail");
+        setImportResult("No valid API keys found in CSV. Please verify the CSV format: api label,api key,contributor name,contributor gmail,added on,status");
         return;
       }
 
       const res = await importCentralKeys(parsedKeys);
       if (res.success) {
-        const msg = `Successfully imported ${res.addedCount} key(s).${res.skippedCount > 0 ? ` (${res.skippedCount} duplicates/invalid skipped)` : ''} Total central keys: ${res.totalKeys}.`;
+        const msg = `Successfully imported/updated ${res.addedCount} key(s).${res.skippedCount > 0 ? ` (${res.skippedCount} invalid skipped)` : ''} Total central keys: ${res.totalKeys}.`;
         setImportResult(msg);
         await fetchCentralKeys(true);
       } else {
@@ -2083,7 +2083,7 @@ export const AdminDashboard: React.FC = () => {
                   onClick={() => csvFileInputRef.current?.click()}
                   disabled={isImportingCSV || loadingKeys}
                   className="flex items-center justify-center gap-2 px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 cursor-pointer"
-                  title="Import API keys from CSV (format: api label,api key,contributor name,contributor gmail)"
+                  title="Import API keys from CSV (format: api label,api key,contributor name,contributor gmail,added on,status)"
                 >
                   {isImportingCSV ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <Upload className="w-4 h-4 text-emerald-400" />}
                   <span>{isImportingCSV ? 'Importing...' : 'Import CSV'}</span>

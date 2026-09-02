@@ -14,7 +14,7 @@ import { useAuth } from './contexts/AuthContext';
 import { auth, db } from './lib/firebase';
 import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
-import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
+import { fetchCentralKeysFromFirestore, shuffleArray } from './services/centralKeyService';
 import { recordFirestoreWrite, recordFirestoreRead, getFirestoreAuditStats } from './utils/firestoreAudit';
 import { APP_VERSION } from './config/version';
 
@@ -28,6 +28,7 @@ const STORAGE_CONFIG = 'parrarel_config_v3';
 // Models
 const MODELS = [
   { id: 'turbo', name: 'Turbo', rpm: 5 },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (20 RPD)', rpm: 5 },
   { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash (20 RPD)', rpm: 5 },
   { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (20 RPD)', rpm: 5 },
   { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (20 RPD)', rpm: 5 },
@@ -140,9 +141,9 @@ export default function App() {
       
       // Migration: Add usage if missing or reset if new session
       return loaded.map((k: any) => {
-        let usage = k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
+        let usage = k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 };
         if (usage.date !== currentSession) {
-            usage = { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
+            usage = { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 };
         }
         return { 
             ...k, 
@@ -177,6 +178,46 @@ export default function App() {
   const scheduleAgainRef = useRef(false);
   const taskClaimLockRef = useRef<Set<string>>(new Set());
   const keyClaimLockRef = useRef<Set<string>>(new Set());
+
+  // DYNAMIC TASK REASSIGNMENT (CENTRAL API ONLY)
+  interface ActiveCentralAssignment {
+    assignmentId: string;
+    stage: 'title' | 'category';
+    itemIds: string[];
+    keyId: string;
+    keyLabel: string;
+    startTime: number;
+    abortController: AbortController;
+    reassigned: boolean;
+    completed: boolean;
+  }
+
+  const activeCentralAssignmentsRef = useRef<Map<string, ActiveCentralAssignment>>(new Map());
+  const itemAssignmentMapRef = useRef<Map<string, { assignmentId: string; reassignmentsCount: number }>>(new Map());
+  const centralCompletedDurationsRef = useRef<number[]>([4000, 5000]);
+
+  const getCentralAvgDuration = () => {
+    const durations = centralCompletedDurationsRef.current;
+    if (durations.length === 0) return 4500;
+    const recent = durations.slice(-10);
+    return recent.reduce((sum, d) => sum + d, 0) / recent.length;
+  };
+
+  const isCentralTaskStalled = (assignment: ActiveCentralAssignment, now: number): boolean => {
+    if (assignment.reassigned || assignment.completed) return false;
+    const elapsed = now - assignment.startTime;
+    
+    // Sane lower bound: never trigger on requests younger than 12 seconds
+    if (elapsed < 12000) return false;
+
+    const avgDuration = getCentralAvgDuration();
+    // Relative outlier threshold: at least 2.5x the rolling average duration (minimum 12s)
+    const relativeThreshold = Math.max(12000, avgDuration * 2.5);
+    // Absolute hard outlier threshold: 25 seconds
+    const absoluteThreshold = 25000;
+
+    return elapsed >= relativeThreshold || elapsed >= absoluteThreshold;
+  };
   useEffect(() => {
     const idx = setInterval(() => localStorage.setItem('sessionReqCount', sessionRequestCountRef.current.toString()), 5000);
     return () => clearInterval(idx);
@@ -192,6 +233,7 @@ export default function App() {
 
   const getBestTurboModel = (statsRef: React.MutableRefObject<Record<string, { latencies: number[], fails: number, lastFailTime: number }>>) => {
       const models = [
+          'gemini-3.8-flash',
           'gemini-3.5-flash-lite',
           'gemini-3.1-flash-lite-preview',
           'gemini-3.7-flash',
@@ -449,7 +491,9 @@ export default function App() {
     // If not a forced refresh and central keys are already pulled into RAM in this session, skip redundant pull
     if (!forceRefresh && centralKeys.length > 0) {
       console.log('⚡ [Central API Pool] Central keys already loaded in memory session cache:', centralKeys.length);
-      return centralKeys;
+      const reshuffled = shuffleArray<ApiKey>(centralKeys);
+      setCentralKeys(reshuffled);
+      return reshuffled;
     }
 
     try {
@@ -499,18 +543,21 @@ export default function App() {
           if (contentType && contentType.includes('application/json')) {
             const data = await res.json();
             if (data.success && Array.isArray(data.keys)) {
-              const pool: ApiKey[] = data.keys.map((k: any, idx: number) => ({
+              // Workflow: fetch central API -> shuffle randomly -> use
+              const randomizedDataKeys = shuffleArray(data.keys);
+              const pool: ApiKey[] = randomizedDataKeys.map((k: any, idx: number) => ({
                 id: k.id || `central-${idx}`,
                 label: `Central Node ${idx + 1}`,
                 key: k.key, // Held strictly in memory
                 errorCount: 0,
-                usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0 }
+                usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0, flash_3_8: 0 }
               }));
-              setCentralKeys(pool);
+              const shuffledPool = shuffleArray(pool);
+              setCentralKeys(shuffledPool);
               recordFirestoreRead('central_keys', 1, 'fetchCentralKeysPool:server');
-              console.log(`✅ [Central API Pulled] Successfully loaded ${pool.length} active worker node(s) into RAM!`);
+              console.log(`🎲 [Central API Pulled] Successfully loaded & randomly shuffled ${shuffledPool.length} active worker node(s) into RAM!`);
               console.log(`📊 [Firestore Audit Stats] Total Reads: ${getFirestoreAuditStats().totalReads}, Total Writes: ${getFirestoreAuditStats().totalWrites}`);
-              return pool;
+              return shuffledPool;
             }
           }
         }
@@ -623,7 +670,7 @@ export default function App() {
         setKeys(prev => prev.map(k => {
             // Check if usage exists, if not or date mismatch, reset
             if (!k.usage || k.usage.date !== currentSession) {
-                return { ...k, usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 } };
+                return { ...k, usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 } };
             }
             return k;
         }));
@@ -826,7 +873,7 @@ export default function App() {
                   return { 
                       ...k, 
                       errorCount: 0, // Reset errors too
-                      usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 } 
+                      usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 } 
                   };
               }
               return k;
@@ -841,7 +888,7 @@ export default function App() {
               ...k,
               errorCount: 0,
               cooldownUntil: undefined,
-              usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 }
+              usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 }
           })));
       }
   };
@@ -865,7 +912,12 @@ export default function App() {
   };
 
   
-  const startCategoryBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey) => {
+  const startCategoryBatchProcessing = async (
+    batchItems: ProcessingItem[], 
+    keyObj: ApiKey,
+    explicitAssignmentId?: string,
+    explicitAbortController?: AbortController
+  ) => {
     // 0. ATOMIC CLAIM CHECK
     const validBatch: ProcessingItem[] = [];
     for (const item of batchItems) {
@@ -877,6 +929,31 @@ export default function App() {
     if (validBatch.length === 0) return;
     if (keyClaimLockRef.current.has(keyObj.id)) return;
     keyClaimLockRef.current.add(keyObj.id);
+
+    const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
+    const assignmentId = explicitAssignmentId || (isCentral ? `cat_${Date.now()}_${Math.random().toString(36).slice(2)}` : '');
+    const abortController = explicitAbortController || new AbortController();
+
+    if (isCentral && assignmentId) {
+      activeCentralAssignmentsRef.current.set(assignmentId, {
+        assignmentId,
+        stage: 'category',
+        itemIds: validBatch.map(b => b.id),
+        keyId: keyObj.id,
+        keyLabel: keyObj.label,
+        startTime: Date.now(),
+        abortController,
+        reassigned: false,
+        completed: false
+      });
+      for (const item of validBatch) {
+        const prevMeta = itemAssignmentMapRef.current.get(item.id);
+        itemAssignmentMapRef.current.set(item.id, {
+          assignmentId,
+          reassignmentsCount: prevMeta ? prevMeta.reassignmentsCount : 0
+        });
+      }
+    }
 
     // 1. Mark all as processing
     setItems(prev => prev.map(p => validBatch.find(b => b.id === p.id) ? { 
@@ -907,7 +984,8 @@ export default function App() {
               },
               localKeys.map(k => k.key),
               userData?.role === 'admin',
-              userData?.centralApiAccess === true
+              userData?.centralApiAccess === true,
+              isCentral ? abortController.signal : undefined
             );
             const elapsed = Date.now() - startTime;
             if (!turboCategoryStatsRef.current[usedModel]) {
@@ -933,12 +1011,32 @@ export default function App() {
             },
             localKeys.map(k => k.key),
             userData?.role === 'admin',
-            userData?.centralApiAccess === true
+            userData?.centralApiAccess === true,
+            isCentral ? abortController.signal : undefined
         );
+      }
+
+      // Check if reassigned / completed
+      if (isCentral && assignmentId) {
+        const activeRecord = activeCentralAssignmentsRef.current.get(assignmentId);
+        if (activeRecord?.reassigned) {
+          return;
+        }
+        if (activeRecord) activeRecord.completed = true;
+        centralCompletedDurationsRef.current.push(Date.now() - batchStartTime);
+        if (centralCompletedDurationsRef.current.length > 20) {
+          centralCompletedDurationsRef.current.shift();
+        }
       }
 
       setItems(prev => prev.map(p => {
           if (results && results[p.id]) {
+              if (isCentral && assignmentId) {
+                const currentItemAssignment = itemAssignmentMapRef.current.get(p.id);
+                if (currentItemAssignment && currentItemAssignment.assignmentId !== assignmentId) {
+                  return p;
+                }
+              }
               return { 
                  ...p, 
                  status: 'done', 
@@ -956,7 +1054,7 @@ export default function App() {
       setKeys(prev => prev.map(k => {
         if (k.id === keyObj.id) {
             const currentSession = getUsageSessionId();
-            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 }) };
+            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 }) };
             
             if (newUsage.date !== currentSession) {
                 newUsage.date = currentSession;
@@ -968,9 +1066,11 @@ export default function App() {
                 newUsage.flash_3_5_lite = 0;
                 newUsage.flash_3_7 = 0;
                 newUsage.flash_3_6 = 0;
+                newUsage.flash_3_8 = 0;
             }
 
-            if (usedModel === 'gemini-3.7-flash') newUsage.flash_3_7 = (newUsage.flash_3_7 || 0) + 1;
+            if (usedModel === 'gemini-3.8-flash') newUsage.flash_3_8 = (newUsage.flash_3_8 || 0) + 1;
+            else if (usedModel === 'gemini-3.7-flash') newUsage.flash_3_7 = (newUsage.flash_3_7 || 0) + 1;
             else if (usedModel === 'gemini-3.6-flash') newUsage.flash_3_6 = (newUsage.flash_3_6 || 0) + 1;
             else if (usedModel === 'gemini-3.5-flash-lite') newUsage.flash_3_5_lite = (newUsage.flash_3_5_lite || 0) + 1;
             else if (usedModel.includes('gemini-3.5-flash')) newUsage.flash_3_5 = (newUsage.flash_3_5 || 0) + 1;
@@ -989,13 +1089,16 @@ export default function App() {
         return k;
       }));
       
-      const batchDuration = Date.now() - batchStartTime;
       setStatusMsg("Pipeline active...");
 
     } catch (error: any) {
+      const isAborted = error?.name === 'AbortError' || error?.message?.includes('aborted') || (isCentral && assignmentId && activeCentralAssignmentsRef.current.get(assignmentId)?.reassigned);
+      if (isAborted) {
+        return;
+      }
+
       console.error("Batch processing error:", error);
       
-      // Error handling similar to startBatchProcessing
       const errorMessage = error.message || "Unknown error";
       const isQuota = errorMessage.includes('QUOTA_EXCEEDED');
       const isInvalid = errorMessage.includes('INVALID_KEY');
@@ -1051,11 +1154,24 @@ export default function App() {
       
       setStatusMsg(`Error: ${errorMessage.substring(0, 40)}`);
     } finally {
+        if (isCentral && assignmentId) {
+          activeCentralAssignmentsRef.current.delete(assignmentId);
+        }
         keyClaimLockRef.current.delete(keyObj.id);
-        for (const item of validBatch) taskClaimLockRef.current.delete(item.id);
+        for (const item of validBatch) {
+          const currentAssignment = itemAssignmentMapRef.current.get(item.id);
+          if (!isCentral || !currentAssignment || currentAssignment.assignmentId === assignmentId) {
+            taskClaimLockRef.current.delete(item.id);
+          }
+        }
     }
   };
-const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey) => {
+const startBatchProcessing = async (
+  batchItems: ProcessingItem[], 
+  keyObj: ApiKey,
+  explicitAssignmentId?: string,
+  explicitAbortController?: AbortController
+) => {
     // 0. ATOMIC CLAIM CHECK
     const validBatch: ProcessingItem[] = [];
     for (const item of batchItems) {
@@ -1067,6 +1183,31 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
     if (validBatch.length === 0) return;
     if (keyClaimLockRef.current.has(keyObj.id)) return;
     keyClaimLockRef.current.add(keyObj.id);
+
+    const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
+    const assignmentId = explicitAssignmentId || (isCentral ? `title_${Date.now()}_${Math.random().toString(36).slice(2)}` : '');
+    const abortController = explicitAbortController || new AbortController();
+
+    if (isCentral && assignmentId) {
+      activeCentralAssignmentsRef.current.set(assignmentId, {
+        assignmentId,
+        stage: 'title',
+        itemIds: validBatch.map(b => b.id),
+        keyId: keyObj.id,
+        keyLabel: keyObj.label,
+        startTime: Date.now(),
+        abortController,
+        reassigned: false,
+        completed: false
+      });
+      for (const item of validBatch) {
+        const prevMeta = itemAssignmentMapRef.current.get(item.id);
+        itemAssignmentMapRef.current.set(item.id, {
+          assignmentId,
+          reassignmentsCount: prevMeta ? prevMeta.reassignmentsCount : 0
+        });
+      }
+    }
 
     // 1. Mark all as processing
     setItems(prev => prev.map(p => validBatch.find(b => b.id === p.id) ? { 
@@ -1102,7 +1243,8 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               },
               localKeys.map(k => k.key),
               userData?.role === 'admin',
-              userData?.centralApiAccess === true
+              userData?.centralApiAccess === true,
+              isCentral ? abortController.signal : undefined
             );
             const elapsed = Date.now() - startTime;
             if (!turboTitleStatsRef.current[usedModel]) {
@@ -1118,7 +1260,6 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             throw err;
         }
       } else {
-        const startTime = Date.now();
         sessionRequestCountRef.current += 2;
         results = await generateMetadataBatch(
             keyObj.key, 
@@ -1129,15 +1270,32 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             },
             localKeys.map(k => k.key),
             userData?.role === 'admin',
-            userData?.centralApiAccess === true
+            userData?.centralApiAccess === true,
+            isCentral ? abortController.signal : undefined
         );
-        
       }
 
+      // Check if reassigned / completed
+      if (isCentral && assignmentId) {
+        const activeRecord = activeCentralAssignmentsRef.current.get(assignmentId);
+        if (activeRecord?.reassigned) {
+          return;
+        }
+        if (activeRecord) activeRecord.completed = true;
+        centralCompletedDurationsRef.current.push(Date.now() - batchStartTime);
+        if (centralCompletedDurationsRef.current.length > 20) {
+          centralCompletedDurationsRef.current.shift();
+        }
+      }
 
-
-            setItems(prev => prev.map(p => {
-          if (results[p.id]) {
+      setItems(prev => prev.map(p => {
+          if (results && results[p.id]) {
+              if (isCentral && assignmentId) {
+                const currentItemAssignment = itemAssignmentMapRef.current.get(p.id);
+                if (currentItemAssignment && currentItemAssignment.assignmentId !== assignmentId) {
+                  return p;
+                }
+              }
               return { 
                  ...p, 
                  status: 'pending', // Pending for category phase
@@ -1160,7 +1318,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       setKeys(prev => prev.map(k => {
         if (k.id === keyObj.id) {
             const currentSession = getUsageSessionId();
-            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 }) };
+            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 }) };
             
             // Ensure usage date is current session before incrementing
             if (newUsage.date !== currentSession) {
@@ -1173,9 +1331,11 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                 newUsage.flash_3_5_lite = 0;
                 newUsage.flash_3_7 = 0;
                 newUsage.flash_3_6 = 0;
+                newUsage.flash_3_8 = 0;
             }
 
-            if (usedModel === 'gemini-3.7-flash') newUsage.flash_3_7 = (newUsage.flash_3_7 || 0) + 1;
+            if (usedModel === 'gemini-3.8-flash') newUsage.flash_3_8 = (newUsage.flash_3_8 || 0) + 1;
+            else if (usedModel === 'gemini-3.7-flash') newUsage.flash_3_7 = (newUsage.flash_3_7 || 0) + 1;
             else if (usedModel === 'gemini-3.6-flash') newUsage.flash_3_6 = (newUsage.flash_3_6 || 0) + 1;
             else if (usedModel === 'gemini-3.5-flash-lite') newUsage.flash_3_5_lite = (newUsage.flash_3_5_lite || 0) + 1;
             else if (usedModel.includes('gemini-3.5-flash')) newUsage.flash_3_5 = (newUsage.flash_3_5 || 0) + 1;
@@ -1212,6 +1372,11 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       setLogs(prev => [newLog, ...prev].slice(0, 5000));
 
     } catch (error: any) {
+      const isAborted = error?.name === 'AbortError' || error?.message?.includes('aborted') || (isCentral && assignmentId && activeCentralAssignmentsRef.current.get(assignmentId)?.reassigned);
+      if (isAborted) {
+        return;
+      }
+
       console.warn(`Key ${keyObj.label} failed for batch:`, error);
       
       const errMsg = error.message || "";
@@ -1275,8 +1440,8 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
                           status: 'pending',
                           assignedKeyId: undefined,
                           failedKeyIds: newFailedKeys,
-                         attempts: p.attempts + 1,
-                         retryAfter: Date.now() + backoffDelay 
+                          attempts: p.attempts + 1,
+                          retryAfter: Date.now() + backoffDelay 
                      };
                 }
             }
@@ -1285,8 +1450,16 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       });
       setStatusMsg(cooldownTime > 0 ? `Rate limit hit. Cooling down...` : `Batch failed. Rotating keys...`);
     } finally {
+        if (isCentral && assignmentId) {
+          activeCentralAssignmentsRef.current.delete(assignmentId);
+        }
         keyClaimLockRef.current.delete(keyObj.id);
-        for (const item of validBatch) taskClaimLockRef.current.delete(item.id);
+        for (const item of validBatch) {
+          const currentAssignment = itemAssignmentMapRef.current.get(item.id);
+          if (!isCentral || !currentAssignment || currentAssignment.assignmentId === assignmentId) {
+            taskClaimLockRef.current.delete(item.id);
+          }
+        }
     }
   };
 
@@ -1559,7 +1732,7 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
 
     // 3. Validate API keys and session limits
     const validKeys = keys.filter(k => {
-        const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0 };
+        const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 };
         
         const u = {
             flash: Number(usage.flash || 0),
@@ -1569,11 +1742,14 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
             flash_3_5: Number(usage.flash_3_5 || 0),
             flash_3_5_lite: Number(usage.flash_3_5_lite || 0),
             flash_3_6: Number(usage.flash_3_6 || 0),
-            flash_3_7: Number(usage.flash_3_7 || 0)
+            flash_3_7: Number(usage.flash_3_7 || 0),
+            flash_3_8: Number(usage.flash_3_8 || 0)
         };
 
         if (config.model === 'turbo') {
-            return (u.flash_3_7 < 10000) || (u.flash_3_6 < 10000) || (u.flash_3_5_lite < 10000) || (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 20);
+            return (u.flash_3_8 < 10000) || (u.flash_3_7 < 10000) || (u.flash_3_6 < 10000) || (u.flash_3_5_lite < 10000) || (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 20);
+        } else if (config.model === 'gemini-3.8-flash') {
+            return u.flash_3_8 < 10000;
         } else if (config.model === 'gemini-3.7-flash') {
             return u.flash_3_7 < 10000;
         } else if (config.model === 'gemini-3.6-flash') {
@@ -1702,6 +1878,83 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
         }
     }
 
+    // 5.5 DYNAMIC TASK REASSIGNMENT (CENTRAL MODE ONLY)
+    // If there are still idle Central keys available and there are no unassigned pending items ahead in the queue,
+    // check if any running task is a stalled/slow outlier and reassign it to an available worker key.
+    if (config.apiMode === 'central') {
+        const idleKeys = validKeys.filter(k => 
+            !busyKeyIds.has(k.id) && 
+            (!k.cooldownUntil || k.cooldownUntil <= now) &&
+            k.errorCount < 20
+        );
+
+        if (idleKeys.length > 0) {
+            // Find all active Central assignments that are stalled outliers
+            const stalledAssignments: ActiveCentralAssignment[] = [];
+            activeCentralAssignmentsRef.current.forEach(assignment => {
+                if (isCentralTaskStalled(assignment, now)) {
+                    stalledAssignments.push(assignment);
+                }
+            });
+
+            // Sort stalled assignments by longest running first
+            stalledAssignments.sort((a, b) => (now - b.startTime) - (now - a.startTime));
+
+            for (const stalled of stalledAssignments) {
+                if (idleKeys.length === 0) break;
+
+                // Find an available key that is DIFFERENT from the currently assigned slow key
+                const availableKeyIndex = idleKeys.findIndex(k => k.id !== stalled.keyId);
+                if (availableKeyIndex === -1) continue;
+
+                const availableKey = idleKeys[availableKeyIndex];
+
+                // Check items associated with this stalled assignment
+                const stalledItems = items.filter(i => stalled.itemIds.includes(i.id) && (i.status === 'processing' || i.status === 'compressing'));
+                if (stalledItems.length === 0) continue;
+
+                // Check reassignments count threshold (max 2 reassignments to prevent ping-pong)
+                const canReassign = stalledItems.every(i => {
+                    const meta = itemAssignmentMapRef.current.get(i.id);
+                    return (meta?.reassignmentsCount || 0) < 2;
+                });
+                if (!canReassign) continue;
+
+                // Remove the chosen key from idle keys and add to busy
+                idleKeys.splice(availableKeyIndex, 1);
+                busyKeyIds.add(availableKey.id);
+
+                // 1. Mark old assignment as reassigned and abort HTTP fetch safely
+                stalled.reassigned = true;
+                try {
+                    stalled.abortController.abort();
+                } catch (e) {}
+
+                // 2. Release locks on old key and items
+                keyClaimLockRef.current.delete(stalled.keyId);
+                for (const item of stalledItems) {
+                    taskClaimLockRef.current.delete(item.id);
+                    const prevMeta = itemAssignmentMapRef.current.get(item.id);
+                    itemAssignmentMapRef.current.set(item.id, {
+                        assignmentId: '',
+                        reassignmentsCount: (prevMeta?.reassignmentsCount || 0) + 1
+                    });
+                }
+
+                // 3. Update status message and notify user of smart load balancing
+                const elapsedSec = Math.round((now - stalled.startTime) / 1000);
+                setStatusMsg(`Dynamic balance: Reassigned slow task (${stalled.keyLabel} [${elapsedSec}s] ➔ ${availableKey.label})`);
+
+                // 4. Dispatch immediately to the available faster worker
+                if (stalled.stage === 'category') {
+                    startCategoryBatchProcessing(stalledItems, availableKey);
+                } else {
+                    startBatchProcessing(stalledItems, availableKey);
+                }
+            }
+        }
+    }
+
     // 6. Status Message if no requests active and waiting on cooldowns
     const totalActive = items.filter(i => (i.status === 'processing' || i.status === 'compressing')).length;
     if (totalActive === 0 && busyKeyIds.size === 0) {
@@ -1759,6 +2012,27 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
       return () => clearInterval(interval);
   }, [isProcessing]);
 
+  // Periodic outlier checker for dynamic load balancing during Central API processing
+  useEffect(() => {
+    if (!isProcessing || config.apiMode !== 'central') return;
+
+    const monitorInterval = setInterval(() => {
+      const now = Date.now();
+      let hasStalled = false;
+      activeCentralAssignmentsRef.current.forEach(assignment => {
+        if (isCentralTaskStalled(assignment, now)) {
+          hasStalled = true;
+        }
+      });
+
+      if (hasStalled) {
+        setTick(t => t + 1);
+      }
+    }, 1500);
+
+    return () => clearInterval(monitorInterval);
+  }, [isProcessing, config.apiMode]);
+
   // --- SAVE PROJECT ---
   const handleSaveProject = async () => {
     if (items.length === 0) return;
@@ -1786,6 +2060,10 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
   const handleClear = async () => {
       if (window.confirm('Are you sure you want to clear all items and delete the saved project?')) {
           setIsProcessing(false);
+          activeCentralAssignmentsRef.current.forEach(a => {
+              try { a.abortController.abort(); } catch (e) {}
+          });
+          activeCentralAssignmentsRef.current.clear();
           setElapsedMs(0);
           sessionRequestCountRef.current = 0;
           localStorage.setItem('sessionReqCount', '0');
@@ -1808,6 +2086,10 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
 
       if (isProcessing) {
           setIsProcessing(false);
+          activeCentralAssignmentsRef.current.forEach(a => {
+              try { a.abortController.abort(); } catch (e) {}
+          });
+          activeCentralAssignmentsRef.current.clear();
           setStatusMsg("Processing paused.");
           return;
       }
@@ -1826,6 +2108,9 @@ const startBatchProcessing = async (batchItems: ProcessingItem[], keyObj: ApiKey
               setStatusMsg("No Central API keys available in server pool. Please add a key or try again.");
               return;
           }
+          // Workflow: fetch central API -> shuffle randomly -> use
+          activeKeys = shuffleArray(activeKeys);
+          setCentralKeys(activeKeys);
       } else {
           if (activeKeys.length === 0) {
               setStatusMsg("No API keys configured. Please add keys first.");

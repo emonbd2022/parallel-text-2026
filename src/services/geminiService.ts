@@ -22,7 +22,8 @@ export const generateMetadataBatch = async (
   onProgress?: (progressMsg: string) => void,
   localKeys?: string[],
   isAdmin?: boolean,
-  hasExplicitAdminGrant?: boolean
+  hasExplicitAdminGrant?: boolean,
+  signal?: AbortSignal
 ): Promise<Record<string, GeminiResponse>> => {
   if (apiKey.startsWith('central-') || !apiKey.startsWith('AIza')) {
     if (onProgress) onProgress("Creating titles & keywords (Central)...");
@@ -40,6 +41,7 @@ export const generateMetadataBatch = async (
 
     const res = await fetch('/api/central-generate', {
        method: 'POST',
+       signal,
        headers: { 
          'Content-Type': 'application/json',
          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),

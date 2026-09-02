@@ -31,7 +31,8 @@ export const generateCategoriesBatch = async (
   onProgress?: (progressMsg: string) => void,
   localKeys?: string[],
   isAdmin?: boolean,
-  hasExplicitAdminGrant?: boolean
+  hasExplicitAdminGrant?: boolean,
+  signal?: AbortSignal
 ): Promise<Record<string, { category: string }>> => {
   if (apiKey.startsWith('central-') || !apiKey.startsWith('AIza')) {
     if (onProgress) onProgress("Getting categories (Central)...");
@@ -49,6 +50,7 @@ export const generateCategoriesBatch = async (
 
     const res = await fetch('/api/central-category', {
        method: 'POST',
+       signal,
        headers: { 
          'Content-Type': 'application/json',
          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),

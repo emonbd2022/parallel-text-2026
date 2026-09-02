@@ -25,10 +25,6 @@ let lastCentralKeysFetchTime = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes TTL
 let clientFetchPromise: Promise<CentralKeyRecord[]> | null = null;
 
-const isDevSeedAllowed = () => {
-  return import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_CENTRAL_KEYS === 'true';
-};
-
 /**
  * Computes a browser-compatible SHA-256 hash string for deterministic key fingerprinting
  */
@@ -868,16 +864,34 @@ export async function deleteBatchCentralKeys(keyIds: string[]): Promise<void> {
   }
 }
 
+/**
+ * Fisher-Yates random shuffle to uniformly randomize items in an array
+ */
+export function shuffleArray<T>(array: T[]): T[] {
+  const result = [...array];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = result[i];
+    result[i] = result[j];
+    result[j] = temp;
+  }
+  return result;
+}
+
 export interface ParsedCsvKey {
   label: string;
   key: string;
   contributorName: string;
   contributorEmail: string;
+  addedOn?: string;
+  status?: string; // 'active' | 'disabled' | 'dead'
+  enabled?: boolean;
 }
 
 /**
  * Parses CSV text into an array of Central Key items according to standard format:
- * "api label,api key,contributor name,contributor gmail"
+ * "api label,api key,contributor name,contributor gmail,added on,status"
+ * Also supports flexible header detection corresponding to the Central API Keys Database table.
  */
 export function parseCentralKeysCSV(csvText: string): ParsedCsvKey[] {
   const lines: string[][] = [];
@@ -928,46 +942,81 @@ export function parseCentralKeysCSV(csvText: string): ParsedCsvKey[] {
   let keyIdx = 1;
   let nameIdx = 2;
   let emailIdx = 3;
+  let addedOnIdx = 4;
+  let statusIdx = 5;
 
   const firstRow = lines[0].map(c => c.toLowerCase().trim());
   const hasHeader = firstRow.some(c => 
     c.includes('api') || 
     c.includes('label') || 
+    c.includes('origin') ||
     c.includes('key') || 
     c.includes('contributor') || 
     c.includes('gmail') || 
-    c.includes('email')
+    c.includes('email') ||
+    c.includes('added') ||
+    c.includes('date') ||
+    c.includes('created') ||
+    c.includes('status') ||
+    c.includes('switch')
   );
 
   if (hasHeader) {
     startIndex = 1;
-    const lIdx = firstRow.findIndex(c => c.includes('label') || c === 'api label');
-    const kIdx = firstRow.findIndex(c => c.includes('key') || c === 'api key');
-    const nIdx = firstRow.findIndex(c => c.includes('name') || c === 'contributor name');
-    const eIdx = firstRow.findIndex(c => c.includes('gmail') || c.includes('email') || c === 'contributor gmail' || c === 'contributor email');
+    labelIdx = firstRow.findIndex(c => c.includes('label') || c.includes('origin') || c === 'api label');
+    keyIdx = firstRow.findIndex(c => c.includes('key') || c === 'api key' || c.includes('masked'));
+    nameIdx = firstRow.findIndex(c => (c.includes('contributor') && c.includes('name')) || (c.includes('name') && !c.includes('label')) || c === 'contributor');
+    emailIdx = firstRow.findIndex(c => c.includes('gmail') || c.includes('email') || c === 'contributor gmail' || c === 'contributor email');
+    addedOnIdx = firstRow.findIndex(c => c.includes('added') || c.includes('date') || c.includes('created') || c.includes('time'));
+    statusIdx = firstRow.findIndex(c => c.includes('status') || c.includes('switch') || c.includes('state') || c.includes('enabled') || c.includes('active'));
     
-    if (lIdx !== -1) labelIdx = lIdx;
-    if (kIdx !== -1) keyIdx = kIdx;
-    if (nIdx !== -1) nameIdx = nIdx;
-    if (eIdx !== -1) emailIdx = eIdx;
+    if (labelIdx === -1) labelIdx = 0;
+    if (keyIdx === -1) keyIdx = 1;
+    if (nameIdx === -1) nameIdx = 2;
+    if (emailIdx === -1) emailIdx = 3;
+    if (addedOnIdx === -1) addedOnIdx = 4;
+    if (statusIdx === -1) statusIdx = 5;
   }
 
   const results: ParsedCsvKey[] = [];
 
   for (let i = startIndex; i < lines.length; i++) {
     const row = lines[i];
-    const key = (row[keyIdx] || '').trim();
+    const key = (keyIdx >= 0 && keyIdx < row.length ? row[keyIdx] : '')?.trim();
     if (!key || key.length < 8) continue; // Skip invalid or empty keys
 
-    const label = (row[labelIdx] || '').trim() || 'Central Key';
-    const contributorName = (row[nameIdx] || '').trim() || 'Admin';
-    const contributorEmail = (row[emailIdx] || '').trim() || '';
+    const label = (labelIdx >= 0 && labelIdx < row.length && row[labelIdx] ? row[labelIdx].trim() : '') || 'Central Key';
+    const contributorName = (nameIdx >= 0 && nameIdx < row.length && row[nameIdx] ? row[nameIdx].trim() : '') || 'Admin';
+    const contributorEmail = (emailIdx >= 0 && emailIdx < row.length && row[emailIdx] ? row[emailIdx].trim() : '') || '';
+    
+    // Added On date parsing
+    const rawAddedOn = (addedOnIdx >= 0 && addedOnIdx < row.length ? row[addedOnIdx].trim() : '');
+    
+    // Status parsing (active / disabled)
+    const rawStatus = (statusIdx >= 0 && statusIdx < row.length ? row[statusIdx].trim().toLowerCase() : '');
+    let status = 'active';
+    let enabled = true;
+    if (rawStatus) {
+      if (rawStatus.includes('disabled') || rawStatus === 'inactive' || rawStatus === 'false' || rawStatus === '0') {
+        status = 'disabled';
+        enabled = false;
+      } else if (rawStatus.includes('dead')) {
+        status = 'dead';
+        enabled = false;
+      } else if (rawStatus.includes('active') || rawStatus.includes('enabled') || rawStatus === 'true' || rawStatus === '1') {
+        status = 'active';
+        enabled = true;
+      }
+    }
 
     results.push({
       label,
       key,
       contributorName,
-      contributorEmail
+      contributorEmail,
+      addedOn: rawAddedOn,
+      status,
+      enabled
     });
   }
 
@@ -1033,28 +1082,49 @@ export async function importCentralKeys(
         const hash = await computeKeySha256(trimmedKey);
         const docId = `ck_${hash.substring(0, 24)}`;
         
-        const exists = existingKeys.some((ex: any) => 
+        const isEnabled = item.enabled !== false && item.status !== 'disabled' && item.status !== 'dead';
+        const isDead = item.status === 'dead';
+        const statusVal = isEnabled ? 'active' : (isDead ? 'dead' : 'disabled');
+        const parsedDate = item.addedOn ? new Date(item.addedOn) : null;
+        const createdAt = (parsedDate && !isNaN(parsedDate.getTime())) ? parsedDate.toISOString() : new Date().toISOString();
+
+        const existingIdx = existingKeys.findIndex((ex: any) => 
           ex.keyHash === hash || 
           ex.id === docId || 
           (ex.key && ex.key.trim() === trimmedKey)
         );
 
-        if (!exists) {
+        if (existingIdx === -1) {
           existingKeys.push({
             id: docId,
             label: item.label || 'Central Key',
             key: trimmedKey,
             maskedKey: maskApiKey(trimmedKey),
             keyHash: hash,
-            enabled: true,
-            createdAt: new Date().toISOString(),
+            enabled: isEnabled,
+            status: statusVal,
+            isDead,
+            createdAt,
             contributedBy: item.contributorName || 'Admin',
             contributorName: item.contributorName || 'Admin',
             contributorEmail: item.contributorEmail || ''
           });
           addedCount++;
         } else {
-          skippedCount++;
+          // Update existing key properties & status
+          existingKeys[existingIdx].enabled = isEnabled;
+          existingKeys[existingIdx].status = statusVal;
+          existingKeys[existingIdx].isDead = isDead;
+          if (item.label) existingKeys[existingIdx].label = item.label;
+          if (item.contributorName) {
+            existingKeys[existingIdx].contributorName = item.contributorName;
+            existingKeys[existingIdx].contributedBy = item.contributorName;
+          }
+          if (item.contributorEmail) existingKeys[existingIdx].contributorEmail = item.contributorEmail;
+          if (item.addedOn && parsedDate && !isNaN(parsedDate.getTime())) {
+            existingKeys[existingIdx].createdAt = createdAt;
+          }
+          addedCount++;
         }
       }
 

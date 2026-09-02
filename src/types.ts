@@ -9,6 +9,7 @@ export interface ApiKeyUsage {
   flash_3_5_lite?: number;
   flash_3_7?: number;
   flash_3_6?: number;
+  flash_3_8?: number;
 }
 
 export interface ApiKey {

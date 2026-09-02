@@ -592,8 +592,9 @@ export const LocalDeadApiModal: React.FC<LocalDeadApiModalProps> = ({
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
               {[
+                { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', badge: 'New', desc: 'Cutting-edge speed' },
                 { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite', badge: 'Default (500 RPD)', desc: 'Fastest verification' },
                 { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', badge: 'Latest', desc: 'High intelligence' },
                 { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', badge: 'Stable', desc: 'Standard validation' },

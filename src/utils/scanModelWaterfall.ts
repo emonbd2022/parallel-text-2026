@@ -6,6 +6,7 @@
  */
 
 export const SCAN_FALLBACK_MODELS = [
+  'gemini-3.8-flash',
   'gemini-3.1-flash-lite-preview',
   'gemini-3.7-flash',
   'gemini-2.5-flash',
@@ -19,6 +20,8 @@ export const SCAN_FALLBACK_MODELS = [
  */
 export function getModelDisplayName(modelId: string): string {
   switch (modelId) {
+    case 'gemini-3.8-flash':
+      return 'Gemini 3.8 Flash';
     case 'gemini-3.1-flash-lite-preview':
       return 'Gemini 3.1 Flash Lite';
     case 'gemini-3.7-flash':
