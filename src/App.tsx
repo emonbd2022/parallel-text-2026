@@ -5,7 +5,7 @@ import { Sidebar } from './components/Sidebar';
 import { StatisticsModal } from './components/StatisticsModal';
 import { compressImage } from './services/imageUtils';
 import { generateMetadataBatch } from './services/geminiService';
-import { generateCategoriesBatch } from './services/geminiCategoryService';
+import { generateCategoriesBatch, matchCanonicalCategory } from './services/geminiCategoryService';
 import { saveProject, loadProject, clearProject } from './services/projectStorage';
 import { Clock, Key, Hourglass, Cat, Layers, Upload, Maximize, Minimize, ArrowUp, Activity, CheckCircle2, AlertTriangle, AlertCircle, Info, X } from 'lucide-react';
 import confetti from 'canvas-confetti';
@@ -73,6 +73,7 @@ interface Toast {
 
 const getCategoryId = (categoryName?: string) => {
     if (!categoryName) return '';
+    const canonical = matchCanonicalCategory(categoryName);
     const map: Record<string, string> = {
         "animals": "1",
         "buildings and architecture": "2",
@@ -96,7 +97,7 @@ const getCategoryId = (categoryName?: string) => {
         "transport": "20",
         "travel": "21"
     };
-    return map[categoryName.trim().toLowerCase()] || categoryName;
+    return map[canonical.trim().toLowerCase()] || map[categoryName.trim().toLowerCase()] || categoryName;
 };
 
 import { useNavigate } from 'react-router-dom';
@@ -203,7 +204,10 @@ export default function App() {
   const isTaskStalled = (assignment: ActiveAssignment, now: number): boolean => {
     if (assignment.reassigned || assignment.completed) return false;
     const elapsed = now - assignment.startTime;
-    return elapsed >= MAX_KEY_RESPONSE_TIME_MS;
+    const threshold = assignment.stage === 'category'
+      ? Math.max(MAX_KEY_RESPONSE_TIME_MS, 6000 + (Math.max(0, assignment.itemIds.length - 1) * 1200))
+      : MAX_KEY_RESPONSE_TIME_MS;
+    return elapsed >= threshold;
   };
   useEffect(() => {
     const idx = setInterval(() => localStorage.setItem('sessionReqCount', sessionRequestCountRef.current.toString()), 5000);
@@ -905,7 +909,9 @@ export default function App() {
     explicitAssignmentId?: string,
     explicitAbortController?: AbortController
   ) => {
-    // 0. ATOMIC CLAIM CHECK
+    // 0. ATOMIC CLAIM CHECK: Check key availability first to avoid orphaned task claims
+    if (keyClaimLockRef.current.has(keyObj.id)) return;
+
     const validBatch: ProcessingItem[] = [];
     for (const item of batchItems) {
         if (!taskClaimLockRef.current.has(item.id)) {
@@ -914,19 +920,19 @@ export default function App() {
         }
     }
     if (validBatch.length === 0) return;
-    if (keyClaimLockRef.current.has(keyObj.id)) return;
     keyClaimLockRef.current.add(keyObj.id);
 
     const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
     const assignmentId = explicitAssignmentId || `${isCentral ? 'central' : 'local'}_cat_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const abortController = explicitAbortController || new AbortController();
 
+    const categoryTimeoutMs = Math.max(MAX_KEY_RESPONSE_TIME_MS, 6000 + (Math.max(0, validBatch.length - 1) * 1200));
     const timeoutTimer = setTimeout(() => {
       const active = activeAssignmentsRef.current.get(assignmentId);
       if (active && !active.completed && !active.reassigned) {
         setTick(t => t + 1);
       }
-    }, MAX_KEY_RESPONSE_TIME_MS + 20);
+    }, categoryTimeoutMs + 20);
 
     activeAssignmentsRef.current.set(assignmentId, {
       assignmentId,
@@ -956,11 +962,11 @@ export default function App() {
       assignedKeyId: keyObj.id 
     } : p));
 
-    setStatusMsg(`Fetching categories for ${batchItems.length} items (${keyObj.label})...`);
+    setStatusMsg(`Fetching categories for ${validBatch.length} items (${keyObj.label})...`);
     const batchStartTime = Date.now();
 
     try {
-      const payload = batchItems.map(item => ({ id: item.id, title: item.title }));
+      const payload = validBatch.map(item => ({ id: item.id, title: item.title }));
       let results: any;
       let usedModel = config.model;
 
@@ -974,7 +980,7 @@ export default function App() {
               payload,
               usedModel,
               (msg) => {
-                setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
+                setItems(prev => prev.map(p => validBatch.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
               },
               localKeys.map(k => k.key),
               userData?.role === 'admin',
@@ -1001,7 +1007,7 @@ export default function App() {
             payload, 
             config.model,
             (msg) => {
-              setItems(prev => prev.map(p => batchItems.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
+              setItems(prev => prev.map(p => validBatch.find(b => b.id === p.id) ? { ...p, progressMsg: msg } : p));
             },
             localKeys.map(k => k.key),
             userData?.role === 'admin',
@@ -1023,17 +1029,19 @@ export default function App() {
       }
 
       setItems(prev => prev.map(p => {
-          if (results && results[p.id]) {
+          const isItemInBatch = validBatch.some(b => b.id === p.id);
+          if (isItemInBatch) {
               if (assignmentId) {
                 const currentItemAssignment = itemAssignmentMapRef.current.get(p.id);
                 if (currentItemAssignment && currentItemAssignment.assignmentId !== assignmentId) {
                   return p;
                 }
               }
+              const resolvedCategory = results?.[p.id]?.category || matchCanonicalCategory('', p.title);
               return { 
                  ...p, 
                  status: 'done', 
-                 category: results[p.id].category,
+                 category: resolvedCategory,
                  assignedKeyId: undefined,
                  retryAfter: undefined,
                  failedKeyIds: []
@@ -1167,7 +1175,9 @@ const startBatchProcessing = async (
   explicitAssignmentId?: string,
   explicitAbortController?: AbortController
 ) => {
-    // 0. ATOMIC CLAIM CHECK
+    // 0. ATOMIC CLAIM CHECK: Check key availability first to avoid orphaned task claims
+    if (keyClaimLockRef.current.has(keyObj.id)) return;
+
     const validBatch: ProcessingItem[] = [];
     for (const item of batchItems) {
         if (!taskClaimLockRef.current.has(item.id)) {
@@ -1176,7 +1186,6 @@ const startBatchProcessing = async (
         }
     }
     if (validBatch.length === 0) return;
-    if (keyClaimLockRef.current.has(keyObj.id)) return;
     keyClaimLockRef.current.add(keyObj.id);
 
     const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
@@ -1909,7 +1918,52 @@ const startBatchProcessing = async (
                 const meta = itemAssignmentMapRef.current.get(i.id);
                 return (meta?.reassignmentsCount || 0) < 4;
             });
-            if (!canReassign) continue;
+            if (!canReassign) {
+                stalled.completed = true;
+                if (stalled.timeoutTimer) clearTimeout(stalled.timeoutTimer);
+                try { stalled.abortController.abort(); } catch (e) {}
+                keyClaimLockRef.current.delete(stalled.keyId);
+                activeAssignmentsRef.current.delete(stalled.assignmentId);
+
+                if (stalled.stage === 'category') {
+                    // Finalize categories using high-accuracy title classifier to never hang
+                    for (const item of stalledItems) {
+                        taskClaimLockRef.current.delete(item.id);
+                    }
+                    setItems(prev => prev.map(p => {
+                        if (stalled.itemIds.includes(p.id)) {
+                            return {
+                                ...p,
+                                status: 'done',
+                                category: p.category || matchCanonicalCategory('', p.title),
+                                assignedKeyId: undefined,
+                                retryAfter: undefined,
+                                failedKeyIds: []
+                            };
+                        }
+                        return p;
+                    }));
+                    setStatusMsg(`Auto-resolved categories for ${stalledItems.length} items.`);
+                } else {
+                    for (const item of stalledItems) {
+                        taskClaimLockRef.current.delete(item.id);
+                        itemAssignmentMapRef.current.set(item.id, { assignmentId: '', reassignmentsCount: 0 });
+                    }
+                    setItems(prev => prev.map(p => {
+                        if (stalled.itemIds.includes(p.id)) {
+                            return {
+                                ...p,
+                                status: 'pending',
+                                assignedKeyId: undefined,
+                                retryAfter: Date.now() + 3000,
+                                progressMsg: undefined
+                            };
+                        }
+                        return p;
+                    }));
+                }
+                continue;
+            }
 
             // 1. Mark old assignment as reassigned, clear its timer, and abort in-flight fetch immediately
             stalled.reassigned = true;
@@ -1921,13 +1975,7 @@ const startBatchProcessing = async (
             // 2. Release locks on the slow key
             keyClaimLockRef.current.delete(stalled.keyId);
 
-            // 3. Put the slow key on a 10s cooldown so other faster keys get chosen
-            setKeys(prev => prev.map(k => k.id === stalled.keyId ? {
-                ...k,
-                cooldownUntil: Math.max(k.cooldownUntil || 0, now + 10000)
-            } : k));
-
-            // 4. Determine alternate keys based on mode
+            // 3. Determine alternate keys based on mode
             const isStalledCentral = stalled.mode === 'central' || config.apiMode === 'central';
             const poolKeys = isStalledCentral
                 ? validKeys.filter(k => k.key.startsWith('central-') || k.id.startsWith('central-'))
@@ -1936,6 +1984,14 @@ const startBatchProcessing = async (
             const alternateCandidates = poolKeys.length > 0 
                 ? poolKeys.filter(k => k.id !== stalled.keyId && k.errorCount < 20)
                 : validKeys.filter(k => k.id !== stalled.keyId && k.errorCount < 20);
+
+            // Put slow key on 10s cooldown ONLY if alternate keys exist to take over
+            if (alternateCandidates.length > 0) {
+                setKeys(prev => prev.map(k => k.id === stalled.keyId ? {
+                    ...k,
+                    cooldownUntil: Math.max(k.cooldownUntil || 0, now + 10000)
+                } : k));
+            }
 
             // Check if there is an idle alternate key ready immediately
             const idleAlternateIndex = alternateCandidates.findIndex(k => 
@@ -1998,13 +2054,18 @@ const startBatchProcessing = async (
                 // Reset connection and re-dispatch with fresh connection to unstick hanging socket.
                 for (const item of stalledItems) {
                     taskClaimLockRef.current.delete(item.id);
+                    const prevMeta = itemAssignmentMapRef.current.get(item.id);
+                    itemAssignmentMapRef.current.set(item.id, {
+                        assignmentId: '',
+                        reassignmentsCount: (prevMeta?.reassignmentsCount || 0) + 1
+                    });
                 }
                 const singleKey = validKeys.find(k => k.id === stalled.keyId) || validKeys[0];
                 if (singleKey) {
-                    setStatusMsg(`Exceeded 6s delay on ${stalled.keyLabel}. Refreshing connection...`);
+                    setStatusMsg(`Refreshing connection for ${stalled.keyLabel} (delayed ${elapsedSec}s)...`);
                     setItems(prev => prev.map(p => stalled.itemIds.includes(p.id) ? {
                         ...p,
-                        progressMsg: `Refreshing connection (>6s delay on ${stalled.keyLabel})...`
+                        progressMsg: `Refreshing connection (delayed ${elapsedSec}s on ${stalled.keyLabel})...`
                     } : p));
 
                     if (stalled.stage === 'category') {

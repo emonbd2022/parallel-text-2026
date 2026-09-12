@@ -1197,7 +1197,7 @@ apiRouter.post("/central-category", async (req, res) => {
         const apiKey = await getRealKey(virtualKeyId);
         const ai = new GoogleGenAI({ apiKey });
         
-        // Track client disconnection and enforce 6-second timeout to immediately abort backend Gemini API request
+        // Track client disconnection and enforce a resilient 20-second timeout to prevent hung backend requests
         const serverAbortController = new AbortController();
         const onClose = () => {
             if (!res.writableEnded) {
@@ -1206,11 +1206,12 @@ apiRouter.post("/central-category", async (req, res) => {
         };
         req.on('close', onClose);
 
+        const timeoutMs = Math.max(20000, 12000 + (items.length * 1500));
         const serverTimeout = setTimeout(() => {
             if (!res.writableEnded && !req.destroyed) {
                 serverAbortController.abort();
             }
-        }, 6000);
+        }, timeoutMs);
 
         const systemInstruction = `# Adobe Stock Category Generation — Master Instructions
 
@@ -1303,23 +1304,61 @@ Return a strictly valid JSON array where each object contains:
         const text = response.text;
         if (!text) throw new Error("No response from AI");
 
-        let jsonArray: any[];
+        let jsonArray: any[] = [];
         try {
-            let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim(); const match = cleanText.match(/\[[\s\S]*\]/); if (match) cleanText = match[0]; jsonArray = JSON.parse(cleanText);
-            if (!Array.isArray(jsonArray)) throw new Error("AI did not return an array");
+            let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+            const parsed = JSON.parse(cleanText);
+            if (Array.isArray(parsed)) {
+                jsonArray = parsed;
+            } else if (parsed && typeof parsed === 'object') {
+                if (Array.isArray(parsed.categories)) jsonArray = parsed.categories;
+                else if (Array.isArray(parsed.items)) jsonArray = parsed.items;
+                else if (Array.isArray(parsed.results)) jsonArray = parsed.results;
+                else if (Array.isArray(parsed.data)) jsonArray = parsed.data;
+                else if (parsed.category !== undefined) jsonArray = [parsed];
+            }
         } catch (e) {
-            throw new Error("Invalid JSON response from AI");
+            const match = text.match(/\[[\s\S]*\]/);
+            if (match) {
+                try {
+                    const parsed = JSON.parse(match[0]);
+                    if (Array.isArray(parsed)) jsonArray = parsed;
+                } catch (e2) {}
+            }
+            if (jsonArray.length === 0) {
+                const objMatch = text.match(/\{[\s\S]*\}/);
+                if (objMatch) {
+                    try {
+                        const parsed = JSON.parse(objMatch[0]);
+                        if (parsed && parsed.category) jsonArray = [parsed];
+                    } catch (e3) {}
+                }
+            }
         }
 
-        const results: Record<string, { category: string }> = {};
-        jsonArray.forEach((resItem: any) => {
-            const idx = resItem.index;
-            if (idx >= 0 && idx < items.length) {
-                const originalId = items[idx].id;
-                results[originalId] = {
-                    category: resItem.category
-                };
+        const foundByIndex = new Map<number, string>();
+        const foundById = new Map<string, string>();
+
+        jsonArray.forEach((resItem: any, arrIdx: number) => {
+            if (!resItem || typeof resItem !== 'object') return;
+            const rawCat = String(resItem.category || resItem.name || resItem.val || resItem.classification || '');
+            const idx = typeof resItem.index === 'number' ? resItem.index : arrIdx;
+            if (typeof idx === 'number' && idx >= 0 && idx < items.length) {
+                foundByIndex.set(idx, rawCat);
             }
+            if (resItem.id && typeof resItem.id === 'string') {
+                foundById.set(resItem.id, rawCat);
+            }
+        });
+
+        const results: Record<string, { category: string }> = {};
+        items.forEach((item: any, index: number) => {
+            const raw = foundById.get(item.id) || foundByIndex.get(index) || '';
+            // Basic cleanup: remove quotes, numbering
+            let cleanCat = raw.replace(/^(?:category\s*)?#?\d+[\s.:\-–—]+\s*/i, '').replace(/^["']|["']$/g, '').trim();
+            results[item.id] = {
+                category: cleanCat || "Graphic Resources"
+            };
         });
 
         // Usage is tracked upfront in /central-generate (1 image = 2 requests). 
@@ -1333,7 +1372,7 @@ Return a strictly valid JSON array where each object contains:
         if (error?.name === 'AbortError' || error?.message?.includes('aborted')) {
             return res.status(504).json({
                 error: "TIMEOUT_EXCEEDED",
-                message: "Central API key took more than 6 seconds to respond. Alternating key."
+                message: "Central API request timed out. Alternating key."
             });
         }
         console.error("Central API Error:", error);
