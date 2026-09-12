@@ -989,7 +989,7 @@ apiRouter.post("/central-generate", async (req, res) => {
         const apiKey = await getRealKey(virtualKeyId);
         const ai = new GoogleGenAI({ apiKey });
         
-        // Track client disconnection to immediately abort backend Gemini API request
+        // Track client disconnection and enforce 6-second timeout to immediately abort backend Gemini API request
         const serverAbortController = new AbortController();
         const onClose = () => {
             if (!res.writableEnded) {
@@ -997,6 +997,12 @@ apiRouter.post("/central-generate", async (req, res) => {
             }
         };
         req.on('close', onClose);
+
+        const serverTimeout = setTimeout(() => {
+            if (!res.writableEnded && !req.destroyed) {
+                serverAbortController.abort();
+            }
+        }, 6000);
 
         const promptParts: any[] = [];
         items.forEach((item: any) => {
@@ -1059,6 +1065,7 @@ Return a strictly valid JSON array where each object contains:
                 }
             }
         });
+        clearTimeout(serverTimeout);
         req.off('close', onClose);
 
         const text = response.text;
@@ -1094,8 +1101,14 @@ Return a strictly valid JSON array where each object contains:
         
         res.json(results);
     } catch (error: any) {
-        if (req.destroyed || res.writableEnded || error?.name === 'AbortError' || error?.message?.includes('aborted')) {
+        if (req.destroyed || res.writableEnded) {
             return;
+        }
+        if (error?.name === 'AbortError' || error?.message?.includes('aborted')) {
+            return res.status(504).json({
+                error: "TIMEOUT_EXCEEDED",
+                message: "Central API key took more than 6 seconds to respond. Alternating key."
+            });
         }
         console.error("Central API Error:", error);
         res.status(500).json({ error: String(error?.message || error) });
@@ -1184,7 +1197,7 @@ apiRouter.post("/central-category", async (req, res) => {
         const apiKey = await getRealKey(virtualKeyId);
         const ai = new GoogleGenAI({ apiKey });
         
-        // Track client disconnection to immediately abort backend Gemini API request
+        // Track client disconnection and enforce 6-second timeout to immediately abort backend Gemini API request
         const serverAbortController = new AbortController();
         const onClose = () => {
             if (!res.writableEnded) {
@@ -1192,6 +1205,12 @@ apiRouter.post("/central-category", async (req, res) => {
             }
         };
         req.on('close', onClose);
+
+        const serverTimeout = setTimeout(() => {
+            if (!res.writableEnded && !req.destroyed) {
+                serverAbortController.abort();
+            }
+        }, 6000);
 
         const systemInstruction = `# Adobe Stock Category Generation — Master Instructions
 
@@ -1278,6 +1297,7 @@ Return a strictly valid JSON array where each object contains:
                 }
             }
         });
+        clearTimeout(serverTimeout);
         req.off('close', onClose);
 
         const text = response.text;
@@ -1307,8 +1327,14 @@ Return a strictly valid JSON array where each object contains:
 
         res.json(results);
     } catch (error: any) {
-        if (req.destroyed || res.writableEnded || error?.name === 'AbortError' || error?.message?.includes('aborted')) {
+        if (req.destroyed || res.writableEnded) {
             return;
+        }
+        if (error?.name === 'AbortError' || error?.message?.includes('aborted')) {
+            return res.status(504).json({
+                error: "TIMEOUT_EXCEEDED",
+                message: "Central API key took more than 6 seconds to respond. Alternating key."
+            });
         }
         console.error("Central API Error:", error);
         res.status(500).json({ error: error.message || "Internal Server Error" });

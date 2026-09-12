@@ -179,8 +179,8 @@ export default function App() {
   const taskClaimLockRef = useRef<Set<string>>(new Set());
   const keyClaimLockRef = useRef<Set<string>>(new Set());
 
-  // DYNAMIC TASK REASSIGNMENT (CENTRAL API ONLY)
-  interface ActiveCentralAssignment {
+  // DYNAMIC 6-SECOND KEY ALTERNATION & TASK REASSIGNMENT (LOCAL & CENTRAL MODES)
+  interface ActiveAssignment {
     assignmentId: string;
     stage: 'title' | 'category';
     itemIds: string[];
@@ -190,33 +190,20 @@ export default function App() {
     abortController: AbortController;
     reassigned: boolean;
     completed: boolean;
+    mode: 'local' | 'central';
+    timeoutTimer?: any;
   }
 
-  const activeCentralAssignmentsRef = useRef<Map<string, ActiveCentralAssignment>>(new Map());
+  const activeAssignmentsRef = useRef<Map<string, ActiveAssignment>>(new Map());
   const itemAssignmentMapRef = useRef<Map<string, { assignmentId: string; reassignmentsCount: number }>>(new Map());
-  const centralCompletedDurationsRef = useRef<number[]>([4000, 5000]);
 
-  const getCentralAvgDuration = () => {
-    const durations = centralCompletedDurationsRef.current;
-    if (durations.length === 0) return 4500;
-    const recent = durations.slice(-10);
-    return recent.reduce((sum, d) => sum + d, 0) / recent.length;
-  };
+  // Strict 6 seconds threshold: if an API key takes > 6s, immediately alternate the key
+  const MAX_KEY_RESPONSE_TIME_MS = 6000;
 
-  const isCentralTaskStalled = (assignment: ActiveCentralAssignment, now: number): boolean => {
+  const isTaskStalled = (assignment: ActiveAssignment, now: number): boolean => {
     if (assignment.reassigned || assignment.completed) return false;
     const elapsed = now - assignment.startTime;
-    
-    // Sane lower bound: never trigger on requests younger than 12 seconds
-    if (elapsed < 12000) return false;
-
-    const avgDuration = getCentralAvgDuration();
-    // Relative outlier threshold: at least 2.5x the rolling average duration (minimum 12s)
-    const relativeThreshold = Math.max(12000, avgDuration * 2.5);
-    // Absolute hard outlier threshold: 25 seconds
-    const absoluteThreshold = 25000;
-
-    return elapsed >= relativeThreshold || elapsed >= absoluteThreshold;
+    return elapsed >= MAX_KEY_RESPONSE_TIME_MS;
   };
   useEffect(() => {
     const idx = setInterval(() => localStorage.setItem('sessionReqCount', sessionRequestCountRef.current.toString()), 5000);
@@ -931,28 +918,35 @@ export default function App() {
     keyClaimLockRef.current.add(keyObj.id);
 
     const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
-    const assignmentId = explicitAssignmentId || (isCentral ? `cat_${Date.now()}_${Math.random().toString(36).slice(2)}` : '');
+    const assignmentId = explicitAssignmentId || `${isCentral ? 'central' : 'local'}_cat_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const abortController = explicitAbortController || new AbortController();
 
-    if (isCentral && assignmentId) {
-      activeCentralAssignmentsRef.current.set(assignmentId, {
-        assignmentId,
-        stage: 'category',
-        itemIds: validBatch.map(b => b.id),
-        keyId: keyObj.id,
-        keyLabel: keyObj.label,
-        startTime: Date.now(),
-        abortController,
-        reassigned: false,
-        completed: false
-      });
-      for (const item of validBatch) {
-        const prevMeta = itemAssignmentMapRef.current.get(item.id);
-        itemAssignmentMapRef.current.set(item.id, {
-          assignmentId,
-          reassignmentsCount: prevMeta ? prevMeta.reassignmentsCount : 0
-        });
+    const timeoutTimer = setTimeout(() => {
+      const active = activeAssignmentsRef.current.get(assignmentId);
+      if (active && !active.completed && !active.reassigned) {
+        setTick(t => t + 1);
       }
+    }, MAX_KEY_RESPONSE_TIME_MS + 20);
+
+    activeAssignmentsRef.current.set(assignmentId, {
+      assignmentId,
+      stage: 'category',
+      itemIds: validBatch.map(b => b.id),
+      keyId: keyObj.id,
+      keyLabel: keyObj.label,
+      startTime: Date.now(),
+      abortController,
+      reassigned: false,
+      completed: false,
+      mode: isCentral ? 'central' : 'local',
+      timeoutTimer
+    });
+    for (const item of validBatch) {
+      const prevMeta = itemAssignmentMapRef.current.get(item.id);
+      itemAssignmentMapRef.current.set(item.id, {
+        assignmentId,
+        reassignmentsCount: prevMeta ? prevMeta.reassignmentsCount : 0
+      });
     }
 
     // 1. Mark all as processing
@@ -985,7 +979,7 @@ export default function App() {
               localKeys.map(k => k.key),
               userData?.role === 'admin',
               userData?.centralApiAccess === true,
-              isCentral ? abortController.signal : undefined
+              abortController.signal
             );
             const elapsed = Date.now() - startTime;
             if (!turboCategoryStatsRef.current[usedModel]) {
@@ -1012,26 +1006,25 @@ export default function App() {
             localKeys.map(k => k.key),
             userData?.role === 'admin',
             userData?.centralApiAccess === true,
-            isCentral ? abortController.signal : undefined
+            abortController.signal
         );
       }
 
       // Check if reassigned / completed
-      if (isCentral && assignmentId) {
-        const activeRecord = activeCentralAssignmentsRef.current.get(assignmentId);
+      if (assignmentId) {
+        const activeRecord = activeAssignmentsRef.current.get(assignmentId);
         if (activeRecord?.reassigned) {
           return;
         }
-        if (activeRecord) activeRecord.completed = true;
-        centralCompletedDurationsRef.current.push(Date.now() - batchStartTime);
-        if (centralCompletedDurationsRef.current.length > 20) {
-          centralCompletedDurationsRef.current.shift();
+        if (activeRecord) {
+          activeRecord.completed = true;
+          if (activeRecord.timeoutTimer) clearTimeout(activeRecord.timeoutTimer);
         }
       }
 
       setItems(prev => prev.map(p => {
           if (results && results[p.id]) {
-              if (isCentral && assignmentId) {
+              if (assignmentId) {
                 const currentItemAssignment = itemAssignmentMapRef.current.get(p.id);
                 if (currentItemAssignment && currentItemAssignment.assignmentId !== assignmentId) {
                   return p;
@@ -1092,7 +1085,7 @@ export default function App() {
       setStatusMsg("Pipeline active...");
 
     } catch (error: any) {
-      const isAborted = error?.name === 'AbortError' || error?.message?.includes('aborted') || (isCentral && assignmentId && activeCentralAssignmentsRef.current.get(assignmentId)?.reassigned);
+      const isAborted = error?.name === 'AbortError' || error?.message?.includes('aborted') || (assignmentId && activeAssignmentsRef.current.get(assignmentId)?.reassigned);
       if (isAborted) {
         return;
       }
@@ -1154,13 +1147,15 @@ export default function App() {
       
       setStatusMsg(`Error: ${errorMessage.substring(0, 40)}`);
     } finally {
-        if (isCentral && assignmentId) {
-          activeCentralAssignmentsRef.current.delete(assignmentId);
+        if (assignmentId) {
+          const activeRecord = activeAssignmentsRef.current.get(assignmentId);
+          if (activeRecord?.timeoutTimer) clearTimeout(activeRecord.timeoutTimer);
+          activeAssignmentsRef.current.delete(assignmentId);
         }
         keyClaimLockRef.current.delete(keyObj.id);
         for (const item of validBatch) {
           const currentAssignment = itemAssignmentMapRef.current.get(item.id);
-          if (!isCentral || !currentAssignment || currentAssignment.assignmentId === assignmentId) {
+          if (!currentAssignment || currentAssignment.assignmentId === assignmentId) {
             taskClaimLockRef.current.delete(item.id);
           }
         }
@@ -1185,28 +1180,35 @@ const startBatchProcessing = async (
     keyClaimLockRef.current.add(keyObj.id);
 
     const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
-    const assignmentId = explicitAssignmentId || (isCentral ? `title_${Date.now()}_${Math.random().toString(36).slice(2)}` : '');
+    const assignmentId = explicitAssignmentId || `${isCentral ? 'central' : 'local'}_title_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const abortController = explicitAbortController || new AbortController();
 
-    if (isCentral && assignmentId) {
-      activeCentralAssignmentsRef.current.set(assignmentId, {
-        assignmentId,
-        stage: 'title',
-        itemIds: validBatch.map(b => b.id),
-        keyId: keyObj.id,
-        keyLabel: keyObj.label,
-        startTime: Date.now(),
-        abortController,
-        reassigned: false,
-        completed: false
-      });
-      for (const item of validBatch) {
-        const prevMeta = itemAssignmentMapRef.current.get(item.id);
-        itemAssignmentMapRef.current.set(item.id, {
-          assignmentId,
-          reassignmentsCount: prevMeta ? prevMeta.reassignmentsCount : 0
-        });
+    const timeoutTimer = setTimeout(() => {
+      const active = activeAssignmentsRef.current.get(assignmentId);
+      if (active && !active.completed && !active.reassigned) {
+        setTick(t => t + 1);
       }
+    }, MAX_KEY_RESPONSE_TIME_MS + 20);
+
+    activeAssignmentsRef.current.set(assignmentId, {
+      assignmentId,
+      stage: 'title',
+      itemIds: validBatch.map(b => b.id),
+      keyId: keyObj.id,
+      keyLabel: keyObj.label,
+      startTime: Date.now(),
+      abortController,
+      reassigned: false,
+      completed: false,
+      mode: isCentral ? 'central' : 'local',
+      timeoutTimer
+    });
+    for (const item of validBatch) {
+      const prevMeta = itemAssignmentMapRef.current.get(item.id);
+      itemAssignmentMapRef.current.set(item.id, {
+        assignmentId,
+        reassignmentsCount: prevMeta ? prevMeta.reassignmentsCount : 0
+      });
     }
 
     // 1. Mark all as processing
@@ -1244,7 +1246,7 @@ const startBatchProcessing = async (
               localKeys.map(k => k.key),
               userData?.role === 'admin',
               userData?.centralApiAccess === true,
-              isCentral ? abortController.signal : undefined
+              abortController.signal
             );
             const elapsed = Date.now() - startTime;
             if (!turboTitleStatsRef.current[usedModel]) {
@@ -1271,26 +1273,25 @@ const startBatchProcessing = async (
             localKeys.map(k => k.key),
             userData?.role === 'admin',
             userData?.centralApiAccess === true,
-            isCentral ? abortController.signal : undefined
+            abortController.signal
         );
       }
 
       // Check if reassigned / completed
-      if (isCentral && assignmentId) {
-        const activeRecord = activeCentralAssignmentsRef.current.get(assignmentId);
+      if (assignmentId) {
+        const activeRecord = activeAssignmentsRef.current.get(assignmentId);
         if (activeRecord?.reassigned) {
           return;
         }
-        if (activeRecord) activeRecord.completed = true;
-        centralCompletedDurationsRef.current.push(Date.now() - batchStartTime);
-        if (centralCompletedDurationsRef.current.length > 20) {
-          centralCompletedDurationsRef.current.shift();
+        if (activeRecord) {
+          activeRecord.completed = true;
+          if (activeRecord.timeoutTimer) clearTimeout(activeRecord.timeoutTimer);
         }
       }
 
       setItems(prev => prev.map(p => {
           if (results && results[p.id]) {
-              if (isCentral && assignmentId) {
+              if (assignmentId) {
                 const currentItemAssignment = itemAssignmentMapRef.current.get(p.id);
                 if (currentItemAssignment && currentItemAssignment.assignmentId !== assignmentId) {
                   return p;
@@ -1372,7 +1373,7 @@ const startBatchProcessing = async (
       setLogs(prev => [newLog, ...prev].slice(0, 5000));
 
     } catch (error: any) {
-      const isAborted = error?.name === 'AbortError' || error?.message?.includes('aborted') || (isCentral && assignmentId && activeCentralAssignmentsRef.current.get(assignmentId)?.reassigned);
+      const isAborted = error?.name === 'AbortError' || error?.message?.includes('aborted') || (assignmentId && activeAssignmentsRef.current.get(assignmentId)?.reassigned);
       if (isAborted) {
         return;
       }
@@ -1450,13 +1451,15 @@ const startBatchProcessing = async (
       });
       setStatusMsg(cooldownTime > 0 ? `Rate limit hit. Cooling down...` : `Batch failed. Rotating keys...`);
     } finally {
-        if (isCentral && assignmentId) {
-          activeCentralAssignmentsRef.current.delete(assignmentId);
+        if (assignmentId) {
+          const activeRecord = activeAssignmentsRef.current.get(assignmentId);
+          if (activeRecord?.timeoutTimer) clearTimeout(activeRecord.timeoutTimer);
+          activeAssignmentsRef.current.delete(assignmentId);
         }
         keyClaimLockRef.current.delete(keyObj.id);
         for (const item of validBatch) {
           const currentAssignment = itemAssignmentMapRef.current.get(item.id);
-          if (!isCentral || !currentAssignment || currentAssignment.assignmentId === assignmentId) {
+          if (!currentAssignment || currentAssignment.assignmentId === assignmentId) {
             taskClaimLockRef.current.delete(item.id);
           }
         }
@@ -1878,60 +1881,75 @@ const startBatchProcessing = async (
         }
     }
 
-    // 5.5 DYNAMIC TASK REASSIGNMENT (CENTRAL MODE ONLY)
-    // If there are still idle Central keys available and there are no unassigned pending items ahead in the queue,
-    // check if any running task is a stalled/slow outlier and reassign it to an available worker key.
-    if (config.apiMode === 'central') {
-        const idleKeys = validKeys.filter(k => 
-            !busyKeyIds.has(k.id) && 
-            (!k.cooldownUntil || k.cooldownUntil <= now) &&
-            k.errorCount < 20
-        );
+    // 5.5 DYNAMIC 6-SECOND KEY ALTERNATION & TASK REASSIGNMENT (LOCAL & CENTRAL MODES)
+    // If an API key takes > 6 seconds to respond, immediately abort and alternate the key.
+    const stalledAssignments: ActiveAssignment[] = [];
+    activeAssignmentsRef.current.forEach(assignment => {
+        if (isTaskStalled(assignment, now)) {
+            stalledAssignments.push(assignment);
+        }
+    });
 
-        if (idleKeys.length > 0) {
-            // Find all active Central assignments that are stalled outliers
-            const stalledAssignments: ActiveCentralAssignment[] = [];
-            activeCentralAssignmentsRef.current.forEach(assignment => {
-                if (isCentralTaskStalled(assignment, now)) {
-                    stalledAssignments.push(assignment);
-                }
+    if (stalledAssignments.length > 0) {
+        // Sort stalled assignments by longest running first
+        stalledAssignments.sort((a, b) => (now - b.startTime) - (now - a.startTime));
+
+        for (const stalled of stalledAssignments) {
+            if (stalled.reassigned || stalled.completed) continue;
+
+            // Find items still processing under this assignment
+            const stalledItems = items.filter(i => stalled.itemIds.includes(i.id) && (i.status === 'processing' || i.status === 'compressing'));
+            if (stalledItems.length === 0) {
+                stalled.completed = true;
+                continue;
+            }
+
+            // Cap reassignments per item to prevent infinite loops if network is down
+            const canReassign = stalledItems.every(i => {
+                const meta = itemAssignmentMapRef.current.get(i.id);
+                return (meta?.reassignmentsCount || 0) < 4;
             });
+            if (!canReassign) continue;
 
-            // Sort stalled assignments by longest running first
-            stalledAssignments.sort((a, b) => (now - b.startTime) - (now - a.startTime));
+            // 1. Mark old assignment as reassigned, clear its timer, and abort in-flight fetch immediately
+            stalled.reassigned = true;
+            if (stalled.timeoutTimer) clearTimeout(stalled.timeoutTimer);
+            try {
+                stalled.abortController.abort();
+            } catch (e) {}
 
-            for (const stalled of stalledAssignments) {
-                if (idleKeys.length === 0) break;
+            // 2. Release locks on the slow key
+            keyClaimLockRef.current.delete(stalled.keyId);
 
-                // Find an available key that is DIFFERENT from the currently assigned slow key
-                const availableKeyIndex = idleKeys.findIndex(k => k.id !== stalled.keyId);
-                if (availableKeyIndex === -1) continue;
+            // 3. Put the slow key on a 10s cooldown so other faster keys get chosen
+            setKeys(prev => prev.map(k => k.id === stalled.keyId ? {
+                ...k,
+                cooldownUntil: Math.max(k.cooldownUntil || 0, now + 10000)
+            } : k));
 
-                const availableKey = idleKeys[availableKeyIndex];
+            // 4. Determine alternate keys based on mode
+            const isStalledCentral = stalled.mode === 'central' || config.apiMode === 'central';
+            const poolKeys = isStalledCentral
+                ? validKeys.filter(k => k.key.startsWith('central-') || k.id.startsWith('central-'))
+                : validKeys.filter(k => !k.key.startsWith('central-') && !k.id.startsWith('central-'));
+            
+            const alternateCandidates = poolKeys.length > 0 
+                ? poolKeys.filter(k => k.id !== stalled.keyId && k.errorCount < 20)
+                : validKeys.filter(k => k.id !== stalled.keyId && k.errorCount < 20);
 
-                // Check items associated with this stalled assignment
-                const stalledItems = items.filter(i => stalled.itemIds.includes(i.id) && (i.status === 'processing' || i.status === 'compressing'));
-                if (stalledItems.length === 0) continue;
+            // Check if there is an idle alternate key ready immediately
+            const idleAlternateIndex = alternateCandidates.findIndex(k => 
+                !busyKeyIds.has(k.id) && 
+                (!k.cooldownUntil || k.cooldownUntil <= now)
+            );
 
-                // Check reassignments count threshold (max 2 reassignments to prevent ping-pong)
-                const canReassign = stalledItems.every(i => {
-                    const meta = itemAssignmentMapRef.current.get(i.id);
-                    return (meta?.reassignmentsCount || 0) < 2;
-                });
-                if (!canReassign) continue;
+            const elapsedSec = ((now - stalled.startTime) / 1000).toFixed(1);
 
-                // Remove the chosen key from idle keys and add to busy
-                idleKeys.splice(availableKeyIndex, 1);
-                busyKeyIds.add(availableKey.id);
+            if (idleAlternateIndex !== -1) {
+                // Scenario A: An idle alternate key is ready immediately!
+                const alternateKey = alternateCandidates[idleAlternateIndex];
+                busyKeyIds.add(alternateKey.id);
 
-                // 1. Mark old assignment as reassigned and abort HTTP fetch safely
-                stalled.reassigned = true;
-                try {
-                    stalled.abortController.abort();
-                } catch (e) {}
-
-                // 2. Release locks on old key and items
-                keyClaimLockRef.current.delete(stalled.keyId);
                 for (const item of stalledItems) {
                     taskClaimLockRef.current.delete(item.id);
                     const prevMeta = itemAssignmentMapRef.current.get(item.id);
@@ -1941,15 +1959,59 @@ const startBatchProcessing = async (
                     });
                 }
 
-                // 3. Update status message and notify user of smart load balancing
-                const elapsedSec = Math.round((now - stalled.startTime) / 1000);
-                setStatusMsg(`Dynamic balance: Reassigned slow task (${stalled.keyLabel} [${elapsedSec}s] ➔ ${availableKey.label})`);
+                setStatusMsg(`Alternating key: ${stalled.keyLabel} delayed (${elapsedSec}s > 6s) ➔ switched to ${alternateKey.label}`);
 
-                // 4. Dispatch immediately to the available faster worker
+                setItems(prev => prev.map(p => stalled.itemIds.includes(p.id) ? {
+                    ...p,
+                    assignedKeyId: alternateKey.id,
+                    progressMsg: `Alternating API key (delayed ${elapsedSec}s on ${stalled.keyLabel} ➔ switched to ${alternateKey.label})...`
+                } : p));
+
                 if (stalled.stage === 'category') {
-                    startCategoryBatchProcessing(stalledItems, availableKey);
+                    startCategoryBatchProcessing(stalledItems, alternateKey);
                 } else {
-                    startBatchProcessing(stalledItems, availableKey);
+                    startBatchProcessing(stalledItems, alternateKey);
+                }
+            } else if (alternateCandidates.length > 0) {
+                // Scenario B: Other keys exist but are currently busy.
+                // Reset item to pending, mark old key as failed for this item, and queue for next available worker.
+                for (const item of stalledItems) {
+                    taskClaimLockRef.current.delete(item.id);
+                    const prevMeta = itemAssignmentMapRef.current.get(item.id);
+                    itemAssignmentMapRef.current.set(item.id, {
+                        assignmentId: '',
+                        reassignmentsCount: (prevMeta?.reassignmentsCount || 0) + 1
+                    });
+                }
+
+                setItems(prev => prev.map(p => stalled.itemIds.includes(p.id) ? {
+                    ...p,
+                    status: 'pending',
+                    assignedKeyId: undefined,
+                    failedKeyIds: [...(p.failedKeyIds || []), stalled.keyId],
+                    progressMsg: `Alternating key (>6s delay on ${stalled.keyLabel}, waiting for next available worker)...`
+                } : p));
+
+                setStatusMsg(`API key ${stalled.keyLabel} took >6s. Alternating to next available key...`);
+            } else {
+                // Scenario C: Only 1 key configured in total.
+                // Reset connection and re-dispatch with fresh connection to unstick hanging socket.
+                for (const item of stalledItems) {
+                    taskClaimLockRef.current.delete(item.id);
+                }
+                const singleKey = validKeys.find(k => k.id === stalled.keyId) || validKeys[0];
+                if (singleKey) {
+                    setStatusMsg(`Exceeded 6s delay on ${stalled.keyLabel}. Refreshing connection...`);
+                    setItems(prev => prev.map(p => stalled.itemIds.includes(p.id) ? {
+                        ...p,
+                        progressMsg: `Refreshing connection (>6s delay on ${stalled.keyLabel})...`
+                    } : p));
+
+                    if (stalled.stage === 'category') {
+                        startCategoryBatchProcessing(stalledItems, singleKey);
+                    } else {
+                        startBatchProcessing(stalledItems, singleKey);
+                    }
                 }
             }
         }
@@ -2012,15 +2074,15 @@ const startBatchProcessing = async (
       return () => clearInterval(interval);
   }, [isProcessing]);
 
-  // Periodic outlier checker for dynamic load balancing during Central API processing
+  // Periodic 6-second timeout monitor for dynamic key alternation (both Local and Central modes)
   useEffect(() => {
-    if (!isProcessing || config.apiMode !== 'central') return;
+    if (!isProcessing) return;
 
     const monitorInterval = setInterval(() => {
       const now = Date.now();
       let hasStalled = false;
-      activeCentralAssignmentsRef.current.forEach(assignment => {
-        if (isCentralTaskStalled(assignment, now)) {
+      activeAssignmentsRef.current.forEach(assignment => {
+        if (!assignment.completed && !assignment.reassigned && (now - assignment.startTime >= MAX_KEY_RESPONSE_TIME_MS)) {
           hasStalled = true;
         }
       });
@@ -2028,10 +2090,10 @@ const startBatchProcessing = async (
       if (hasStalled) {
         setTick(t => t + 1);
       }
-    }, 1500);
+    }, 300);
 
     return () => clearInterval(monitorInterval);
-  }, [isProcessing, config.apiMode]);
+  }, [isProcessing]);
 
   // --- SAVE PROJECT ---
   const handleSaveProject = async () => {
@@ -2060,10 +2122,11 @@ const startBatchProcessing = async (
   const handleClear = async () => {
       if (window.confirm('Are you sure you want to clear all items and delete the saved project?')) {
           setIsProcessing(false);
-          activeCentralAssignmentsRef.current.forEach(a => {
+          activeAssignmentsRef.current.forEach(a => {
+              if (a.timeoutTimer) clearTimeout(a.timeoutTimer);
               try { a.abortController.abort(); } catch (e) {}
           });
-          activeCentralAssignmentsRef.current.clear();
+          activeAssignmentsRef.current.clear();
           setElapsedMs(0);
           sessionRequestCountRef.current = 0;
           localStorage.setItem('sessionReqCount', '0');
@@ -2086,10 +2149,11 @@ const startBatchProcessing = async (
 
       if (isProcessing) {
           setIsProcessing(false);
-          activeCentralAssignmentsRef.current.forEach(a => {
+          activeAssignmentsRef.current.forEach(a => {
+              if (a.timeoutTimer) clearTimeout(a.timeoutTimer);
               try { a.abortController.abort(); } catch (e) {}
           });
-          activeCentralAssignmentsRef.current.clear();
+          activeAssignmentsRef.current.clear();
           setStatusMsg("Processing paused.");
           return;
       }

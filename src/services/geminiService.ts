@@ -122,6 +122,7 @@ Return a strictly valid JSON array where each object contains:
       config: {
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
+        abortSignal: signal,
         responseSchema: {
           type: Type.ARRAY,
           items: {
@@ -207,6 +208,11 @@ Return a strictly valid JSON array where each object contains:
     return results;
 
   } catch (error: any) {
+    if (signal?.aborted || error?.name === 'AbortError' || error?.message?.includes('aborted')) {
+      const abortErr = new Error("Request aborted");
+      abortErr.name = "AbortError";
+      throw abortErr;
+    }
     console.error("Gemini API Error:", error);
     let msg = error.message || "Failed to generate metadata";
     let code = 0;

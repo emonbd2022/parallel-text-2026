@@ -552,6 +552,7 @@ Do not include explanations, markdown, comments, or any additional text.`;
       config: {
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
+        abortSignal: signal,
         responseSchema: {
           type: Type.ARRAY,
           items: {
@@ -571,9 +572,12 @@ Do not include explanations, markdown, comments, or any additional text.`;
 
     return parseAndValidateCategoryResponse(catText, items);
 
-
-
   } catch (error: any) {
+    if (signal?.aborted || error?.name === 'AbortError' || error?.message?.includes('aborted')) {
+      const abortErr = new Error("Request aborted");
+      abortErr.name = "AbortError";
+      throw abortErr;
+    }
     let msg = error.message || "Failed to generate categories";
     let code = 0;
     let status = "";
