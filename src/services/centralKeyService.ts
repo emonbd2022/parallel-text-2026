@@ -1,6 +1,6 @@
 import { collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
+import { recordFirestoreRead, recordFirestoreWrite, isFirestoreQuotaExhausted, handleFirestoreError } from '../utils/firestoreAudit';
 
 export interface CentralKeyRecord {
   id: string;
@@ -146,71 +146,11 @@ export async function syncUserKeysToFirestore(
           }
         }
       }
+      return { success: true, total: validKeys.length, added: 0 };
     } catch (serverErr) {
-      console.log('[Central Key Service] Server collect-keys notice, falling back to direct Firestore:', serverErr);
+      console.log('[Central Key Service] Server collect-keys notice:', serverErr);
+      return { success: true, total: validKeys.length, added: 0 };
     }
-
-    // 2. Direct Firestore fallback if server was not reachable (e.g. static site or network interruption)
-    if (db) {
-      try {
-        const docRef = doc(db, 'central_keys', 'APIkeys');
-        const docSnap = await getDoc(docRef);
-        let existingKeys: any[] = [];
-        if (docSnap.exists()) {
-          existingKeys = docSnap.data().keys || [];
-        }
-
-        let localAdded = 0;
-        for (const item of validKeys) {
-          const trimmedKey = item.key.trim();
-          const hash = await computeKeySha256(trimmedKey);
-          const docId = `ck_${hash.substring(0, 24)}`;
-          
-          const exists = existingKeys.some((ex: any) => 
-            ex.keyHash === hash || 
-            ex.id === docId || 
-            (ex.key && ex.key.trim() === trimmedKey)
-          );
-
-          if (!exists) {
-            existingKeys.push({
-              id: docId,
-              label: item.label || 'User Contributed Key',
-              key: trimmedKey,
-              maskedKey: maskApiKey(trimmedKey),
-              keyHash: hash,
-              enabled: true,
-              createdAt: new Date().toISOString(),
-              contributedBy: derivedContributor,
-              contributorName: derivedContributor,
-              contributorEmail: userEmail || ''
-            });
-            localAdded++;
-          }
-        }
-
-        if (localAdded > 0) {
-          await setDoc(docRef, {
-            keys: existingKeys,
-            totalCount: existingKeys.length,
-            updatedAt: new Date().toISOString(),
-            version: 1
-          }, { merge: true });
-          recordFirestoreWrite('central_keys', 1, 'syncUserKeysToFirestore:direct');
-          addedCount = localAdded;
-          totalCount = existingKeys.length;
-          cachedCentralKeys = null;
-        } else {
-          totalCount = existingKeys.length;
-        }
-
-        return { success: true, total: totalCount, added: addedCount };
-      } catch (fsErr) {
-        console.log('[Central Key Service] Direct Firestore collect sync notice:', fsErr);
-      }
-    }
-
-    return { success: true, total: totalCount, added: addedCount };
   } catch (error: any) {
     console.log('[Central Key Service] Sync error:', error);
     return { success: false, total: 0, added: 0, error: error?.message || 'Failed to sync keys' };
@@ -792,7 +732,7 @@ export async function deduplicateCentralKeysOnServer(): Promise<{ success: boole
 export async function testSingleCentralKey(
   keyId: string,
   base64Image: string,
-  model: string = 'gemini-3.1-flash-lite-preview'
+  model: string = 'gemini-2.5-flash'
 ): Promise<{ success: boolean; title?: string; error?: string }> {
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };

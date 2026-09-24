@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
   Key, 
   Upload, 
@@ -64,7 +65,8 @@ export const ApiKeyManager: React.FC<Props> = ({
   onShowToast,
   onRefreshCentralKeys
 }) => {
-  const { userData, user, setIsAuthModalOpen, centralModeEnabled } = useAuth();
+  const navigate = useNavigate();
+  const { userData, user, centralModeEnabled } = useAuth();
   const [label, setLabel] = useState('');
   const [keyVal, setKeyVal] = useState('');
   const [showInput, setShowInput] = useState(false);
@@ -132,8 +134,17 @@ export const ApiKeyManager: React.FC<Props> = ({
   // Derive estimated fallback if server stats are loading
   const localEstimatedLimits = calculateLocalCentralLimit(uniqueLocalKeysCount, isAdmin);
 
-  const loadUsageStats = async () => {
+  const loadUsageStats = async (force = false) => {
     try {
+      // Check client-side cache TTL (5 minutes) unless explicitly forced by user
+      const now = Date.now();
+      const lastFetchedMs = Number(sessionStorage.getItem('centralUsageLastFetched') || '0');
+      const USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+      if (!force && usageStats && (now - lastFetchedMs < USAGE_CACHE_TTL)) {
+        return;
+      }
+
       setIsLoadingUsage(true);
       const token = user ? await (user as any).getIdToken?.() : undefined;
       const rawLocalKeyStrings = sourceLocalKeys.map(k => k.key).filter(Boolean);
@@ -159,6 +170,7 @@ export const ApiKeyManager: React.FC<Props> = ({
         } catch (err) {}
         setUsageStats(stats);
         localStorage.setItem('centralUsageStats', JSON.stringify(stats));
+        sessionStorage.setItem('centralUsageLastFetched', String(now));
       }
     } catch (e) {
       console.warn('Could not fetch usage stats:', e);
@@ -168,9 +180,11 @@ export const ApiKeyManager: React.FC<Props> = ({
   };
 
   useEffect(() => {
-    loadUsageStats();
-    const interval = setInterval(loadUsageStats, 20000);
-    const handleForceUpdate = () => loadUsageStats();
+    // Initial load: uses cached stats if available and fresh
+    loadUsageStats(false);
+    
+    // Listen for events: local update (fires after processing an image) needs 0 network calls!
+    const handleForceUpdate = () => loadUsageStats(true);
     const handleLocalUpdate = () => {
         try {
             const saved = localStorage.getItem('centralUsageStats');
@@ -180,7 +194,6 @@ export const ApiKeyManager: React.FC<Props> = ({
     window.addEventListener('central-usage-update', handleForceUpdate);
     window.addEventListener('central-usage-update-local', handleLocalUpdate);
     return () => {
-      clearInterval(interval);
       window.removeEventListener('central-usage-update', handleForceUpdate);
       window.removeEventListener('central-usage-update-local', handleLocalUpdate);
     };
@@ -209,7 +222,7 @@ export const ApiKeyManager: React.FC<Props> = ({
       }
       if (!user && !userData) {
         if (onShowToast) onShowToast('Login Required', 'You must log in to access the Central API pool.');
-        setIsAuthModalOpen(true);
+        navigate('/login');
         return;
       }
       if (!isEligibleForCentral) {
@@ -474,7 +487,7 @@ export const ApiKeyManager: React.FC<Props> = ({
             {!user && !userData ? (
               <button
                 type="button"
-                onClick={() => setIsAuthModalOpen(true)}
+                onClick={() => navigate('/login')}
                 className="text-purple-400 hover:text-purple-300 font-semibold flex items-center gap-1 underline cursor-pointer"
               >
                 <LogIn className="w-3.5 h-3.5" /> Login Required
@@ -514,7 +527,7 @@ export const ApiKeyManager: React.FC<Props> = ({
                   type="button"
                   onClick={() => {
                     if (onRefreshCentralKeys) onRefreshCentralKeys();
-                    loadUsageStats();
+                    loadUsageStats(true);
                   }}
                   className="p-2 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 rounded-xl text-purple-300 transition-colors shrink-0 cursor-pointer"
                   title="Refresh Central Pool & Usage"

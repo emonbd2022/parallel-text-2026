@@ -55,3 +55,39 @@ export function resetFirestoreAuditStats() {
   auditState.totalReads = 0;
   auditState.totalWrites = 0;
 }
+
+const QUOTA_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour cooldown when free-tier daily quota is hit
+
+export function isFirestoreQuotaExhausted(): boolean {
+  try {
+    const ts = typeof window !== 'undefined' ? localStorage.getItem('firestore_quota_exhausted') : null;
+    if (!ts) return false;
+    const elapsed = Date.now() - parseInt(ts, 10);
+    if (elapsed < QUOTA_COOLDOWN_MS) return true;
+    localStorage.removeItem('firestore_quota_exhausted');
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function markFirestoreQuotaExhausted() {
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('firestore_quota_exhausted', Date.now().toString());
+    }
+  } catch {}
+}
+
+export function handleFirestoreError(err: any, context: string = 'operation'): boolean {
+  const isQuota = err?.code === 'resource-exhausted' || 
+                  err?.message?.includes('Quota limit exceeded') || 
+                  err?.message?.includes('quota metric') ||
+                  err?.message?.includes('resource-exhausted');
+  if (isQuota) {
+    markFirestoreQuotaExhausted();
+    console.warn(`[Firestore] Daily quota limit reached during ${context}. Gracefully switching to local mode.`);
+    return true;
+  }
+  return false;
+}

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
+import { GoogleGenAI } from '@google/genai';
 import { 
   X, 
   Upload, 
@@ -184,6 +185,45 @@ export const LocalDeadApiModal: React.FC<LocalDeadApiModalProps> = ({
   const testSingleLocalKeyApi = async (rawKey: string, base64Img: string, model: string) => {
     const startTime = performance.now();
     try {
+      const cleanKey = (rawKey || '').trim();
+
+      // If key is a standard local Google API key (starts with AIza or AQ.), execute directly in client browser!
+      // This bypasses Vercel entirely: 0 Serverless Function calls, 0 Server CPU, 0 bandwidth.
+      if (cleanKey.startsWith('AIza') || cleanKey.startsWith('AQ.')) {
+        const ai = new GoogleGenAI({ apiKey: cleanKey });
+        const promptParts: any[] = [];
+        if (base64Img && typeof base64Img === 'string' && base64Img.includes(',')) {
+          const base64Data = base64Img.split(',')[1];
+          let mimeType = base64Img.substring(base64Img.indexOf(':') + 1, base64Img.indexOf(';')) || 'image/jpeg';
+          if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(mimeType.toLowerCase())) {
+            mimeType = 'image/jpeg';
+          }
+          promptParts.push({ inlineData: { mimeType, data: base64Data } });
+        } else if (base64Img && typeof base64Img === 'string' && base64Img.length > 50) {
+          promptParts.push({ inlineData: { mimeType: 'image/jpeg', data: base64Img } });
+        }
+
+        if (promptParts.length > 0) {
+          promptParts.push({ text: "Analyze this image and generate a 1-sentence descriptive stock photo title." });
+        } else {
+          promptParts.push({ text: "Reply with the word 'OK' to confirm you are online and functional." });
+        }
+
+        const targetModel = model || 'gemini-3.1-flash-lite-preview';
+        const response = await ai.models.generateContent({
+          model: targetModel,
+          contents: promptParts,
+        });
+
+        const title = response?.text ? response.text.trim() : (response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '');
+        const latencyMs = Math.round(performance.now() - startTime);
+        if (!title) {
+          return { success: false, error: "Model returned empty response.", latencyMs };
+        }
+        return { success: true, title, latencyMs };
+      }
+
+      // Fallback for non-standard or virtual node keys
       const res = await fetch('/api/admin/keys/test-single', {
         method: 'POST',
         headers: {

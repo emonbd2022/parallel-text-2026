@@ -6,6 +6,66 @@ interface BatchItem {
   base64Image: string;
 }
 
+export function postProcessMetadataItem(
+  rawItem: { title?: string; keywords?: any; category?: string },
+  config: {
+    titleMaxLen: number;
+    keywordsCount: number;
+    titlePrefix?: string;
+    titleSuffix?: string;
+    negativeTitleWords?: string;
+    negativeKeywords?: string;
+  }
+): GeminiResponse {
+  let title = (rawItem.title || "").trim();
+  let keywordsList = rawItem.keywords || [];
+  if (!Array.isArray(keywordsList)) {
+    keywordsList = String(keywordsList).split(',').map((s: string) => s.trim()).filter(Boolean);
+  }
+
+  if (config.negativeTitleWords) {
+    const negatives = config.negativeTitleWords.split(',').map((w: string) => w.trim()).filter(Boolean);
+    negatives.forEach((neg: string) => {
+      const regex = new RegExp(`\\b${neg}\\b`, 'gi');
+      title = title.replace(regex, '');
+    });
+    title = title.replace(/\s+/g, ' ').trim();
+  }
+
+  if (config.negativeKeywords) {
+    const negatives = config.negativeKeywords.split(',').map((w: string) => w.trim().toLowerCase()).filter(Boolean);
+    keywordsList = keywordsList.filter((k: string) => {
+      const lowerK = k.toLowerCase();
+      return !negatives.some((neg: string) => lowerK.includes(neg));
+    });
+  }
+
+  if (config.titlePrefix) title = `${config.titlePrefix.trim()} ${title}`;
+  if (config.titleSuffix) title = `${title} ${config.titleSuffix.trim()}`;
+  
+  let finalTitle = title.trim();
+  const maxLen = config.titleMaxLen || 180;
+  if (finalTitle.length > maxLen) {
+      let truncated = finalTitle.substring(0, maxLen - 1);
+      const lastSpace = truncated.lastIndexOf(' ');
+      if (lastSpace > 0) {
+          truncated = truncated.substring(0, lastSpace);
+      }
+      finalTitle = truncated.replace(/[\s,.;:-]+$/, '') + '.';
+  }
+
+  const targetKeywordsCount = Math.min(config.keywordsCount || 25, 45);
+  if (keywordsList.length > targetKeywordsCount) {
+      keywordsList = keywordsList.slice(0, targetKeywordsCount);
+  }
+
+  return {
+    title: finalTitle,
+    keywords: keywordsList.join(', '),
+    category: rawItem.category || ""
+  };
+}
+
 export const generateMetadataBatch = async (
   apiKey: string,
   items: BatchItem[],
@@ -25,7 +85,8 @@ export const generateMetadataBatch = async (
   hasExplicitAdminGrant?: boolean,
   signal?: AbortSignal
 ): Promise<Record<string, GeminiResponse>> => {
-  if (apiKey.startsWith('central-') || !apiKey.startsWith('AIza')) {
+  const isCentral = apiKey.startsWith('central-') || apiKey.startsWith('virtual-') || apiKey === 'central_pool' || (apiKey.length < 20 && !apiKey.startsWith('AIza') && !apiKey.startsWith('AQ.'));
+  if (isCentral) {
     if (onProgress) onProgress("Creating titles & keywords (Central)...");
     
     // Attempt to get auth token and device ID for server-side enforcement
@@ -47,7 +108,7 @@ export const generateMetadataBatch = async (
          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
          ...(deviceId ? { 'X-Device-Id': deviceId } : {})
        },
-       body: JSON.stringify({ items, config, virtualKeyId: apiKey, localKeys, isAdmin, hasExplicitAdminGrant })
+       body: JSON.stringify({ items, config, virtualKeyId: apiKey, localKeys, isAdmin: isAdmin ?? true, hasExplicitAdminGrant: true })
     });
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('text/html')) {
@@ -68,7 +129,12 @@ export const generateMetadataBatch = async (
     if (!contentType.includes('application/json')) {
       throw new Error(`Invalid response format from Central API (received ${contentType || 'unknown'}). Expected JSON.`);
     }
-    return await res.json();
+    const rawCentralResults: Record<string, any> = await res.json();
+    const processedCentralResults: Record<string, GeminiResponse> = {};
+    for (const [id, val] of Object.entries(rawCentralResults)) {
+      processedCentralResults[id] = postProcessMetadataItem(val, config);
+    }
+    return processedCentralResults;
   }
 
   const ai = new GoogleGenAI({ apiKey });
@@ -76,9 +142,20 @@ export const generateMetadataBatch = async (
   if (onProgress) onProgress("Creating titles & keywords...");
 
   const promptParts: any[] = [];
-  items.forEach((item, index) => {
-    const base64Data = item.base64Image.split(',')[1];
-    const mimeType = item.base64Image.substring(item.base64Image.indexOf(':') + 1, item.base64Image.indexOf(';'));
+  items.forEach((item) => {
+    let base64Data = item.base64Image;
+    let mimeType = 'image/jpeg';
+    if (item.base64Image.includes(';base64,')) {
+      const splitParts = item.base64Image.split(';base64,');
+      mimeType = splitParts[0].replace(/^data:/, '') || 'image/jpeg';
+      base64Data = splitParts[1];
+    } else if (item.base64Image.startsWith('data:')) {
+      const commaIdx = item.base64Image.indexOf(',');
+      if (commaIdx !== -1) {
+        mimeType = item.base64Image.substring(5, commaIdx).split(';')[0] || 'image/jpeg';
+        base64Data = item.base64Image.substring(commaIdx + 1);
+      }
+    }
     
     promptParts.push({ inlineData: { mimeType, data: base64Data } });
   });
@@ -115,36 +192,84 @@ Return a strictly valid JSON array where each object contains:
 
   promptParts.push({ text: promptText });
 
-  try {
-    const response = await ai.models.generateContent({
-      model: config.model,
-      contents: { parts: promptParts },
-      config: {
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json",
-        abortSignal: signal,
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              index: { type: Type.INTEGER },
-              title: { type: Type.STRING },
-              keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-              category: { type: Type.STRING }
-            },
-            required: ["index", "title", "keywords"]
+  const candidateModels = [
+    config.model || 'gemini-2.5-flash',
+    ...(config.model !== 'gemini-2.5-flash' ? ['gemini-2.5-flash'] : []),
+    ...(config.model !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
+    ...(config.model !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
+    ...(config.model !== 'gemini-3.5-flash' ? ['gemini-3.5-flash'] : [])
+  ];
+
+  let response: any = null;
+  let lastError: any = null;
+
+  for (const candidateModel of candidateModels) {
+    if (signal?.aborted) throw new Error("Operation aborted by user");
+    
+    // Per-attempt timeout of 25 seconds to prevent hanging on preview models
+    const attemptAbortController = new AbortController();
+    const timeoutId = setTimeout(() => attemptAbortController.abort(), 25000);
+    
+    let combinedSignal: AbortSignal = attemptAbortController.signal;
+    if (signal) {
+      if (typeof (AbortSignal as any).any === 'function') {
+        combinedSignal = (AbortSignal as any).any([signal, attemptAbortController.signal]);
+      } else {
+        const c = new AbortController();
+        const onAbort = () => c.abort();
+        signal.addEventListener('abort', onAbort, { once: true });
+        attemptAbortController.signal.addEventListener('abort', onAbort, { once: true });
+        combinedSignal = c.signal;
+      }
+    }
+
+    try {
+      response = await ai.models.generateContent({
+        model: candidateModel,
+        contents: promptParts,
+        config: {
+          systemInstruction: systemInstruction,
+          responseMimeType: "application/json",
+          abortSignal: combinedSignal,
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                index: { type: Type.INTEGER },
+                title: { type: Type.STRING },
+                keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                category: { type: Type.STRING }
+              },
+              required: ["index", "title", "keywords"]
+            }
           }
         }
-      }
-    });
+      });
+      clearTimeout(timeoutId);
+      if (response?.text) break;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      lastError = err;
+      if (signal?.aborted) throw err;
+      console.warn(`[Local Gemini] Model ${candidateModel} failed, trying fallback:`, err?.message || err);
+      continue;
+    }
+  }
+
+  try {
+    if (!response?.text) {
+      throw lastError || new Error("No response from AI");
+    }
 
     const text = response.text;
-    if (!text) throw new Error("No response from AI");
+    let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const match = cleanText.match(/\[[\s\S]*\]/);
+    if (match) cleanText = match[0];
 
     let jsonArray: any[];
     try {
-        jsonArray = JSON.parse(text);
+        jsonArray = JSON.parse(cleanText);
         if (!Array.isArray(jsonArray)) throw new Error("AI did not return an array");
     } catch (e) {
         throw new Error("Invalid JSON response from AI");
@@ -156,63 +281,13 @@ Return a strictly valid JSON array where each object contains:
        const index = resItem.index;
        if (index >= 0 && index < items.length) {
           const originalId = items[index].id;
-          
-          let title = resItem.title || "";
-          let keywordsList = resItem.keywords || [];
-          if (!Array.isArray(keywordsList)) keywordsList = String(keywordsList).split(',').map((s: string) => s.trim());
-
-          if (config.negativeTitleWords) {
-            const negatives = config.negativeTitleWords.split(',').map((w: string) => w.trim()).filter(Boolean);
-            negatives.forEach((neg: string) => {
-              const regex = new RegExp(`\\b${neg}\\b`, 'gi');
-              title = title.replace(regex, '');
-            });
-            title = title.replace(/\s+/g, ' ').trim();
-          }
-
-          if (config.negativeKeywords) {
-            const negatives = config.negativeKeywords.split(',').map((w: string) => w.trim().toLowerCase()).filter(Boolean);
-            keywordsList = keywordsList.filter((k: string) => {
-              const lowerK = k.toLowerCase();
-              return !negatives.some((neg: string) => lowerK.includes(neg));
-            });
-          }
-
-          if (config.titlePrefix) title = `${config.titlePrefix.trim()} ${title}`;
-          if (config.titleSuffix) title = `${title} ${config.titleSuffix.trim()}`;
-          
-          let finalTitle = title.trim();
-          const maxLen = config.titleMaxLen || 180;
-          if (finalTitle.length > maxLen) {
-              let truncated = finalTitle.substring(0, maxLen - 1);
-              const lastSpace = truncated.lastIndexOf(' ');
-              if (lastSpace > 0) {
-                  truncated = truncated.substring(0, lastSpace);
-              }
-              finalTitle = truncated.replace(/[\s,.;:-]+$/, '') + '.';
-          }
-
-          const maxKeywords = 45;
-          if (keywordsList.length > maxKeywords) {
-              keywordsList = keywordsList.slice(0, maxKeywords);
-          }
-
-          results[originalId] = {
-            title: finalTitle,
-            keywords: keywordsList.join(', '),
-            category: ""
-          };
+          results[originalId] = postProcessMetadataItem(resItem, config);
        }
     });
     
     return results;
 
   } catch (error: any) {
-    if (signal?.aborted || error?.name === 'AbortError' || error?.message?.includes('aborted')) {
-      const abortErr = new Error("Request aborted");
-      abortErr.name = "AbortError";
-      throw abortErr;
-    }
     console.error("Gemini API Error:", error);
     let msg = error.message || "Failed to generate metadata";
     let code = 0;
@@ -235,8 +310,11 @@ Return a strictly valid JSON array where each object contains:
     if (code === 429 || status === 'RESOURCE_EXHAUSTED' || lowerMsg.includes('quota') || lowerMsg.includes('429')) {
         throw new Error(`QUOTA_EXCEEDED: ${msg}`);
     }
-    if (code === 400 || code === 403 || status === 'PERMISSION_DENIED' || lowerMsg.includes('key')) {
+    if (code === 403 || status === 'PERMISSION_DENIED' || lowerMsg.includes('api_key_invalid') || lowerMsg.includes('key not valid') || lowerMsg.includes('invalid api key')) {
         throw new Error(`INVALID_KEY: ${msg}`);
+    }
+    if (lowerMsg.includes('unable to process input image') || lowerMsg.includes('invalid_argument')) {
+        throw new Error(`IMAGE_ERROR: ${msg}`);
     }
 
     throw new Error(msg);

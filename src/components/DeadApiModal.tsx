@@ -194,7 +194,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
     }));
 
     setTestResults(initialResults);
-    addLog(`Starting Dead API Scan across ${centralKeys.length} Central API keys.`, 'info');
+    addLog(`Starting Sequential Dead API Scan across ${centralKeys.length} Central API keys.`, 'info');
     addLog(`Multi-Model Waterfall: Try 1 (${getModelDisplayName(getAttemptModel(selectedModel, 1))}) -> Try 2 (${getModelDisplayName(getAttemptModel(selectedModel, 2))}) -> Try 3 (${getModelDisplayName(getAttemptModel(selectedModel, 3))}).`, 'info');
 
     let healthyCount = 0;
@@ -242,7 +242,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
           if (testRes.success && testRes.title) {
             passed = true;
             generatedTitle = testRes.title;
-            addLog(`  ✓ Attempt ${attempt}/3 PASSED with ${getModelDisplayName(currentModelForAttempt)}: "${generatedTitle.substring(0, 55)}..."`, 'success');
+            addLog(`  ✓ Attempt ${attempt}/3 PASSED for ${currentKey.label} with ${getModelDisplayName(currentModelForAttempt)}`, 'success');
             break;
           } else {
             lastErrorMessage = testRes.error || 'Failed to generate title';
@@ -250,13 +250,28 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
             if (lastErrorMessage.includes('429') || lastErrorMessage.includes('RESOURCE_EXHAUSTED')) {
               hadRateLimit = true;
             }
+
+            // Only abort early if key is literally invalid / revoked in GCP or undecryptable
+            if (
+              lastErrorMessage.includes('API key not valid') || 
+              lastErrorMessage.includes('API_KEY_INVALID') ||
+              lastErrorMessage.includes('missing API key') ||
+              lastErrorMessage.includes('Invalid or missing') ||
+              lastErrorMessage.includes('Decryption failed') ||
+              lastErrorMessage.includes('decrypted') ||
+              lastErrorMessage.includes('re-import') ||
+              lastErrorMessage.includes('not found in registry')
+            ) {
+              addLog(`  ✗ Attempt ${attempt}/3 FATAL: API key cannot be decrypted, is missing, or is invalid in Google Cloud.`, 'error');
+              break;
+            }
+
             addLog(`  ✗ Attempt ${attempt}/3 FAILED [${getModelDisplayName(currentModelForAttempt)}]: ${cleanErr}`, 'warn');
 
             if (attempt < 3 && !stopRequestedRef.current) {
               const nextAttemptModel = getAttemptModel(selectedModel, attempt + 1);
               addLog(`  ⏳ Waiting 5s cooldown before starting Attempt ${attempt + 1}/3 with alternate model (${getModelDisplayName(nextAttemptModel)})...`, 'warn');
               
-              // 5 second cooldown countdown
               for (let s = 5; s >= 1; s--) {
                 if (stopRequestedRef.current) break;
                 while (isPausedRef.current && !stopRequestedRef.current) {
@@ -293,6 +308,8 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
         }
       }
 
+      if (stopRequestedRef.current) break;
+
       if (passed) {
         healthyCount++;
         setTestResults(prev => prev.map((r, idx) => idx === i ? {
@@ -306,7 +323,6 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
         const finalCleanErr = formatScanErrorMessage(lastErrorMessage);
         addLog(`  🚨 KEY MARKED DEAD (Failed all 3 model tiers). Deactivating "${currentKey.label}" and storing in database...`, 'error');
         
-        // Mark dead key as DEAD (deactivated and stored, not deleted)
         try {
           await markSingleCentralKeyDead(currentKey.id, finalCleanErr || 'Failed 3/3 Gemini API multi-model verification attempts');
           addLog(`  🏷️ Key "${currentKey.label}" labeled as DEAD & disabled (kept in database to prevent login re-add).`, 'error');
@@ -323,16 +339,25 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
         } : r));
       }
 
-      // Safe pacing between separate keys to prevent rate limit cascade
-      const keyCooldown = hadRateLimit ? 3500 : 1500;
+      // Safe pacing delay between separate keys to prevent rate limit cascades
+      const isFatal = lastErrorMessage.includes('Decryption failed') || 
+                      lastErrorMessage.includes('decrypted') || 
+                      lastErrorMessage.includes('re-import') || 
+                      lastErrorMessage.includes('API key not valid') || 
+                      lastErrorMessage.includes('API_KEY_INVALID');
+      const keyCooldown = isFatal ? 150 : (hadRateLimit ? 3500 : 1200);
       await new Promise(r => setTimeout(r, keyCooldown));
+    }
+
+    if (!stopRequestedRef.current) {
+       addLog(`🏁 Scan cycle finished. Verified all ${centralKeys.length} keys (Active: ${healthyCount}, Dead Deactivated: ${deadCount}).`, 'success');
     }
 
     setIsScanning(false);
     setScanFinished(true);
     setCurrentIndex(-1);
     setCurrentAttempt(0);
-    addLog(`🏁 Scan cycle finished. Verified all ${centralKeys.length} keys (Active: ${healthyCount}, Dead Deactivated: ${deadCount}).`, 'success');
+    setCooldownCountdown(null);
     onScanComplete();
   };
 
@@ -345,10 +370,10 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
 
   const healthyCount = testResults.filter(r => r.status === 'healthy').length;
   const deadCount = testResults.filter(r => r.status === 'dead').length;
-  const remainingCount = testResults.filter(r => r.status === 'pending').length;
+    const remainingCount = testResults.filter(r => r.status === 'pending').length;
   const currentKeyItem = currentIndex >= 0 && currentIndex < centralKeys.length ? centralKeys[currentIndex] : null;
-  const progressPercent = testResults.length > 0 && currentIndex >= 0 
-    ? Math.round(((currentIndex + (scanFinished ? 1 : 0)) / testResults.length) * 100) 
+  const progressPercent = testResults.length > 0
+    ? Math.round(((healthyCount + deadCount) / testResults.length) * 100)
     : (scanFinished ? 100 : 0);
 
   return (
@@ -583,7 +608,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
               </div>
 
               {/* Active Testing Card */}
-              {isScanning && currentKeyItem && (
+{isScanning && currentKeyItem && (
                 <div className="p-4 bg-slate-950/90 border border-purple-500/40 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg shadow-purple-500/5">
                   <div className="flex items-center gap-3">
                     <Loader2 className="w-5 h-5 text-purple-400 animate-spin shrink-0" />
@@ -726,7 +751,7 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
             ) : isScanning ? (
               <span className="text-purple-300 flex items-center gap-1.5">
                 <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
-                Scanning from first to last API ({currentIndex + 1}/{centralKeys.length})...
+                Scanning from first to last API...
               </span>
             ) : (
               <span>Ready to test {centralKeys.length} Central API keys sequentially.</span>

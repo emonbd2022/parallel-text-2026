@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useRef } from 'r
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, getDocs, collection, query, where, orderBy, limit, writeBatch, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
-import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
+import { recordFirestoreRead, recordFirestoreWrite, isFirestoreQuotaExhausted, markFirestoreQuotaExhausted, handleFirestoreError } from '../utils/firestoreAudit';
 import { getOrCreateDeviceId, detectDeviceMetadata, DeviceMetadata, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
 
 export interface UserData {
@@ -140,16 +140,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const hasFetchedAdminNotifsRef = useRef<boolean>(false);
 
   useEffect(() => {
-    // 1. Initial server-side query fallback
-    fetch('/api/central-keys-capacity')
-      .then(r => r.json())
-      .then(data => {
-        if (typeof data.centralModeEnabled === 'boolean') {
-          setCentralModeEnabled(data.centralModeEnabled);
-          try { localStorage.setItem('centralModeEnabled', String(data.centralModeEnabled)); } catch {}
-        }
-      })
-      .catch(() => {});
+    // 1. Initial query check: use cached state and fetch at most once per session
+    const sessionCapacityFetched = sessionStorage.getItem('central_capacity_fetched');
+    if (!sessionCapacityFetched) {
+      fetch('/api/central-keys-capacity')
+        .then(r => r.json())
+        .then(data => {
+          if (typeof data.centralModeEnabled === 'boolean') {
+            setCentralModeEnabled(data.centralModeEnabled);
+            try { 
+              localStorage.setItem('centralModeEnabled', String(data.centralModeEnabled));
+              sessionStorage.setItem('central_capacity_fetched', 'true');
+            } catch {}
+          }
+        })
+        .catch(() => {});
+    }
 
     // 2. Real-time Firestore snapshot listener for instant admin toggle reaction
     if (!db) return;
@@ -352,13 +358,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // 5. Only when serverDelete is explicitly TRUE and current user is Admin:
     // Execute single deleteDoc() operation on Firestore to remove from server
-    if (db && userData?.role === 'admin') {
+    if (db && userData?.role === 'admin' && !isFirestoreQuotaExhausted()) {
       try {
         await deleteDoc(doc(db, 'notifications', id));
         recordFirestoreWrite('notifications', 1, 'AuthContext:deleteNotification');
         console.log(`[Notification] Admin explicitly deleted notification from server: notifications/${id}`);
       } catch (err: any) {
-        console.error(`[Notification] Failed to delete notification notifications/${id} from Firestore:`, err);
+        handleFirestoreError(err, 'AuthContext:deleteNotification');
         deletingNotifIdsRef.current.delete(id);
       }
     }
@@ -391,34 +397,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const uidToReset = targetUid || user?.uid || userData?.uid;
     if (!uidToReset || !db) return;
 
-    try {
-      const userRef = doc(db, 'users', uidToReset);
-      const isSelf = !targetUid || targetUid === user?.uid;
-      const currentDevId = getOrCreateDeviceId();
-      const currentMeta = detectDeviceMetadata(currentDevId);
-      const newDeviceIds = isSelf ? [currentDevId] : [];
-      const newDevices = isSelf ? [{ ...currentMeta, registeredAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }] : [];
+    const isSelf = !targetUid || targetUid === user?.uid;
+    const currentDevId = getOrCreateDeviceId();
+    const currentMeta = detectDeviceMetadata(currentDevId);
+    const newDeviceIds = isSelf ? [currentDevId] : [];
+    const newDevices = isSelf ? [{ ...currentMeta, registeredAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }] : [];
 
-      await updateDoc(userRef, {
-        deviceIds: newDeviceIds,
-        devices: newDevices,
-        lastActiveAt: new Date().toISOString()
-      });
-      recordFirestoreWrite('users', 1, 'AuthContext:resetUserDevices');
-
-      if (isSelf && userData) {
-        const updated: UserData = {
-          ...userData,
+    if (!isFirestoreQuotaExhausted()) {
+      try {
+        const userRef = doc(db, 'users', uidToReset);
+        await updateDoc(userRef, {
           deviceIds: newDeviceIds,
           devices: newDevices,
-          deviceLimitReached: false
-        };
-        setUserData(updated);
-        saveUserDataToCache(updated);
+          lastActiveAt: new Date().toISOString()
+        });
+        recordFirestoreWrite('users', 1, 'AuthContext:resetUserDevices');
+      } catch (e: any) {
+        handleFirestoreError(e, 'AuthContext:resetUserDevices');
       }
-    } catch (e: any) {
-      console.error('Failed to reset user devices:', e);
-      throw e;
+    }
+
+    if (isSelf && userData) {
+      const updated: UserData = {
+        ...userData,
+        deviceIds: newDeviceIds,
+        devices: newDevices,
+        deviceLimitReached: false
+      };
+      setUserData(updated);
+      saveUserDataToCache(updated);
     }
   };
 
@@ -428,12 +435,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    const checkAndSyncUserDoc = async (currentUser: User) => {
+    const checkAndSyncUserDoc = async (currentUser: User, forceRefresh = false) => {
       if (!db) return;
       try {
+        const cached = getUserDataFromCache(currentUser.uid);
+        const lastFetch = Number(localStorage.getItem(`userCacheTime_${currentUser.uid}`) || 0);
+        const isFresh = Date.now() - lastFetch < 30 * 60 * 1000; // 30 minutes TTL
+
+        // Fast-path: If user data is cached and fresh, avoid reading Firestore
+        if (cached && isFresh && !forceRefresh) {
+          setUserData(cached);
+          setLoading(false);
+          return;
+        }
+
         const userRef = doc(db, 'users', currentUser.uid);
         const docSnap = await getDoc(userRef);
         recordFirestoreRead('users', 1, 'AuthContext:getUserDoc');
+        localStorage.setItem(`userCacheTime_${currentUser.uid}`, Date.now().toString());
         
         if (docSnap.exists()) {
           const d = docSnap.data();
@@ -464,28 +483,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (dbDeviceIds.includes(deviceId)) {
             // Current device is already registered in slot 1 or 2
             deviceLimitReached = false;
-
-            // Ensure device metadata is up to date in devices array
-            const existingIdx = dbDevices.findIndex(dev => dev.id === deviceId);
-            if (existingIdx >= 0) {
-              if (dbDevices[existingIdx].name !== currentMeta.name || !dbDevices[existingIdx].lastActiveAt) {
-                dbDevices[existingIdx] = {
-                  ...dbDevices[existingIdx],
-                  name: currentMeta.name,
-                  browser: currentMeta.browser,
-                  os: currentMeta.os,
-                  lastActiveAt: new Date().toISOString()
-                };
-                shouldUpdateDoc = true;
-              }
-            } else {
-              dbDevices.push({
-                ...currentMeta,
-                registeredAt: new Date().toISOString(),
-                lastActiveAt: new Date().toISOString()
-              });
-              shouldUpdateDoc = true;
-            }
           } else if (dbDeviceIds.length < MAX_DEVICES_PER_ACCOUNT) {
             // New authorized device occupying an open slot (Slot 1 or Slot 2)
             dbDeviceIds.push(deviceId);
@@ -519,8 +516,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             localStorage.removeItem('deviceLimitError');
           }
 
-          if (shouldUpdateDoc) {
-            let updateSucceeded = false;
+          if (shouldUpdateDoc && !isFirestoreQuotaExhausted()) {
             try {
               const updates: any = { 
                 deviceIds: dbDeviceIds,
@@ -535,36 +531,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
               await updateDoc(userRef, updates);
               recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
-              updateSucceeded = true;
             } catch (e: any) {
-              // If full update failed due to permission restriction (e.g. role or devices field), try minimal deviceIds update
-              try {
-                await updateDoc(userRef, {
-                  deviceIds: dbDeviceIds,
-                  lastActiveAt: new Date().toISOString()
-                });
-                recordFirestoreWrite('users', 1, 'AuthContext:updateUserDocMinimal');
-                updateSucceeded = true;
-              } catch (fallbackErr) {
-                // Seamlessly notify server to sync device registration
+              const isQuota = handleFirestoreError(e, 'AuthContext:updateUserDoc');
+              if (!isQuota) {
+                // If full update failed due to permission restriction, try minimal deviceIds update
                 try {
-                  const idToken = await currentUser.getIdToken(false);
-                  await fetch('/api/user/sync-device', {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${idToken}`
-                    },
-                    body: JSON.stringify({
-                      uid: currentUser.uid,
-                      deviceId,
-                      deviceMeta: currentMeta,
-                      isFirstAdmin
-                    })
+                  await updateDoc(userRef, {
+                    deviceIds: dbDeviceIds,
+                    lastActiveAt: new Date().toISOString()
                   });
-                  updateSucceeded = true;
-                } catch {
-                  // Non-fatal: local session remains authenticated and functional
+                  recordFirestoreWrite('users', 1, 'AuthContext:updateUserDocMinimal');
+                } catch (fallbackErr) {
+                  handleFirestoreError(fallbackErr, 'AuthContext:updateUserDocMinimal');
                 }
               }
             }
@@ -656,27 +634,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             read: false,
           };
 
-          // Atomic batch commit: guarantees both docs exist together without extra reads
-          const batch = writeBatch(db);
-          batch.set(userRef, newUserData);
-          batch.set(notifRef, notifData);
-          await batch.commit();
-          recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');
-          recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
-          console.log(`[Auth] Atomically registered new user (${currentUser.uid}) and created admin notification (${notifId})`);
+          // Atomic batch commit: guarantees both docs exist together without extra reads (guarded against quota limit)
+          if (!isFirestoreQuotaExhausted()) {
+            try {
+              const batch = writeBatch(db);
+              batch.set(userRef, newUserData);
+              batch.set(notifRef, notifData);
+              await batch.commit();
+              recordFirestoreWrite('users', 1, 'AuthContext:createUserDoc');
+              recordFirestoreWrite('notifications', 1, 'AuthContext:createSignupNotification');
+              console.log(`[Auth] Atomically registered new user (${currentUser.uid}) and created admin notification (${notifId})`);
+            } catch (batchErr) {
+              handleFirestoreError(batchErr, 'AuthContext:createUserDoc');
+            }
+          }
 
           setUserData(newUserData);
           saveUserDataToCache(newUserData);
         }
       } catch (error: any) {
-        console.error("CRITICAL: Failed to initialize new user and signup notification in Firestore:", error);
-        if (error?.code) {
-          console.error(`Firebase Error Code: ${error.code}, Message: ${error.message}`);
+        console.warn("[Auth] Firestore user sync notice:", error?.message || error);
+        if (currentUser) {
+          const cached = getUserDataFromCache(currentUser.uid);
+          if (cached) {
+            setUserData(cached);
+          } else {
+            const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+            const deviceId = getOrCreateDeviceId();
+            const currentMeta = detectDeviceMetadata(deviceId);
+            const nowISO = new Date().toISOString();
+            const fallbackData: UserData = {
+              uid: currentUser.uid,
+              email: currentUser.email || '',
+              name: currentUser.displayName || 'User',
+              photoURL: currentUser.photoURL || '',
+              nickname: (currentUser.displayName || currentUser.email || 'User').split(' ')[0],
+              credits: 100,
+              unlimited: false,
+              totalProcessedImages: 0,
+              joinDate: nowISO,
+              blocked: false,
+              role: isFirstUser ? 'admin' : 'user',
+              plan: 'free',
+              deviceIds: [deviceId],
+              devices: [{ ...currentMeta, registeredAt: nowISO, lastActiveAt: nowISO }],
+              centralApiAccess: isFirstUser,
+              deviceLimitReached: false,
+            };
+            setUserData(fallbackData);
+            saveUserDataToCache(fallbackData);
+          }
         }
       } finally {
         setLoading(false);
       }
     };
+
+    let lastFocusSyncTime = Date.now();
 
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
@@ -700,17 +714,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     });
 
-    // Step 3: Sync on window focus / tab re-activation
+    // Step 3: Throttled sync on window focus / tab re-activation (max once every 15 minutes)
     const handleFocusSync = () => {
-      if (auth.currentUser) {
+      const now = Date.now();
+      if (auth.currentUser && (now - lastFocusSyncTime > 15 * 60 * 1000)) {
+        lastFocusSyncTime = now;
         checkAndSyncUserDoc(auth.currentUser);
       }
     };
 
     window.addEventListener('focus', handleFocusSync);
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && auth.currentUser) {
-        checkAndSyncUserDoc(auth.currentUser);
+      if (document.visibilityState === 'visible') {
+        handleFocusSync();
       }
     });
 

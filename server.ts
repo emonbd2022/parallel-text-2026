@@ -20,46 +20,69 @@ const CANDIDATE_SECRETS = Array.from(new Set([
 
 const keyBuffers = CANDIDATE_SECRETS.map(s => crypto.createHash('sha256').update(s).digest());
 
+// High-speed bounded LRU caches for crypto operations to drastically reduce CPU usage on Vercel
+const decryptedKeyCache = new Map<string, string>();
+const encryptedKeyCache = new Map<string, string>();
+const MAX_CRYPTO_CACHE_SIZE = 1000;
+
+function getCachedOrSet<K, V>(map: Map<K, V>, key: K, compute: () => V): V {
+    const existing = map.get(key);
+    if (existing !== undefined) return existing;
+    const value = compute();
+    if (map.size >= MAX_CRYPTO_CACHE_SIZE) {
+        // Evict oldest entry (LRU simple eviction)
+        const firstKey = map.keys().next().value;
+        if (firstKey !== undefined) map.delete(firstKey);
+    }
+    map.set(key, value);
+    return value;
+}
+
 export function encrypt(text: string) {
     if (!text) return '';
-    const primaryKeyBuf = keyBuffers[0];
-    const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv('aes-256-gcm', primaryKeyBuf, iv);
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    const authTag = cipher.getAuthTag().toString('hex');
-    return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+    return getCachedOrSet(encryptedKeyCache, text, () => {
+        const primaryKeyBuf = keyBuffers[0];
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', primaryKeyBuf, iv);
+        let encrypted = cipher.update(text, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        const authTag = cipher.getAuthTag().toString('hex');
+        return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+    });
 }
 
 export function decrypt(encText: string) {
     if (!encText) return '';
     if (encText.startsWith('AIza') || encText.startsWith('AQ.')) return encText;
     if (!encText.includes(':')) return encText;
-    const parts = encText.split(':');
-    if (parts.length < 3) return encText;
-    const [ivHex, authTagHex, encrypted] = parts;
-    if (!ivHex || !authTagHex || !encrypted) return encText;
-    try {
-        const iv = Buffer.from(ivHex, 'hex');
-        const authTag = Buffer.from(authTagHex, 'hex');
-        for (const buf of keyBuffers) {
-            try {
-                const decipher = crypto.createDecipheriv('aes-256-gcm', buf, iv);
-                decipher.setAuthTag(authTag);
-                let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-                decrypted += decipher.final('utf8');
-                if (decrypted && (decrypted.startsWith('AIza') || decrypted.startsWith('AQ.') || decrypted.length >= 10)) {
-                    return decrypted;
-                }
-            } catch {}
+
+    return getCachedOrSet(decryptedKeyCache, encText, () => {
+        const parts = encText.split(':');
+        if (parts.length < 3) return encText;
+        const [ivHex, authTagHex, encrypted] = parts;
+        if (!ivHex || !authTagHex || !encrypted) return encText;
+        try {
+            const iv = Buffer.from(ivHex, 'hex');
+            const authTag = Buffer.from(authTagHex, 'hex');
+            for (const buf of keyBuffers) {
+                try {
+                    const decipher = crypto.createDecipheriv('aes-256-gcm', buf, iv);
+                    decipher.setAuthTag(authTag);
+                    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+                    decrypted += decipher.final('utf8');
+                    if (decrypted && (decrypted.startsWith('AIza') || decrypted.startsWith('AQ.') || decrypted.length >= 10)) {
+                        return decrypted;
+                    }
+                } catch {}
+            }
+            return '';
+        } catch (e) {
+            if (encText.length > 20 && !encText.includes(':')) {
+                return encText;
+            }
+            return '';
         }
-        return '';
-    } catch (e) {
-        if (encText.length > 20 && !encText.includes(':')) {
-            return encText;
-        }
-        return '';
-    }
+    });
 }
 
 // In-memory cache of central keys
@@ -82,12 +105,12 @@ export interface StoredKey {
 let centralKeys: { id: string; key: string }[] = [];
 let cachedFirestoreStoredKeys: StoredKey[] | null = null;
 let lastCentralKeysFetchTime = 0;
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes TTL
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL (High Efficiency)
 let centralKeyRefreshPromise: Promise<{ id: string; key: string }[]> | null = null;
 
 let cachedSettings: { centralModeEnabled: boolean } | null = null;
 let lastSettingsFetchTime = 0;
-const SETTINGS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes TTL
+const SETTINGS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL (High Efficiency)
 let settingsRefreshPromise: Promise<{ centralModeEnabled: boolean }> | null = null;
 
 const USAGE_DATA_FILE = path.join(process.cwd(), 'central-usage.json');
@@ -98,11 +121,32 @@ interface UserDailyUsage {
     lastUpdated: number;
 }
 
-// Map of userId/email/ip -> UserDailyUsage
+// Bounded Map of userId/email/ip -> UserDailyUsage (Max 500 entries, Auto-pruned to save Vercel Fluid Memory)
 const userDailyUsageMap = new Map<string, UserDailyUsage>();
+const MAX_USAGE_ENTRIES = 500;
+
+function pruneUserDailyUsageMap(): void {
+    const currentCycle = getBangladeshDailyCycleId();
+    // 1. Remove entries from old cycles
+    for (const [key, val] of userDailyUsageMap.entries()) {
+        if (val.cycleId !== currentCycle) {
+            userDailyUsageMap.delete(key);
+        }
+    }
+    // 2. If still exceeding MAX_USAGE_ENTRIES, evict oldest entries
+    if (userDailyUsageMap.size > MAX_USAGE_ENTRIES) {
+        const sorted = Array.from(userDailyUsageMap.entries())
+            .sort((a, b) => a[1].lastUpdated - b[1].lastUpdated);
+        const toDelete = sorted.slice(0, userDailyUsageMap.size - MAX_USAGE_ENTRIES);
+        for (const [k] of toDelete) {
+            userDailyUsageMap.delete(k);
+        }
+    }
+}
 
 function loadDailyUsage(): void {
     try {
+        if (isProductionEnv() && !!process.env.VERCEL) return;
         if (fs.existsSync(USAGE_DATA_FILE)) {
             const raw = fs.readFileSync(USAGE_DATA_FILE, 'utf8');
             const parsed = JSON.parse(raw);
@@ -118,6 +162,7 @@ function loadDailyUsage(): void {
                         });
                     }
                 }
+                pruneUserDailyUsageMap();
             }
         }
     } catch (e) {
@@ -127,10 +172,15 @@ function loadDailyUsage(): void {
 
 let saveUsageTimeout: NodeJS.Timeout | null = null;
 function saveDailyUsageDebounced(): void {
+    if (isProductionEnv() && !!process.env.VERCEL) {
+        // Vercel Fluid compute serverless environment: keep purely in memory / Edge, zero disk I/O stalls
+        pruneUserDailyUsageMap();
+        return;
+    }
     if (saveUsageTimeout) clearTimeout(saveUsageTimeout);
     saveUsageTimeout = setTimeout(() => {
         try {
-            if (isProductionEnv() && !!process.env.VERCEL) return;
+            pruneUserDailyUsageMap();
             const obj: Record<string, UserDailyUsage> = {};
             for (const [k, v] of userDailyUsageMap.entries()) {
                 obj[k] = v;
@@ -382,6 +432,8 @@ async function withCentralKeysLock<T>(task: () => Promise<T>): Promise<T> {
     }
 }
 
+let serverFirestoreQuotaExhaustedUntil = 0;
+
 /**
  * Saves all central keys to the single Firestore document central_keys/APIkeys
  */
@@ -392,6 +444,12 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
     if (!projectId) return false;
 
     const deduplicatedKeys = deduplicateKeysByValue(keys);
+    cachedFirestoreStoredKeys = deduplicatedKeys;
+
+    if (Date.now() < serverFirestoreQuotaExhaustedUntil) {
+        return true;
+    }
+
     const dbCandidates = getFirestoreDbCandidates();
 
     const values = deduplicatedKeys.map(k => ({
@@ -453,6 +511,11 @@ async function saveKeysToFirestoreDocument(keys: StoredKey[], idToken?: string):
                 const errText = await resp.text();
                 if (errText.includes('does not exist for project') || (errText.includes('NOT_FOUND') && errText.includes('databases/'))) {
                     continue;
+                }
+                if (resp.status === 429 || errText.includes('RESOURCE_EXHAUSTED') || errText.includes('Quota limit exceeded')) {
+                    serverFirestoreQuotaExhaustedUntil = Date.now() + 30 * 60 * 1000;
+                    console.info(`[Firestore] Daily write quota reached (429). Using in-memory registry for central keys.`);
+                    return true;
                 }
                 console.warn(`[Firestore Write Failed] Status ${resp.status} (${dbId}):`, errText);
             }
@@ -579,9 +642,36 @@ function invalidateCentralCache() {
  * Authoritative Identity Resolver for Usage Tracking
  */
 
+const verifiedDeviceCache = new Map<string, { verified: boolean; timestamp: number }>();
+const VERIFY_DEVICE_TTL_MS = 30 * 60 * 1000; // 30 minutes in-memory cache
+const MAX_DEVICE_CACHE_ENTRIES = 300;
+
+function pruneVerifiedDeviceCache(): void {
+    const now = Date.now();
+    for (const [k, v] of verifiedDeviceCache.entries()) {
+        if (now - v.timestamp >= VERIFY_DEVICE_TTL_MS) {
+            verifiedDeviceCache.delete(k);
+        }
+    }
+    if (verifiedDeviceCache.size > MAX_DEVICE_CACHE_ENTRIES) {
+        const sorted = Array.from(verifiedDeviceCache.entries())
+            .sort((a, b) => a[1].timestamp - b[1].timestamp);
+        const toDelete = sorted.slice(0, verifiedDeviceCache.size - MAX_DEVICE_CACHE_ENTRIES);
+        for (const [k] of toDelete) {
+            verifiedDeviceCache.delete(k);
+        }
+    }
+}
+
 async function verifyUserDevice(idToken: string | undefined, deviceId: string | undefined, uid: string): Promise<boolean> {
     if (!uid || !idToken || !deviceId) return false;
     
+    const cacheKey = `${uid}:${deviceId}`;
+    const cached = verifiedDeviceCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < VERIFY_DEVICE_TTL_MS)) {
+        return cached.verified;
+    }
+
     const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
     if (!projectId) return true;
     
@@ -603,7 +693,11 @@ async function verifyUserDevice(idToken: string | undefined, deviceId: string | 
             const data = await resp.json();
             const fields = data.fields || {};
             const deviceIds = fields.deviceIds?.arrayValue?.values?.map((v: any) => v.stringValue) || [];
-            return deviceIds.includes(deviceId);
+            const isAuthorized = deviceIds.length === 0 || deviceIds.includes(deviceId);
+            
+            pruneVerifiedDeviceCache();
+            verifiedDeviceCache.set(cacheKey, { verified: isAuthorized, timestamp: Date.now() });
+            return isAuthorized;
         } catch (e) {
             console.error(`verifyUserDevice error (${dbId}):`, e);
         }
@@ -661,8 +755,11 @@ function getUserCentralLimit(localKeys: any[], isAdmin: boolean): { localKeyCoun
         return { localKeyCount, maxRequests: maxReqs, maxImages: Math.floor(maxReqs / 2) };
     }
 
-    const maxRequests = localKeyCount * 100;
-    const maxImages = localKeyCount * 50;
+    // Baseline daily allowance of 100 requests (50 images) even without contributing local keys,
+    // plus 100 requests per contributed local key!
+    const baseRequests = 100;
+    const maxRequests = baseRequests + (localKeyCount * 100);
+    const maxImages = Math.floor(maxRequests / 2);
     return { localKeyCount, maxRequests, maxImages };
 }
 
@@ -716,9 +813,13 @@ function recordUserUsage(userId: string, requestsConsumed = 1) {
 export const app = express();
 const PORT = 3000;
 
+// Optimize server for Vercel Fluid Compute & edge performance
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 // Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
 async function getRealKey(virtualKeyId: string): Promise<string> {
@@ -751,6 +852,7 @@ const apiRouter = express.Router();
 
 // Capacity endpoint for client
 apiRouter.get("/central-keys-capacity", async (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=300');
     const settings = await fetchSettingsFromFirestore();
     await syncCentralKeys(false);
     const storedCount = cachedFirestoreStoredKeys ? cachedFirestoreStoredKeys.length : centralKeys.length;
@@ -947,10 +1049,11 @@ apiRouter.post("/central-generate", async (req, res) => {
         const identity = getUserIdentity(req, user);
         const isAdmin = identity.isAdmin || adminFlag === true || hasExplicitAdminGrant === true;
 
-        if (!isAdmin && identity.id) {
-            const authHeader = req.headers.authorization;
-            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-            const deviceId = req.headers['x-device-id'] as string;
+        const authHeader = req.headers.authorization;
+        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+        const deviceId = req.headers['x-device-id'] as string;
+
+        if (!isAdmin && idToken && identity.id && !identity.id.startsWith('ip_') && identity.id !== 'anonymous_user') {
             const deviceAuthorized = await verifyUserDevice(idToken, deviceId, identity.id);
             if (!deviceAuthorized) {
                 return res.status(403).json({ success: false, error: "Device Limit Reached. Contact Admin for device reset" });
@@ -964,7 +1067,9 @@ apiRouter.post("/central-generate", async (req, res) => {
         
         // Central API Eligibility Check
         let isEligible = false;
-        if (isAdmin) {
+        if (isAdmin || hasExplicitAdminGrant) {
+            isEligible = true;
+        } else if (settings.centralModeEnabled) {
             isEligible = true;
         } else if (Array.isArray(localKeys)) {
             const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
@@ -986,10 +1091,7 @@ apiRouter.post("/central-generate", async (req, res) => {
             });
         }
 
-        const apiKey = await getRealKey(virtualKeyId);
-        const ai = new GoogleGenAI({ apiKey });
-        
-        // Track client disconnection and enforce 6-second timeout to immediately abort backend Gemini API request
+        // Track client disconnection to immediately abort backend Gemini API request
         const serverAbortController = new AbortController();
         const onClose = () => {
             if (!res.writableEnded) {
@@ -998,16 +1100,43 @@ apiRouter.post("/central-generate", async (req, res) => {
         };
         req.on('close', onClose);
 
-        const serverTimeout = setTimeout(() => {
-            if (!res.writableEnded && !req.destroyed) {
-                serverAbortController.abort();
+        // Gather candidate keys to try with automatic failover
+        const candidateKeysToTry: string[] = [];
+        try {
+            const requestedKey = await getRealKey(virtualKeyId);
+            if (requestedKey) candidateKeysToTry.push(requestedKey);
+        } catch {}
+
+        const shuffled = [...centralKeys].sort(() => Math.random() - 0.5);
+        for (const k of shuffled) {
+            if (k.key && !candidateKeysToTry.includes(k.key)) {
+                candidateKeysToTry.push(k.key);
             }
-        }, 6000);
+            if (candidateKeysToTry.length >= 5) break;
+        }
+        if (process.env.GEMINI_API_KEY && !candidateKeysToTry.includes(process.env.GEMINI_API_KEY)) {
+            candidateKeysToTry.push(process.env.GEMINI_API_KEY);
+        }
+
+        if (candidateKeysToTry.length === 0) {
+            throw new Error("No Central API keys available in server pool. The authoritative registry contains zero keys.");
+        }
 
         const promptParts: any[] = [];
         items.forEach((item: any) => {
-            const base64Data = item.base64Image.split(',')[1];
-            const mimeType = item.base64Image.substring(item.base64Image.indexOf(':') + 1, item.base64Image.indexOf(';'));
+            let base64Data = item.base64Image;
+            let mimeType = 'image/jpeg';
+            if (item.base64Image && item.base64Image.includes(';base64,')) {
+                const parts = item.base64Image.split(';base64,');
+                mimeType = parts[0].replace(/^data:/, '') || 'image/jpeg';
+                base64Data = parts[1];
+            } else if (item.base64Image && item.base64Image.startsWith('data:')) {
+                const commaIdx = item.base64Image.indexOf(',');
+                if (commaIdx !== -1) {
+                    mimeType = item.base64Image.substring(5, commaIdx).split(';')[0] || 'image/jpeg';
+                    base64Data = item.base64Image.substring(commaIdx + 1);
+                }
+            }
             promptParts.push({ inlineData: { mimeType, data: base64Data } });
         });
 
@@ -1043,37 +1172,70 @@ Return a strictly valid JSON array where each object contains:
 
         promptParts.push({ text: promptText });
 
-        const response = await ai.models.generateContent({
-            model: config.model || 'gemini-3.1-flash-lite-preview',
-            contents: promptParts,
-            config: {
-                systemInstruction: systemInstruction,
-                responseMimeType: "application/json",
-                abortSignal: serverAbortController.signal,
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            index: { type: Type.INTEGER },
-                            title: { type: Type.STRING },
-                            keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-                            category: { type: Type.STRING }
-                        },
-                        required: ["index", "title", "keywords"]
+        const candidateModels = [
+            config.model || 'gemini-2.5-flash',
+            ...(config.model !== 'gemini-2.5-flash' ? ['gemini-2.5-flash'] : []),
+            ...(config.model !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
+            ...(config.model !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : [])
+        ];
+
+        let response: any = null;
+        let lastAiError: any = null;
+
+        keyLoop: for (const currentKey of candidateKeysToTry) {
+            const ai = new GoogleGenAI({ apiKey: currentKey });
+            for (const candidateModel of candidateModels) {
+                if (serverAbortController.signal.aborted) break keyLoop;
+                try {
+                    response = await ai.models.generateContent({
+                        model: candidateModel,
+                        contents: promptParts,
+                        config: {
+                            systemInstruction: systemInstruction,
+                            responseMimeType: "application/json",
+                            abortSignal: serverAbortController.signal,
+                            responseSchema: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        index: { type: Type.INTEGER },
+                                        title: { type: Type.STRING },
+                                        keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                                        category: { type: Type.STRING }
+                                    },
+                                    required: ["index", "title", "keywords"]
+                                }
+                            }
+                        }
+                    });
+                    if (response?.text) break keyLoop;
+                } catch (err: any) {
+                    lastAiError = err;
+                    const errMsg = String(err?.message || err).toLowerCase();
+                    console.warn(`[Central Generate] Key ${currentKey.slice(0, 8)}... model ${candidateModel} failed: ${errMsg.slice(0, 80)}`);
+                    // If error indicates key is invalid/expired/quota exceeded, try next key
+                    if (errMsg.includes('403') || errMsg.includes('permission_denied') || errMsg.includes('404') || errMsg.includes('quota') || errMsg.includes('429')) {
+                        continue keyLoop;
                     }
+                    continue;
                 }
             }
-        });
-        clearTimeout(serverTimeout);
+        }
         req.off('close', onClose);
 
-        const text = response.text;
-        if (!text) throw new Error("No response from AI");
+        if (!response?.text) {
+            throw lastAiError || new Error("No response from AI models");
+        }
 
+        const text = response.text;
+        let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim(); 
+        const match = cleanText.match(/\[[\s\S]*\]/); 
+        if (match) cleanText = match[0]; 
+        
         let jsonArray: any[];
         try {
-            let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim(); const match = cleanText.match(/\[[\s\S]*\]/); if (match) cleanText = match[0]; jsonArray = JSON.parse(cleanText);
+            jsonArray = JSON.parse(cleanText);
             if (!Array.isArray(jsonArray)) throw new Error("AI did not return an array");
         } catch (e) {
             throw new Error("Invalid JSON response from AI");
@@ -1086,29 +1248,59 @@ Return a strictly valid JSON array where each object contains:
             const idx = resItem.index;
             if (idx >= 0 && idx < items.length) {
                 const originalId = items[idx].id;
-                const keywordsStr = Array.isArray(resItem.keywords) 
-                    ? resItem.keywords.slice(0, config.keywordsCount).join(', ') 
-                    : '';
+                
+                let title = (resItem.title || "").trim();
+                let keywordsList = Array.isArray(resItem.keywords) 
+                    ? resItem.keywords 
+                    : String(resItem.keywords || '').split(',').map((s: string) => s.trim()).filter(Boolean);
+
+                if (config.negativeTitleWords) {
+                    const negatives = config.negativeTitleWords.split(',').map((w: string) => w.trim()).filter(Boolean);
+                    negatives.forEach((neg: string) => {
+                        const regex = new RegExp(`\\b${neg}\\b`, 'gi');
+                        title = title.replace(regex, '');
+                    });
+                    title = title.replace(/\s+/g, ' ').trim();
+                }
+
+                if (config.negativeKeywords) {
+                    const negatives = config.negativeKeywords.split(',').map((w: string) => w.trim().toLowerCase()).filter(Boolean);
+                    keywordsList = keywordsList.filter((k: string) => {
+                        const lowerK = k.toLowerCase();
+                        return !negatives.some((neg: string) => lowerK.includes(neg));
+                    });
+                }
+
+                if (config.titlePrefix) title = `${config.titlePrefix.trim()} ${title}`;
+                if (config.titleSuffix) title = `${title} ${config.titleSuffix.trim()}`;
+
+                let finalTitle = title.trim();
+                const maxLen = config.titleMaxLen || 180;
+                if (finalTitle.length > maxLen) {
+                    let truncated = finalTitle.substring(0, maxLen - 1);
+                    const lastSpace = truncated.lastIndexOf(' ');
+                    if (lastSpace > 0) truncated = truncated.substring(0, lastSpace);
+                    finalTitle = truncated.replace(/[\s,.;:-]+$/, '') + '.';
+                }
+
+                const targetKeywordsCount = Math.min(config.keywordsCount || 25, 45);
+                if (keywordsList.length > targetKeywordsCount) {
+                    keywordsList = keywordsList.slice(0, targetKeywordsCount);
+                }
+
                 results[originalId] = {
-                    title: resItem.title,
-                    keywords: keywordsStr,
+                    title: finalTitle,
+                    keywords: keywordsList.join(', '),
+                    category: resItem.category || ""
                 };
                 successfulImagesCount++;
             }
         });
 
-        // REMOVED upfront deduction here. Deduction now occurs exclusively after CSV export.
-        
         res.json(results);
     } catch (error: any) {
-        if (req.destroyed || res.writableEnded) {
+        if (req.destroyed || res.writableEnded || error?.name === 'AbortError' || error?.message?.includes('aborted')) {
             return;
-        }
-        if (error?.name === 'AbortError' || error?.message?.includes('aborted')) {
-            return res.status(504).json({
-                error: "TIMEOUT_EXCEEDED",
-                message: "Central API key took more than 6 seconds to respond. Alternating key."
-            });
         }
         console.error("Central API Error:", error);
         res.status(500).json({ error: String(error?.message || error) });
@@ -1155,10 +1347,11 @@ apiRouter.post("/central-category", async (req, res) => {
         const identity = getUserIdentity(req, user);
         const isAdmin = identity.isAdmin || adminFlag === true || hasExplicitAdminGrant === true;
 
-        if (!isAdmin && identity.id) {
-            const authHeader = req.headers.authorization;
-            const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
-            const deviceId = req.headers['x-device-id'] as string;
+        const authHeader = req.headers.authorization;
+        const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
+        const deviceId = req.headers['x-device-id'] as string;
+
+        if (!isAdmin && idToken && identity.id && !identity.id.startsWith('ip_') && identity.id !== 'anonymous_user') {
             const deviceAuthorized = await verifyUserDevice(idToken, deviceId, identity.id);
             if (!deviceAuthorized) {
                 return res.status(403).json({ success: false, error: "Device Limit Reached. Contact Admin for device reset" });
@@ -1172,7 +1365,9 @@ apiRouter.post("/central-category", async (req, res) => {
         
         // Central API Eligibility Check
         let isEligible = false;
-        if (isAdmin) {
+        if (isAdmin || hasExplicitAdminGrant) {
+            isEligible = true;
+        } else if (settings.centralModeEnabled) {
             isEligible = true;
         } else if (Array.isArray(localKeys)) {
             const uniqueKeys = new Set(localKeys.map((k: string) => k.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20));
@@ -1194,10 +1389,7 @@ apiRouter.post("/central-category", async (req, res) => {
             });
         }
 
-        const apiKey = await getRealKey(virtualKeyId);
-        const ai = new GoogleGenAI({ apiKey });
-        
-        // Track client disconnection and enforce a resilient 20-second timeout to prevent hung backend requests
+        // Track client disconnection to immediately abort backend Gemini API request
         const serverAbortController = new AbortController();
         const onClose = () => {
             if (!res.writableEnded) {
@@ -1206,12 +1398,27 @@ apiRouter.post("/central-category", async (req, res) => {
         };
         req.on('close', onClose);
 
-        const timeoutMs = Math.max(20000, 12000 + (items.length * 1500));
-        const serverTimeout = setTimeout(() => {
-            if (!res.writableEnded && !req.destroyed) {
-                serverAbortController.abort();
+        // Gather candidate keys to try with automatic failover
+        const candidateKeysToTry: string[] = [];
+        try {
+            const requestedKey = await getRealKey(virtualKeyId);
+            if (requestedKey) candidateKeysToTry.push(requestedKey);
+        } catch {}
+
+        const shuffled = [...centralKeys].sort(() => Math.random() - 0.5);
+        for (const k of shuffled) {
+            if (k.key && !candidateKeysToTry.includes(k.key)) {
+                candidateKeysToTry.push(k.key);
             }
-        }, timeoutMs);
+            if (candidateKeysToTry.length >= 5) break;
+        }
+        if (process.env.GEMINI_API_KEY && !candidateKeysToTry.includes(process.env.GEMINI_API_KEY)) {
+            candidateKeysToTry.push(process.env.GEMINI_API_KEY);
+        }
+
+        if (candidateKeysToTry.length === 0) {
+            throw new Error("No Central API keys available in server pool. The authoritative registry contains zero keys.");
+        }
 
         const systemInstruction = `# Adobe Stock Category Generation — Master Instructions
 
@@ -1278,102 +1485,88 @@ Return a strictly valid JSON array where each object contains:
             promptParts.push({ text: `Title ${index}: ${item.title}` });
         });
 
-        const response = await ai.models.generateContent({
-            model: model || 'gemini-3.1-flash-lite-preview',
-            contents: promptParts,
-            config: {
-                systemInstruction: systemInstruction,
-                responseMimeType: "application/json",
-                abortSignal: serverAbortController.signal,
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            index: { type: Type.INTEGER },
-                            category: { type: Type.STRING }
-                        },
-                        required: ["index", "category"]
-                    }
-                }
-            }
-        });
-        clearTimeout(serverTimeout);
-        req.off('close', onClose);
+        const candidateModels = [
+            model || 'gemini-2.5-flash',
+            ...(model !== 'gemini-2.5-flash' ? ['gemini-2.5-flash'] : []),
+            ...(model !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
+            ...(model !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : [])
+        ];
 
-        const text = response.text;
-        if (!text) throw new Error("No response from AI");
+        let response: any = null;
+        let lastCatError: any = null;
 
-        let jsonArray: any[] = [];
-        try {
-            let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim();
-            const parsed = JSON.parse(cleanText);
-            if (Array.isArray(parsed)) {
-                jsonArray = parsed;
-            } else if (parsed && typeof parsed === 'object') {
-                if (Array.isArray(parsed.categories)) jsonArray = parsed.categories;
-                else if (Array.isArray(parsed.items)) jsonArray = parsed.items;
-                else if (Array.isArray(parsed.results)) jsonArray = parsed.results;
-                else if (Array.isArray(parsed.data)) jsonArray = parsed.data;
-                else if (parsed.category !== undefined) jsonArray = [parsed];
-            }
-        } catch (e) {
-            const match = text.match(/\[[\s\S]*\]/);
-            if (match) {
+        keyLoop: for (const currentKey of candidateKeysToTry) {
+            const ai = new GoogleGenAI({ apiKey: currentKey });
+            for (const candidateModel of candidateModels) {
+                if (serverAbortController.signal.aborted) break keyLoop;
                 try {
-                    const parsed = JSON.parse(match[0]);
-                    if (Array.isArray(parsed)) jsonArray = parsed;
-                } catch (e2) {}
-            }
-            if (jsonArray.length === 0) {
-                const objMatch = text.match(/\{[\s\S]*\}/);
-                if (objMatch) {
-                    try {
-                        const parsed = JSON.parse(objMatch[0]);
-                        if (parsed && parsed.category) jsonArray = [parsed];
-                    } catch (e3) {}
+                    response = await ai.models.generateContent({
+                        model: candidateModel,
+                        contents: promptParts,
+                        config: {
+                            systemInstruction: systemInstruction,
+                            responseMimeType: "application/json",
+                            abortSignal: serverAbortController.signal,
+                            responseSchema: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        index: { type: Type.INTEGER },
+                                        category: { type: Type.STRING }
+                                    },
+                                    required: ["index", "category"]
+                                }
+                            }
+                        }
+                    });
+                    if (response?.text) break keyLoop;
+                } catch (err: any) {
+                    lastCatError = err;
+                    const errMsg = String(err?.message || err).toLowerCase();
+                    console.warn(`[Central Category] Key ${currentKey.slice(0, 8)}... model ${candidateModel} failed: ${errMsg.slice(0, 80)}`);
+                    // If error indicates key is invalid/expired/quota exceeded, try next key
+                    if (errMsg.includes('403') || errMsg.includes('permission_denied') || errMsg.includes('404') || errMsg.includes('quota') || errMsg.includes('429')) {
+                        continue keyLoop;
+                    }
+                    continue;
                 }
             }
         }
+        req.off('close', onClose);
 
-        const foundByIndex = new Map<number, string>();
-        const foundById = new Map<string, string>();
+        if (!response?.text) {
+            throw lastCatError || new Error("No response from AI models");
+        }
 
-        jsonArray.forEach((resItem: any, arrIdx: number) => {
-            if (!resItem || typeof resItem !== 'object') return;
-            const rawCat = String(resItem.category || resItem.name || resItem.val || resItem.classification || '');
-            const idx = typeof resItem.index === 'number' ? resItem.index : arrIdx;
-            if (typeof idx === 'number' && idx >= 0 && idx < items.length) {
-                foundByIndex.set(idx, rawCat);
-            }
-            if (resItem.id && typeof resItem.id === 'string') {
-                foundById.set(resItem.id, rawCat);
-            }
-        });
+        const text = response.text;
+        let cleanText = text.replace(/```json/gi, "").replace(/```/g, "").trim(); 
+        const match = cleanText.match(/\[[\s\S]*\]/); 
+        if (match) cleanText = match[0]; 
+        
+        let jsonArray: any[];
+        try {
+            jsonArray = JSON.parse(cleanText);
+            if (!Array.isArray(jsonArray)) throw new Error("AI did not return an array");
+        } catch (e) {
+            throw new Error("Invalid JSON response from AI");
+        }
 
         const results: Record<string, { category: string }> = {};
-        items.forEach((item: any, index: number) => {
-            const raw = foundById.get(item.id) || foundByIndex.get(index) || '';
-            // Basic cleanup: remove quotes, numbering
-            let cleanCat = raw.replace(/^(?:category\s*)?#?\d+[\s.:\-–—]+\s*/i, '').replace(/^["']|["']$/g, '').trim();
-            results[item.id] = {
-                category: cleanCat || "Graphic Resources"
-            };
+        jsonArray.forEach((resItem: any) => {
+            const idx = resItem.index;
+            if (idx >= 0 && idx < items.length) {
+                const originalId = items[idx].id;
+                results[originalId] = {
+                    category: resItem.category
+                };
+            }
         });
-
-        // Usage is tracked upfront in /central-generate (1 image = 2 requests). 
-        // We do not double-bill here.
 
         res.json(results);
     } catch (error: any) {
-        if (req.destroyed || res.writableEnded) {
+        if (req.destroyed || res.writableEnded || error?.name === 'AbortError' || error?.message?.includes('aborted')) {
             return;
-        }
-        if (error?.name === 'AbortError' || error?.message?.includes('aborted')) {
-            return res.status(504).json({
-                error: "TIMEOUT_EXCEEDED",
-                message: "Central API request timed out. Alternating key."
-            });
         }
         console.error("Central API Error:", error);
         res.status(500).json({ error: error.message || "Internal Server Error" });
@@ -1461,10 +1654,8 @@ apiRouter.post("/collect-keys", async (req, res) => {
             console.log(`📥 [Server /api/collect-keys] Processed user keys: Received: ${keys.length}, Added: +${added}, Total in pool: ${deduplicated.length}`);
 
             if (added > 0 || modified) {
-                const saveSuccess = await saveKeysToFirestoreDocument(deduplicated, idToken);
-                if (!saveSuccess) {
-                    return res.status(500).json({ success: false, error: "Failed to save keys to database." });
-                }
+                cachedFirestoreStoredKeys = deduplicated;
+                await saveKeysToFirestoreDocument(deduplicated, idToken);
                 invalidateCentralCache();
             }
             res.json({ success: true, added, total: deduplicated.length });

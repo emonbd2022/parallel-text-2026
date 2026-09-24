@@ -6,13 +6,13 @@
  */
 
 export const SCAN_FALLBACK_MODELS = [
-  'gemini-3.8-flash',
-  'gemini-3.1-flash-lite-preview',
-  'gemini-3.7-flash',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
   'gemini-3.6-flash',
-  'gemini-3.5-flash-lite'
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite-preview'
 ] as const;
 
 /**
@@ -44,7 +44,7 @@ export function getModelDisplayName(modelId: string): string {
  * Ensures attempt 1, attempt 2, and attempt 3 use 3 distinct model families.
  */
 export function getAttemptModel(baseSelectedModel: string, attempt: number): string {
-  const base = baseSelectedModel || 'gemini-3.1-flash-lite-preview';
+  const base = baseSelectedModel || 'gemini-2.5-flash';
   if (attempt <= 1) return base;
 
   // Build a distinct pool of 3 models starting with the selected base model

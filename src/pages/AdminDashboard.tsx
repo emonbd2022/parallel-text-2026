@@ -17,7 +17,7 @@ import {
   CentralKeyRecord 
 } from '../services/centralKeyService';
 import { DeadApiModal } from '../components/DeadApiModal';
-import { recordFirestoreRead, recordFirestoreWrite } from '../utils/firestoreAudit';
+import { recordFirestoreRead, recordFirestoreWrite, isFirestoreQuotaExhausted, handleFirestoreError } from '../utils/firestoreAudit';
 
 type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active';
 
@@ -226,10 +226,14 @@ export const AdminDashboard: React.FC = () => {
   const toggleCentralMode = async () => {
       const newMode = !centralModeEnabled;
       setCentralModeEnabled(newMode);
-      try {
-          await setDoc(doc(db, 'settings', 'general'), { centralModeEnabled: newMode }, { merge: true });
-          recordFirestoreWrite('settings', 1, 'AdminDashboard:toggleCentralMode');
-      } catch(e) {}
+      if (!isFirestoreQuotaExhausted()) {
+        try {
+            await setDoc(doc(db, 'settings', 'general'), { centralModeEnabled: newMode }, { merge: true });
+            recordFirestoreWrite('settings', 1, 'AdminDashboard:toggleCentralMode');
+        } catch(e) {
+            handleFirestoreError(e, 'AdminDashboard:toggleCentralMode');
+        }
+      }
   };
 
   const handleDeduplicate = async () => {
@@ -462,8 +466,10 @@ export const AdminDashboard: React.FC = () => {
         createdAt: new Date().toISOString(),
         read: false
       };
-      await setDoc(doc(db, 'notifications', notifId), newNotif);
-      recordFirestoreWrite('notifications', 1, 'AdminDashboard:sendGlobalNotification');
+      if (!isFirestoreQuotaExhausted()) {
+        await setDoc(doc(db, 'notifications', notifId), newNotif);
+        recordFirestoreWrite('notifications', 1, 'AdminDashboard:sendGlobalNotification');
+      }
       setServerNotifications(prev => {
         const updated = [newNotif, ...prev.filter(n => n.id !== notifId)];
         try { sessionStorage.setItem('adminCachedServerNotifs', JSON.stringify(updated)); } catch {}
@@ -473,8 +479,8 @@ export const AdminDashboard: React.FC = () => {
       setGlobalNotifTitle('');
       setGlobalNotifMessage('');
     } catch (e) {
-      console.error("Failed to send global notification:", e);
-      alert("Failed to send notification.");
+      handleFirestoreError(e, 'AdminDashboard:sendGlobalNotification');
+      alert("Note: Notification recorded locally (Firestore writes are temporarily paused due to free-tier daily quota).");
     } finally {
       setSendingNotif(false);
     }
@@ -486,11 +492,13 @@ export const AdminDashboard: React.FC = () => {
     try {
       localStorage.setItem('maintenanceMode', String(newMode));
     } catch {}
-    try {
-      await setDoc(doc(db, 'settings', 'general'), { maintenanceMode: newMode }, { merge: true });
-      recordFirestoreWrite('settings', 1, 'AdminDashboard:toggleMaintenance');
-    } catch (e) {
-      console.warn("Failed to update maintenance settings in Firestore", e);
+    if (!isFirestoreQuotaExhausted()) {
+      try {
+        await setDoc(doc(db, 'settings', 'general'), { maintenanceMode: newMode }, { merge: true });
+        recordFirestoreWrite('settings', 1, 'AdminDashboard:toggleMaintenance');
+      } catch (e) {
+        handleFirestoreError(e, 'AdminDashboard:toggleMaintenance');
+      }
     }
   };
 

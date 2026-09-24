@@ -1,8 +1,10 @@
-import { ProcessingItem } from '../types';
+import { ProcessingItem, HistoryRecord } from '../types';
 
 const DB_NAME = 'ParallelTextDB';
-const STORE_NAME = 'project_store';
-const KEY = 'current_session';
+const DB_VERSION = 2;
+const STORE_PROJECT = 'project_store';
+const STORE_HISTORY = 'export_history_store';
+const KEY_CURRENT_SESSION = 'current_session';
 const METADATA_BACKUP_KEY = 'paralleltext_metadata_backup';
 
 const openDB = (): Promise<IDBDatabase> => {
@@ -12,12 +14,15 @@ const openDB = (): Promise<IDBDatabase> => {
       return;
     }
 
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
     
     request.onupgradeneeded = (e) => {
       const db = (e.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
+      if (!db.objectStoreNames.contains(STORE_PROJECT)) {
+        db.createObjectStore(STORE_PROJECT);
+      }
+      if (!db.objectStoreNames.contains(STORE_HISTORY)) {
+        db.createObjectStore(STORE_HISTORY, { keyPath: 'id' });
       }
     };
     
@@ -41,7 +46,7 @@ export const saveProject = async (items: ProcessingItem[]): Promise<void> => {
       exported: !!i.exported,
       usedModel: i.usedModel,
       errorMsg: i.status === 'error' ? i.errorMsg : undefined,
-      thumb: i.thumb // Preserves base64 thumbnail if available
+      thumb: i.thumb
     }));
     localStorage.setItem(METADATA_BACKUP_KEY, JSON.stringify(metaBackup));
   } catch (e) {
@@ -67,8 +72,8 @@ export const saveProject = async (items: ProcessingItem[]): Promise<void> => {
   try {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
+      const tx = db.transaction(STORE_PROJECT, 'readwrite');
+      const store = tx.objectStore(STORE_PROJECT);
       
       const cleanItems = items.map(i => ({
         ...i,
@@ -78,7 +83,7 @@ export const saveProject = async (items: ProcessingItem[]): Promise<void> => {
         errorMsg: i.status === 'error' ? i.errorMsg : undefined
       }));
       
-      store.put(cleanItems, KEY);
+      store.put(cleanItems, KEY_CURRENT_SESSION);
       
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -92,9 +97,9 @@ export const loadProject = async (): Promise<ProcessingItem[] | null> => {
   try {
     const db = await openDB();
     const idbResult = await new Promise<ProcessingItem[] | null>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.get(KEY);
+      const tx = db.transaction(STORE_PROJECT, 'readonly');
+      const store = tx.objectStore(STORE_PROJECT);
+      const request = store.get(KEY_CURRENT_SESSION);
       
       request.onsuccess = () => {
         resolve((request.result as ProcessingItem[]) || null);
@@ -134,14 +139,46 @@ export const clearProject = async (): Promise<void> => {
     localStorage.removeItem(METADATA_BACKUP_KEY);
     const db = await openDB();
     return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.delete(KEY);
+      const tx = db.transaction(STORE_PROJECT, 'readwrite');
+      const store = tx.objectStore(STORE_PROJECT);
+      const request = store.delete(KEY_CURRENT_SESSION);
       
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     });
   } catch (e) {
     return Promise.resolve();
+  }
+};
+
+/**
+ * Persists CSV export history records in IndexedDB to avoid localStorage 5MB size limits
+ */
+export const saveExportHistoryToIDB = async (record: HistoryRecord): Promise<void> => {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_HISTORY, 'readwrite');
+    const store = tx.objectStore(STORE_HISTORY);
+    store.put(record);
+  } catch (e) {
+    console.warn('Could not persist export record to IndexedDB:', e);
+  }
+};
+
+/**
+ * Loads CSV export history from IndexedDB
+ */
+export const loadExportHistoryFromIDB = async (): Promise<HistoryRecord[]> => {
+  try {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_HISTORY, 'readonly');
+      const store = tx.objectStore(STORE_HISTORY);
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => resolve([]);
+    });
+  } catch {
+    return [];
   }
 };

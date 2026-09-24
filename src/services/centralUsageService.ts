@@ -103,3 +103,54 @@ export function formatTimeUntilReset(nextResetMs: number): string {
   }
   return `${seconds}s`;
 }
+
+// Client-side batching and debouncing for usage deductions to reduce Vercel serverless executions
+let pendingDeductTotal = 0;
+let pendingDeductTimer: any = null;
+let lastKnownClientUsed = 0;
+let pendingUserData: any = null;
+
+export function deductCentralUsageDebounced(
+  consumed: number,
+  clientUsedRequests: number,
+  userMetadata?: { uid?: string; email?: string; role?: string }
+): void {
+  pendingDeductTotal += consumed;
+  lastKnownClientUsed = clientUsedRequests;
+  if (userMetadata) {
+    pendingUserData = userMetadata;
+  }
+
+  if (pendingDeductTimer) {
+    clearTimeout(pendingDeductTimer);
+  }
+
+  // Debounce for 2.5 seconds: combines rapid exports into a single network sync
+  pendingDeductTimer = setTimeout(async () => {
+    const amountToSend = pendingDeductTotal;
+    const clientUsed = lastKnownClientUsed;
+    const user = pendingUserData;
+    pendingDeductTotal = 0;
+    pendingDeductTimer = null;
+
+    if (amountToSend <= 0) return;
+
+    try {
+      const res = await fetch('/api/central-usage-deduct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestsConsumed: amountToSend,
+          clientUsedRequests: clientUsed,
+          user
+        })
+      });
+      if (res.ok) {
+        window.dispatchEvent(new Event('central-usage-update'));
+      }
+    } catch (e) {
+      console.warn('Central usage deduction network notice:', e);
+    }
+  }, 2500);
+}
+

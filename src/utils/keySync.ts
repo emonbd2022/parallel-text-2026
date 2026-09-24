@@ -1,5 +1,5 @@
 import { syncUserKeysToFirestore } from '../services/centralKeyService';
-import { getFirestoreAuditStats } from './firestoreAudit';
+import { getFirestoreAuditStats, isFirestoreQuotaExhausted } from './firestoreAudit';
 
 /**
  * Synchronization utility for API Keys to Central Pool / Firestore Database & Server
@@ -74,6 +74,15 @@ export async function syncLocalKeysToServer(
     }
 
     const currentFingerprint = computeKeysFingerprint(realKeys);
+    const lastFingerprint = sessionStorage.getItem('last_synced_keys_fingerprint');
+
+    if (lastFingerprint === currentFingerprint && !force) {
+      return { success: true, added: 0, message: 'Keys already synced' };
+    }
+
+    if (isFirestoreQuotaExhausted()) {
+      return { success: true, added: 0, message: 'Database writes paused due to quota limits' };
+    }
 
     console.log(`📤 [User API Sent] Transmitting ${realKeys.length} user API key(s) to central database...`, {
       keysCount: realKeys.length,
