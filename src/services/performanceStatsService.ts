@@ -2,17 +2,28 @@ import { ApiKey, ModelSpeedStat, ApiKeySpeedStat } from '../types';
 
 const STORAGE_MODEL_SPEED_STATS = 'parrarel_model_stats_v2';
 const STORAGE_API_SPEED_STATS = 'parrarel_api_stats_v2';
-const STORAGE_SESSION_EXCLUDED = 'parrarel_session_excluded_v1';
-const STORAGE_SESSION_ATTEMPTED = 'parrarel_session_attempted_v1';
-
-// Threshold for flagging an API key as abnormally slow during a session (in ms)
-export const SLOW_API_THRESHOLD_MS = 11000; // 11 seconds (flash models normally take 1.5 - 3.5s)
+const STORAGE_SESSION_EXCLUDED = 'parrarel_session_excluded_v2';
+const STORAGE_SESSION_ATTEMPTED = 'parrarel_session_attempted_v2';
 
 export interface SessionExclusionInfo {
-  reason: 'slow_excluded' | 'error_excluded';
+  reason: 'error_excluded';
   message: string;
   timestamp: number;
   durationMs?: number;
+}
+
+export interface DynamicApiSpeedProfile {
+  keyId: string;
+  avgTimeMs: number;
+  lastLatencyMs: number;
+  count: number;
+  fails: number;
+  speedRank: number;
+  isFastest: boolean;
+  speedTag: 'fastest' | 'fast' | 'normal' | 'slower' | 'untried';
+  diffPercentVsAvg?: number; // e.g. -25 means 25% faster than peer average, +40 means 40% slower
+  peerAvgLatencyMs: number;
+  hasData: boolean;
 }
 
 class PerformanceStatsService {
@@ -46,10 +57,20 @@ class PerformanceStatsService {
     }
 
     try {
+      // Clear legacy exclusions from v1 if present to immediately unban keys that were marked 'slow_excluded'
+      sessionStorage.removeItem('parrarel_session_excluded_v1');
+      
       const rawExcluded = sessionStorage.getItem(STORAGE_SESSION_EXCLUDED);
       if (rawExcluded) {
         const parsed = JSON.parse(rawExcluded);
-        this.sessionExcludedKeys = new Map(Object.entries(parsed));
+        const map = new Map<string, SessionExclusionInfo>();
+        Object.entries(parsed).forEach(([k, v]: [string, any]) => {
+          // ONLY keep error exclusions, discard any slow exclusions
+          if (v && v.reason === 'error_excluded') {
+            map.set(k, v);
+          }
+        });
+        this.sessionExcludedKeys = map;
       }
     } catch (e) {
       this.sessionExcludedKeys = new Map();
@@ -92,7 +113,11 @@ class PerformanceStatsService {
   private persistSessionState() {
     try {
       const obj: Record<string, SessionExclusionInfo> = {};
-      this.sessionExcludedKeys.forEach((val, key) => { obj[key] = val; });
+      this.sessionExcludedKeys.forEach((val, key) => { 
+        if (val.reason === 'error_excluded') {
+          obj[key] = val; 
+        }
+      });
       sessionStorage.setItem(STORAGE_SESSION_EXCLUDED, JSON.stringify(obj));
       sessionStorage.setItem(STORAGE_SESSION_ATTEMPTED, JSON.stringify(Array.from(this.sessionAttemptedKeys)));
     } catch (e) {}
@@ -115,7 +140,8 @@ class PerformanceStatsService {
   }
 
   public isKeyExcludedForSession(keyId: string): boolean {
-    return this.sessionExcludedKeys.has(keyId);
+    const excl = this.sessionExcludedKeys.get(keyId);
+    return excl?.reason === 'error_excluded';
   }
 
   public getKeyExclusion(keyId: string): SessionExclusionInfo | undefined {
@@ -133,17 +159,17 @@ class PerformanceStatsService {
   }
 
   /**
-   * Exclude a local API key from the remainder of the session
-   * User requirement: "Try to use all the local API at least once if any api taking more time or encounters error, then don't use that api during that session"
+   * Exclude a local API key from the remainder of the session ONLY on encountering errors
+   * User requirement: "Prioritize faster api over slow but don't exclude. Only exclude if encounters error"
    */
   public excludeLocalKeyForSession(
     keyId: string, 
-    reason: 'slow_excluded' | 'error_excluded', 
+    reason: 'error_excluded', 
     message: string, 
     durationMs?: number
   ) {
     this.sessionExcludedKeys.set(keyId, {
-      reason,
+      reason: 'error_excluded',
       message,
       timestamp: Date.now(),
       durationMs
@@ -165,9 +191,8 @@ class PerformanceStatsService {
     itemCount: number;
     success: boolean;
     errorMsg?: string;
-    isOutlierSlow?: boolean;
   }) {
-    const { modelId, modelName, keyId, keyLabel, apiType, durationMs, success, errorMsg, isOutlierSlow } = params;
+    const { modelId, modelName, keyId, keyLabel, apiType, durationMs, success, errorMsg } = params;
 
     // 1. Update Model Stats
     const currentModel = this.modelStats[modelId] || {
@@ -218,24 +243,17 @@ class PerformanceStatsService {
     this.apiStats[keyId] = currentApi;
     this.persistApis();
 
-    // 3. Apply Local Session Rules
+    // 3. Local Session Rules:
+    // Mark key as attempted so subsequent dispatches know it has run at least once.
+    // ONLY exclude if it encountered an error!
     if (apiType === 'local') {
       this.markKeyAttempted(keyId);
 
       if (!success) {
-        // "if any api encounters error, then don't use that api during that session"
         this.excludeLocalKeyForSession(
           keyId, 
           'error_excluded', 
           errorMsg || 'Encountered error during processing'
-        );
-      } else if (isOutlierSlow || durationMs > SLOW_API_THRESHOLD_MS) {
-        // "if any api taking more time, then don't use that api during that session"
-        this.excludeLocalKeyForSession(
-          keyId, 
-          'slow_excluded', 
-          `High processing time: ${(durationMs / 1000).toFixed(1)}s (exceeded speed threshold)`,
-          durationMs
         );
       }
     }
@@ -244,27 +262,115 @@ class PerformanceStatsService {
   }
 
   /**
+   * Computes dynamic statistical comparison across all active keys in real-time.
+   * Compares each key's latency to its active peers to determine whether it is
+   * dynamically Fastest, Fast, Normal, or Slower.
+   */
+  public getDynamicApiMetrics(keys: ApiKey[]): Record<string, DynamicApiSpeedProfile> {
+    const profiles: Record<string, DynamicApiSpeedProfile> = {};
+    const keysWithData: { keyId: string; avgTimeMs: number; count: number; fails: number; lastLatencyMs: number }[] = [];
+
+    keys.forEach(k => {
+      const stat = this.apiStats[k.id];
+      if (stat && stat.count > 0) {
+        keysWithData.push({
+          keyId: k.id,
+          avgTimeMs: stat.avgTimeMs,
+          count: stat.count,
+          fails: stat.fails,
+          lastLatencyMs: stat.lastLatencyMs
+        });
+      }
+    });
+
+    // Calculate dynamic peer average latency
+    const peerAvgLatencyMs = keysWithData.length > 0
+      ? Math.round(keysWithData.reduce((acc, curr) => acc + curr.avgTimeMs, 0) / keysWithData.length)
+      : 3000;
+
+    // Sort by avgTimeMs ascending to determine dynamic ranks
+    keysWithData.sort((a, b) => a.avgTimeMs - b.avgTimeMs);
+    const fastestAvgTimeMs = keysWithData.length > 0 ? keysWithData[0].avgTimeMs : 3000;
+
+    keys.forEach(k => {
+      const isAttempted = this.sessionAttemptedKeys.has(k.id);
+      const stat = this.apiStats[k.id];
+      const hasData = Boolean(stat && stat.count > 0);
+
+      if (!hasData) {
+        profiles[k.id] = {
+          keyId: k.id,
+          avgTimeMs: 0,
+          lastLatencyMs: 0,
+          count: 0,
+          fails: stat?.fails || k.errorCount || 0,
+          speedRank: 99,
+          isFastest: false,
+          speedTag: isAttempted ? 'normal' : 'untried',
+          peerAvgLatencyMs,
+          hasData: false
+        };
+        return;
+      }
+
+      const rankIndex = keysWithData.findIndex(item => item.keyId === k.id);
+      const speedRank = rankIndex >= 0 ? rankIndex + 1 : 99;
+      const isFastest = rankIndex === 0;
+
+      const diffPercentVsAvg = peerAvgLatencyMs > 0 
+        ? Math.round(((stat!.avgTimeMs - peerAvgLatencyMs) / peerAvgLatencyMs) * 100)
+        : 0;
+
+      let speedTag: 'fastest' | 'fast' | 'normal' | 'slower' = 'normal';
+      if (isFastest || stat!.avgTimeMs <= Math.max(fastestAvgTimeMs * 1.1, peerAvgLatencyMs * 0.88)) {
+        speedTag = 'fastest';
+      } else if (stat!.avgTimeMs <= peerAvgLatencyMs * 1.08) {
+        speedTag = 'fast';
+      } else {
+        speedTag = 'slower';
+      }
+
+      profiles[k.id] = {
+        keyId: k.id,
+        avgTimeMs: stat!.avgTimeMs,
+        lastLatencyMs: stat!.lastLatencyMs,
+        count: stat!.count,
+        fails: stat!.fails,
+        speedRank,
+        isFastest,
+        speedTag,
+        diffPercentVsAvg,
+        peerAvgLatencyMs,
+        hasData: true
+      };
+    });
+
+    return profiles;
+  }
+
+  /**
    * Sort valid API keys according to speed and session fairness:
-   * 1. Exclude session-banned keys (for local APIs)
+   * 1. Exclude error-banned keys (ONLY when encounters error)
    * 2. Prioritize untried local keys first ("Try to use all the local API at least once")
-   * 3. Prioritize faster APIs (lowest avgTimeMs) with low errors
+   * 3. Prioritize dynamically faster APIs (lowest avgTimeMs) over slower APIs (DO NOT exclude slow keys!)
    */
   public prioritizeApiKeys(keys: ApiKey[], apiType: 'local' | 'central'): ApiKey[] {
-    // 1. Filter out session excluded keys
+    // 1. Filter out only error-excluded keys (never exclude for speed)
     const available = keys.filter(k => {
-      if (apiType === 'local' && this.sessionExcludedKeys.has(k.id)) {
+      const excl = this.sessionExcludedKeys.get(k.id);
+      if (excl && excl.reason === 'error_excluded') {
         return false;
       }
       return true;
     });
 
     if (apiType !== 'local') {
-      // For Central keys: sort primarily by speed & error count
+      // For Central keys: sort dynamically by measured speed & error count
       return available.sort((a, b) => {
         const statA = this.apiStats[a.id];
         const statB = this.apiStats[b.id];
-        const timeA = (statA && statA.count > 0) ? statA.avgTimeMs : 4000;
-        const timeB = (statB && statB.count > 0) ? statB.avgTimeMs : 4000;
+        const timeA = (statA && statA.count > 0) ? statA.avgTimeMs : 3500;
+        const timeB = (statB && statB.count > 0) ? statB.avgTimeMs : 3500;
         const scoreA = timeA + (a.errorCount * 2500);
         const scoreB = timeB + (b.errorCount * 2500);
         return scoreA - scoreB;
@@ -281,11 +387,11 @@ class PerformanceStatsService {
       if (!aAttempted && bAttempted) return -1;
       if (aAttempted && !bAttempted) return 1;
 
-      // Both untried or both tried: sort by measured speed & health
+      // Both untried or both tried: dynamically prioritize faster APIs over slower APIs
       const statA = this.apiStats[a.id];
       const statB = this.apiStats[b.id];
-      const timeA = (statA && statA.count > 0) ? statA.avgTimeMs : 3500;
-      const timeB = (statB && statB.count > 0) ? statB.avgTimeMs : 3500;
+      const timeA = (statA && statA.count > 0) ? statA.avgTimeMs : 3000;
+      const timeB = (statB && statB.count > 0) ? statB.avgTimeMs : 3000;
       const scoreA = timeA + (a.errorCount * 3000);
       const scoreB = timeB + (b.errorCount * 3000);
       return scoreA - scoreB;

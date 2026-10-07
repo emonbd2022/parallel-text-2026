@@ -210,16 +210,11 @@ export default function App() {
     if (assignment.reassigned || assignment.completed) return false;
     const elapsed = now - assignment.startTime;
     
-    // Fast adaptive threshold:
-    // Local API calls: if running > 10.5s, it is stalling or throttled. Alter immediately!
-    if (assignment.apiType === 'local') {
-      return elapsed >= 10500;
-    }
-
-    // Central API calls: if running > 11.5s or > 2.2x rolling average, alter immediately!
+    // Dynamic adaptive threshold based on peer statistics:
+    // Only reassign if task exceeds 3x dynamic average duration (and at least 15s)
     const avgDuration = getCentralAvgDuration();
-    const relativeThreshold = Math.max(11500, avgDuration * 2.2);
-    return elapsed >= relativeThreshold;
+    const dynamicThreshold = Math.max(15000, avgDuration * 3.0);
+    return elapsed >= dynamicThreshold;
   };
   useEffect(() => {
     const idx = setInterval(() => localStorage.setItem('sessionReqCount', sessionRequestCountRef.current.toString()), 5000);
@@ -417,15 +412,16 @@ export default function App() {
   }, []);
 
   const enrichKeys = (rawKeys: ApiKey[], apiType: 'local' | 'central'): ApiKey[] => {
+    const dynamicMetrics = performanceStats.getDynamicApiMetrics(rawKeys);
     return rawKeys.map(k => {
-      const stat = perfApiStats[k.id];
+      const metric = dynamicMetrics[k.id];
       const isExcluded = sessionExcludedKeys.has(k.id);
       const isAttempted = sessionAttemptedKeys.has(k.id);
       const excl = sessionExcludedKeys.get(k.id);
 
-      let sessionStatus: 'active' | 'slow_excluded' | 'error_excluded' | 'untried' = 'active';
-      if (isExcluded) {
-        sessionStatus = excl?.reason === 'slow_excluded' ? 'slow_excluded' : 'error_excluded';
+      let sessionStatus: 'active' | 'error_excluded' | 'untried' = 'active';
+      if (isExcluded && excl?.reason === 'error_excluded') {
+        sessionStatus = 'error_excluded';
       } else if (!isAttempted && apiType === 'local') {
         sessionStatus = 'untried';
       }
@@ -434,8 +430,10 @@ export default function App() {
         ...k,
         sessionStatus,
         exclusionReason: excl?.message,
-        lastLatencyMs: stat?.lastLatencyMs,
-        avgLatencyMs: stat && stat.count > 0 ? stat.avgTimeMs : undefined
+        lastLatencyMs: metric?.lastLatencyMs || undefined,
+        avgLatencyMs: metric?.hasData ? metric.avgTimeMs : undefined,
+        speedTag: metric?.speedTag,
+        relativeSpeedRatio: metric?.hasData && metric.peerAvgLatencyMs > 0 ? Number((metric.avgTimeMs / metric.peerAvgLatencyMs).toFixed(2)) : undefined
       };
     });
   };
@@ -2033,16 +2031,7 @@ const startBatchProcessing = async (
                 stalled.abortController.abort();
             } catch (e) {}
 
-            // If local API was slow, exclude it for the remainder of the session
             const elapsedSec = Math.round((now - stalled.startTime) / 1000);
-            if (stalled.apiType === 'local') {
-                performanceStats.excludeLocalKeyForSession(
-                    stalled.keyId,
-                    'slow_excluded',
-                    `High latency (${elapsedSec}s > limit)`,
-                    now - stalled.startTime
-                );
-            }
 
             // 2. Release locks on old key and items
             keyClaimLockRef.current.delete(stalled.keyId);

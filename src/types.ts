@@ -19,10 +19,12 @@ export interface ApiKey {
   errorCount: number;
   cooldownUntil?: number; // Timestamp when this key can be used again
   usage: ApiKeyUsage;
-  sessionStatus?: 'active' | 'slow_excluded' | 'error_excluded' | 'untried';
+  sessionStatus?: 'active' | 'error_excluded' | 'untried';
   exclusionReason?: string;
   lastLatencyMs?: number;
   avgLatencyMs?: number;
+  speedTag?: 'fastest' | 'fast' | 'normal' | 'slower' | 'untried';
+  relativeSpeedRatio?: number;
 }
 
 export interface ProcessingItem {
@@ -121,6 +123,8 @@ export interface ApiKeySpeedStat {
   avgTimeMs: number;
   lastLatencyMs: number;
   lastUpdated?: number;
-  sessionStatus?: 'active' | 'slow_excluded' | 'error_excluded' | 'untried';
+  sessionStatus?: 'active' | 'error_excluded' | 'untried';
   exclusionReason?: string;
+  speedTag?: 'fastest' | 'fast' | 'normal' | 'slower' | 'untried';
+  relativeSpeedRatio?: number;
 }

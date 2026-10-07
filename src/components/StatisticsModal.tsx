@@ -119,20 +119,23 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
             ...centralKeys.map(k => ({ ...k, apiType: 'central' as const }))
         ];
 
+        const dynamicMetrics = performanceStats.getDynamicApiMetrics(allKeys);
+
         return allKeys.map(k => {
             const stat = apiStats[k.id];
             const isExcluded = sessionExcluded.has(k.id);
             const exclusionInfo = sessionExcluded.get(k.id);
             const isAttempted = sessionAttempted.has(k.id);
+            const metric = dynamicMetrics[k.id];
 
             const count = stat?.count || 0;
             const fails = stat?.fails || k.errorCount || 0;
             const avgTimeMs = stat && stat.count > 0 ? stat.avgTimeMs : 0;
             const lastLatencyMs = stat?.lastLatencyMs || 0;
 
-            let status: 'healthy' | 'untried' | 'slow_excluded' | 'error_excluded' = 'healthy';
-            if (isExcluded) {
-                status = exclusionInfo?.reason === 'slow_excluded' ? 'slow_excluded' : 'error_excluded';
+            let status: 'healthy' | 'untried' | 'error_excluded' = 'healthy';
+            if (isExcluded && exclusionInfo?.reason === 'error_excluded') {
+                status = 'error_excluded';
             } else if (!isAttempted && k.apiType === 'local') {
                 status = 'untried';
             }
@@ -147,13 +150,17 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                 avgTimeSec: avgTimeMs > 0 ? Number((avgTimeMs / 1000).toFixed(1)) : 0,
                 lastLatencySec: lastLatencyMs > 0 ? Number((lastLatencyMs / 1000).toFixed(1)) : 0,
                 status,
+                speedTag: metric?.speedTag || 'normal',
+                isFastest: metric?.isFastest || false,
+                diffPercentVsAvg: metric?.diffPercentVsAvg || 0,
+                peerAvgLatencySec: metric?.peerAvgLatencyMs ? Number((metric.peerAvgLatencyMs / 1000).toFixed(1)) : 0,
                 exclusionReason: exclusionInfo?.message,
                 hasData: count > 0
             };
         }).sort((a, b) => {
-            // Put excluded keys at the bottom
-            if (a.status.includes('excluded') && !b.status.includes('excluded')) return 1;
-            if (!a.status.includes('excluded') && b.status.includes('excluded')) return -1;
+            // Put error excluded keys at the bottom
+            if (a.status === 'error_excluded' && b.status !== 'error_excluded') return 1;
+            if (a.status !== 'error_excluded' && b.status === 'error_excluded') return -1;
             // Put untried keys next for priority
             if (a.status === 'untried' && b.status !== 'untried') return -1;
             if (a.status !== 'untried' && b.status === 'untried') return 1;
@@ -370,11 +377,11 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                                 <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
                                     <div className="flex items-center gap-2">
                                         <Key className="w-4 h-4 text-emerald-400" />
-                                        <h3 className="font-bold text-slate-200 text-sm">API Keys Latency & Session Rules</h3>
+                                        <h3 className="font-bold text-slate-200 text-sm">API Keys Dynamic Speed & Reliability</h3>
                                     </div>
                                     <div className="flex items-center gap-3 text-xs">
                                         <span className="text-slate-400">
-                                            Session Policy: <span className="text-emerald-400 font-medium">Use all local APIs at least once; exclude on slow/error</span>
+                                            Policy: <span className="text-emerald-400 font-medium">Prioritize faster APIs dynamically · Exclude only on error</span>
                                         </span>
                                     </div>
                                 </div>
@@ -384,10 +391,12 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                                         <div 
                                             key={api.id}
                                             className={`p-3.5 rounded-xl border transition-all ${
-                                                api.status.includes('excluded')
+                                                api.status === 'error_excluded'
                                                     ? 'bg-rose-950/20 border-rose-500/30'
                                                     : api.status === 'untried'
                                                     ? 'bg-blue-950/20 border-blue-500/30'
+                                                    : api.speedTag === 'fastest'
+                                                    ? 'bg-emerald-950/20 border-emerald-500/40'
                                                     : 'bg-slate-950/40 border-slate-800/80'
                                             }`}
                                         >
@@ -402,18 +411,32 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                                                 </div>
 
                                                 {api.status === 'healthy' && (
-                                                    <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                                        🟢 Active
-                                                    </span>
+                                                    <>
+                                                        {api.speedTag === 'fastest' && (
+                                                            <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1">
+                                                                ⚡ Fastest
+                                                            </span>
+                                                        )}
+                                                        {api.speedTag === 'fast' && (
+                                                            <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-teal-500/10 text-teal-300 border border-teal-500/20">
+                                                                🚀 Fast
+                                                            </span>
+                                                        )}
+                                                        {api.speedTag === 'slower' && (
+                                                            <span className="text-[9px] px-2 py-0.5 rounded font-mono font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                                                                🐢 Active (+{Math.max(0, api.diffPercentVsAvg)}%)
+                                                            </span>
+                                                        )}
+                                                        {api.speedTag === 'normal' && (
+                                                            <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                                                🟢 Active
+                                                            </span>
+                                                        )}
+                                                    </>
                                                 )}
                                                 {api.status === 'untried' && (
                                                     <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">
                                                         🟡 Untried (Next)
-                                                    </span>
-                                                )}
-                                                {api.status === 'slow_excluded' && (
-                                                    <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                                        ⚠️ Excluded (Slow)
                                                     </span>
                                                 )}
                                                 {api.status === 'error_excluded' && (
@@ -449,7 +472,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
 
                                 <div className="flex items-center justify-between pt-3 border-t border-slate-800 text-xs">
                                     <span className="text-slate-500">
-                                        Total APIs Tracked: {apiPerformanceList.length} ({sessionExcluded.size} excluded this session)
+                                        Total APIs Tracked: {apiPerformanceList.length} ({sessionExcluded.size} error-excluded this session)
                                     </span>
                                     <div className="flex gap-2">
                                         <button
