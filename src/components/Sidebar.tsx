@@ -421,6 +421,27 @@ export const Sidebar: React.FC<Props> = ({
                 </div>
                 </div>
 
+                {/* Only Category Generation Toggle */}
+                <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-fuchsia-500/40 transition-colors">
+                <div>
+                    <div className="flex items-center gap-2">
+                        <span className="block text-sm font-bold text-slate-200">Only Category Generation</span>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/30">
+                            Category Only
+                        </span>
+                    </div>
+                    <span className="text-[10px] text-slate-500 block mt-0.5">Generate only category (skips title and keyword)</span>
+                </div>
+                <button 
+                    type="button"
+                    onClick={() => setConfig(prev => ({...prev, onlyCategory: !prev.onlyCategory}))}
+                    className={`w-11 h-6 rounded-full transition-all relative ${config.onlyCategory ? 'bg-gradient-to-r from-purple-500 to-fuchsia-500 shadow-[0_0_12px_rgba(217,70,239,0.5)]' : 'bg-slate-700'}`}
+                    title={config.onlyCategory ? "Category Only is ON" : "Category Only is OFF"}
+                >
+                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${config.onlyCategory ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+                </div>
+
                 {/* Auto Export Toggle */}
                 <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group hover:border-purple-500/30 transition-colors">
                 <div>

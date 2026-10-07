@@ -6,13 +6,12 @@
  */
 
 export const SCAN_FALLBACK_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
   'gemini-3.8-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest',
   'gemini-3.7-flash',
   'gemini-3.6-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite-preview'
+  'gemini-3.5-flash-lite'
 ] as const;
 
 /**
@@ -22,14 +21,13 @@ export function getModelDisplayName(modelId: string): string {
   switch (modelId) {
     case 'gemini-3.8-flash':
       return 'Gemini 3.8 Flash';
+    case 'gemini-3.1-flash-lite':
     case 'gemini-3.1-flash-lite-preview':
       return 'Gemini 3.1 Flash Lite';
+    case 'gemini-flash-latest':
+      return 'Gemini Flash Latest';
     case 'gemini-3.7-flash':
       return 'Gemini 3.7 Flash';
-    case 'gemini-2.5-flash':
-      return 'Gemini 2.5 Flash';
-    case 'gemini-2.5-flash-lite':
-      return 'Gemini 2.5 Flash Lite';
     case 'gemini-3.6-flash':
       return 'Gemini 3.6 Flash';
     case 'gemini-3.5-flash-lite':
@@ -44,7 +42,8 @@ export function getModelDisplayName(modelId: string): string {
  * Ensures attempt 1, attempt 2, and attempt 3 use 3 distinct model families.
  */
 export function getAttemptModel(baseSelectedModel: string, attempt: number): string {
-  const base = baseSelectedModel || 'gemini-2.5-flash';
+  let base = baseSelectedModel || 'gemini-3.8-flash';
+  if (base.includes('2.5')) base = 'gemini-3.8-flash';
   if (attempt <= 1) return base;
 
   // Build a distinct pool of 3 models starting with the selected base model
@@ -56,10 +55,10 @@ export function getAttemptModel(baseSelectedModel: string, attempt: number): str
   }
 
   if (attempt === 2) {
-    return pool[1] || 'gemini-3.7-flash';
+    return pool[1] || 'gemini-3.1-flash-lite';
   }
   if (attempt === 3) {
-    return pool[2] || 'gemini-2.5-flash';
+    return pool[2] || 'gemini-flash-latest';
   }
 
   return pool[(attempt - 1) % pool.length];

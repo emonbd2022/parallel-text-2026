@@ -78,6 +78,7 @@ export interface ProcessingConfig {
   migratedTo31Lite?: boolean;
   migratedTo31LiteDefaultV4?: boolean;
   prioritizeFastest?: boolean;
+  onlyCategory?: boolean; // When true, only generate category (skip title and keywords)
 }
 
 export interface GeminiResponse {

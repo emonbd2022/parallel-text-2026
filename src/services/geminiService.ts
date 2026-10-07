@@ -193,12 +193,14 @@ Return a strictly valid JSON array where each object contains:
   promptParts.push({ text: promptText });
 
   const candidateModels = [
-    config.model || 'gemini-2.5-flash',
-    ...(config.model !== 'gemini-2.5-flash' ? ['gemini-2.5-flash'] : []),
-    ...(config.model !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
-    ...(config.model !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
-    ...(config.model !== 'gemini-3.5-flash' ? ['gemini-3.5-flash'] : [])
-  ];
+    config.model && !config.model.includes('2.5') ? config.model : 'gemini-3.1-flash-lite',
+    'gemini-3.1-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-flash-latest',
+    'gemini-3.7-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite'
+  ].filter((m, i, arr) => arr.indexOf(m) === i);
 
   let response: any = null;
   let lastError: any = null;

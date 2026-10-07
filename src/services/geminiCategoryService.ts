@@ -26,7 +26,7 @@ const AUTHORITATIVE_CATEGORIES = [
 
 export const generateCategoriesBatch = async (
   apiKey: string,
-  items: { id: string; title: string }[],
+  items: { id: string; title: string; base64Image?: string }[],
   model: string,
   onProgress?: (progressMsg: string) => void,
   localKeys?: string[],
@@ -533,10 +533,34 @@ Return the canonical category spelling exactly as listed above (e.g., "Industry"
 Do NOT reason about the numeric IDs. Do NOT output the numeric IDs.
 The index field is an application-level batch index. It is NOT an Adobe Stock category ID. The category field must contain ONLY one of the 21 category names.`;
 
-  const titlesForCategory = items.map((item, index) => `Index ${index}: ${item.title}`);
-  const categoryPromptText = `Titles:
+  const promptParts: any[] = [];
+  const hasImages = items.some(item => !!item.base64Image);
+  if (hasImages) {
+    items.forEach(item => {
+      if (item.base64Image) {
+        let base64Data = item.base64Image;
+        let mimeType = 'image/jpeg';
+        if (item.base64Image.includes(';base64,')) {
+          const parts = item.base64Image.split(';base64,');
+          mimeType = parts[0].replace(/^data:/, '') || 'image/jpeg';
+          base64Data = parts[1];
+        } else if (item.base64Image.startsWith('data:')) {
+          const commaIdx = item.base64Image.indexOf(',');
+          if (commaIdx !== -1) {
+            mimeType = item.base64Image.substring(5, commaIdx).split(';')[0] || 'image/jpeg';
+            base64Data = item.base64Image.substring(commaIdx + 1);
+          }
+        }
+        promptParts.push({ inlineData: { mimeType, data: base64Data } });
+      }
+    });
+  }
+
+  const titlesForCategory = items.map((item, index) => `Index ${index}: ${item.title || 'Stock Image'}`);
+  const categoryPromptText = `${hasImages ? `I have provided ${items.length} image(s).` : 'Titles:'}
 ${titlesForCategory.join('\n')}
 
+For EACH item in exact order (Index 0 to ${items.length - 1}), assign the single best Adobe Stock category from the allowed list.
 Return ONLY a valid JSON array.
 Each object must have exactly:
 {
@@ -544,6 +568,8 @@ Each object must have exactly:
   "category": "<category name>"
 }
 Do not include explanations, markdown, comments, or any additional text.`;
+
+  promptParts.push({ text: categoryPromptText });
 
   const candidateModels = [
     model || 'gemini-2.5-flash',
@@ -562,7 +588,7 @@ Do not include explanations, markdown, comments, or any additional text.`;
       try {
         catResponse = await ai.models.generateContent({
           model: candidateModel,
-          contents: categoryPromptText,
+          contents: promptParts,
           config: {
             systemInstruction: systemInstruction,
             responseMimeType: "application/json",

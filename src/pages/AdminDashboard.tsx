@@ -696,8 +696,10 @@ export const AdminDashboard: React.FC = () => {
 
   const handleUpdateUser = async (uid: string, updates: Partial<UserData>) => {
     try {
-      await updateDoc(doc(db, 'users', uid), updates);
-      recordFirestoreWrite('users', 1, 'AdminDashboard:updateUser');
+      if (!isFirestoreQuotaExhausted()) {
+        await updateDoc(doc(db, 'users', uid), updates);
+        recordFirestoreWrite('users', 1, 'AdminDashboard:updateUser');
+      }
       setUsersByPage(prev => {
         const next = { ...prev };
         for (const p of Object.keys(next)) {
@@ -708,6 +710,7 @@ export const AdminDashboard: React.FC = () => {
       });
       setAllUsers(prev => prev.map(u => u.uid === uid ? { ...u, ...updates } : u));
     } catch (error) {
+      handleFirestoreError(error, 'AdminDashboard:updateUser');
       console.error("Error updating user:", error);
     }
   };
@@ -719,12 +722,14 @@ export const AdminDashboard: React.FC = () => {
     }
 
     try {
-      await updateDoc(doc(db, 'users', targetUser.uid), {
-        deviceIds: [],
-        devices: [],
-        lastActiveAt: new Date().toISOString()
-      });
-      recordFirestoreWrite('users', 1, 'AdminDashboard:resetUserDevices');
+      if (!isFirestoreQuotaExhausted()) {
+        await updateDoc(doc(db, 'users', targetUser.uid), {
+          deviceIds: [],
+          devices: [],
+          lastActiveAt: new Date().toISOString()
+        });
+        recordFirestoreWrite('users', 1, 'AdminDashboard:resetUserDevices');
+      }
 
       setUsersByPage(prev => {
         const next = { ...prev };
@@ -746,6 +751,7 @@ export const AdminDashboard: React.FC = () => {
       });
       alert(`Device authorization slots successfully reset for ${targetName}. The user can now register new devices upon login.`);
     } catch (error: any) {
+      handleFirestoreError(error, 'AdminDashboard:resetUserDevices');
       console.error("Error resetting devices:", error);
       alert(`Failed to reset devices: ${error?.message || 'Unknown error'}`);
     }

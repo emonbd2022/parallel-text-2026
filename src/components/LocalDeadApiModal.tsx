@@ -67,7 +67,7 @@ export const LocalDeadApiModal: React.FC<LocalDeadApiModalProps> = ({
 }) => {
   const [demoImage, setDemoImage] = useState<string | null>(DEFAULT_DEMO_IMAGE);
   const [demoImageName, setDemoImageName] = useState<string>('Stock Camera Sample (Preset)');
-  const [selectedModel, setSelectedModel] = useState<string>('gemini-3.1-flash-lite-preview');
+  const [selectedModel, setSelectedModel] = useState<string>('gemini-3.1-flash-lite');
   
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
@@ -75,7 +75,7 @@ export const LocalDeadApiModal: React.FC<LocalDeadApiModalProps> = ({
   
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
   const [currentAttempt, setCurrentAttempt] = useState<number>(0);
-  const [activeAttemptModel, setActiveAttemptModel] = useState<string>('gemini-3.1-flash-lite-preview');
+  const [activeAttemptModel, setActiveAttemptModel] = useState<string>('gemini-3.1-flash-lite');
   const [cooldownCountdown, setCooldownCountdown] = useState<number | null>(null);
   const [currentLatency, setCurrentLatency] = useState<number | null>(null);
   
@@ -634,11 +634,11 @@ export const LocalDeadApiModal: React.FC<LocalDeadApiModalProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
               {[
-                { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', badge: 'New', desc: 'Cutting-edge speed' },
-                { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite', badge: 'Default (500 RPD)', desc: 'Fastest verification' },
-                { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', badge: 'Latest', desc: 'High intelligence' },
+                { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', badge: 'Default (500 RPD)', desc: 'Fastest verification' },
+                { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', badge: 'Fast', desc: 'Recommended speed' },
+                { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', badge: 'Latest', desc: 'Always up-to-date' },
+                { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', badge: 'Smart', desc: 'High intelligence' },
                 { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', badge: 'Stable', desc: 'Standard validation' },
-                { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite', badge: 'Lite', desc: 'High quota' },
               ].map(m => (
                 <button
                   key={m.id}

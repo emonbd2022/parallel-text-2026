@@ -1473,16 +1473,39 @@ Use ONLY one of these 21 categories:
 
 These are the application's authoritative category names.`;
 
-        const promptText = `I have provided ${items.length} titles.
-For EACH title, assign the single best Adobe Stock category from the allowed list.
+        const promptParts: any[] = [];
+        const hasImages = items.some((item: any) => !!item.base64Image);
+        if (hasImages) {
+            items.forEach((item: any) => {
+                if (item.base64Image) {
+                    let base64Data = item.base64Image;
+                    let mimeType = 'image/jpeg';
+                    if (item.base64Image.includes(';base64,')) {
+                        const parts = item.base64Image.split(';base64,');
+                        mimeType = parts[0].replace(/^data:/, '') || 'image/jpeg';
+                        base64Data = parts[1];
+                    } else if (item.base64Image.startsWith('data:')) {
+                        const commaIdx = item.base64Image.indexOf(',');
+                        if (commaIdx !== -1) {
+                            mimeType = item.base64Image.substring(5, commaIdx).split(';')[0] || 'image/jpeg';
+                            base64Data = item.base64Image.substring(commaIdx + 1);
+                        }
+                    }
+                    promptParts.push({ inlineData: { mimeType, data: base64Data } });
+                }
+            });
+        }
+
+        const promptText = `I have provided ${items.length} item(s).
+For EACH item in exact order (Index 0 to ${items.length - 1}), assign the single best Adobe Stock category from the allowed list.
 
 Return a strictly valid JSON array where each object contains:
 - "index": integer (0-based index corresponding to the input order)
 - "category": string (the exact category name)`;
 
-        const promptParts: any[] = [{ text: promptText }];
+        promptParts.push({ text: promptText });
         items.forEach((item: any, index: number) => {
-            promptParts.push({ text: `Title ${index}: ${item.title}` });
+            promptParts.push({ text: `Item ${index} Title / Description: ${item.title || 'Stock Image'}` });
         });
 
         const candidateModels = [

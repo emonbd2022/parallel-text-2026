@@ -532,19 +532,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               await updateDoc(userRef, updates);
               recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
             } catch (e: any) {
-              const isQuota = handleFirestoreError(e, 'AuthContext:updateUserDoc');
-              if (!isQuota) {
-                // If full update failed due to permission restriction, try minimal deviceIds update
-                try {
-                  await updateDoc(userRef, {
-                    deviceIds: dbDeviceIds,
-                    lastActiveAt: new Date().toISOString()
-                  });
-                  recordFirestoreWrite('users', 1, 'AuthContext:updateUserDocMinimal');
-                } catch (fallbackErr) {
-                  handleFirestoreError(fallbackErr, 'AuthContext:updateUserDocMinimal');
-                }
-              }
+              handleFirestoreError(e, 'AuthContext:updateUserDoc');
             }
           }
 

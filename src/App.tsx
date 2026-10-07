@@ -372,6 +372,7 @@ export default function App() {
             autoExport: parsed.autoExport ?? true,
             autoScroll: parsed.autoScroll ?? true,
             prioritizeFastest: parsed.prioritizeFastest ?? true,
+            onlyCategory: parsed.onlyCategory ?? false,
           };
       }
     } catch (e) { /* ignore */ }
@@ -393,7 +394,8 @@ export default function App() {
       autoExport: true,
       autoScroll: true,
       prioritizeFastest: true,
-      migratedTo31LiteDefaultV4: true
+      migratedTo31LiteDefaultV4: true,
+      onlyCategory: false
     };
   });
 
@@ -833,8 +835,9 @@ export default function App() {
     setItems(prev => prev.map(p => p.id === id ? {
       ...p,
       status: 'pending',
-      title: '',
-      keywords: '',
+      title: config.onlyCategory ? p.title : '',
+      keywords: config.onlyCategory ? p.keywords : '',
+      category: '',
       errorMsg: undefined,
       attempts: 0,
       assignedKeyId: undefined,
@@ -967,7 +970,15 @@ export default function App() {
     const batchStartTime = Date.now();
 
     try {
-      const payload = batchItems.map(item => ({ id: item.id, title: item.title }));
+      const payload = batchItems.map(item => {
+        const cleanName = item.name ? item.name.replace(/\.[^/.]+$/, '').replace(/[-_]+/g, ' ').trim() : '';
+        const effectiveTitle = item.title?.trim() || cleanName || 'Stock Photo';
+        return {
+          id: item.id,
+          title: effectiveTitle,
+          base64Image: item.thumb || undefined
+        };
+      });
       let results: any;
       let usedModel = config.model;
 
@@ -1518,11 +1529,12 @@ const startBatchProcessing = async (
       const numExported = newlyExportedItems.length;
       
       if (numExported > 0) {
+          const creditsPerImage = config.onlyCategory ? 1 : 2;
           const updates: any = {
               totalProcessedImages: increment(numExported)
           };
           if (!userData.unlimited) {
-              updates.credits = increment(-(numExported * 2));
+              updates.credits = increment(-(numExported * creditsPerImage));
           }
           
           // Single atomic updateDoc on users document only (guarded against quota errors)
@@ -1546,11 +1558,11 @@ const startBatchProcessing = async (
           setUserData(prev => prev ? {
               ...prev,
               totalProcessedImages: prev.totalProcessedImages + numExported,
-              credits: prev.unlimited ? prev.credits : (prev.credits - (numExported * 2))
+              credits: prev.unlimited ? prev.credits : (prev.credits - (numExported * creditsPerImage))
           } : null);
           
           if (config.apiMode === 'central') {
-              const consumed = numExported * 2;
+              const consumed = numExported * creditsPerImage;
               try {
                   const saved = localStorage.getItem('centralUsageStats');
                   let currentLocalUsed = 0;
@@ -1666,13 +1678,19 @@ const startBatchProcessing = async (
     const busyKeyIds = new Set<string>(Array.from(activeKeyIds));
 
     // 2. Identify Pending Items for both stages concurrently
-    // Stage 1 (Title/Keywords): items pending with thumbnail that have no title yet
-    const pendingTitleItems = items.filter(i => i.status === 'pending' && !i.title && i.thumb);
-    // Stage 2 (Category): items pending that HAVE title/keywords but NO category yet
-    const pendingCategoryItems = items.filter(i => i.status === 'pending' && i.title && !i.category);
+    // Stage 1 (Title/Keywords): items pending with thumbnail that have no title yet (skipped if onlyCategory is on)
+    const pendingTitleItems = config.onlyCategory
+      ? []
+      : items.filter(i => i.status === 'pending' && !i.title && i.thumb);
+    // Stage 2 (Category):
+    // In normal mode: items pending that HAVE title/keywords but NO category yet
+    // In onlyCategory mode: items pending that have NO category yet (title and keywords are untouched)
+    const pendingCategoryItems = config.onlyCategory
+      ? items.filter(i => i.status === 'pending' && !i.category && (i.thumb || i.title))
+      : items.filter(i => i.status === 'pending' && i.title && !i.category);
 
-    const isProcessingTitle = items.some(i => (i.status === 'processing' || i.status === 'compressing') && !i.title);
-    const isProcessingCategory = items.some(i => i.status === 'processing' && i.title && !i.category);
+    const isProcessingTitle = !config.onlyCategory && items.some(i => (i.status === 'processing' || i.status === 'compressing') && !i.title);
+    const isProcessingCategory = items.some(i => i.status === 'processing' && (config.onlyCategory ? !i.category : (i.title && !i.category)));
 
     // If both queues are empty
     if (pendingTitleItems.length === 0 && pendingCategoryItems.length === 0) {
@@ -1680,7 +1698,7 @@ const startBatchProcessing = async (
             setIsProcessing(false);
             const allDone = items.length > 0 && items.every(i => i.status === 'done');
             if (allDone) {
-                setStatusMsg('Processing complete.');
+                setStatusMsg(config.onlyCategory ? 'Category processing complete.' : 'Processing complete.');
                 playSuccessSound();
                 confetti({
                     particleCount: 150,
@@ -1691,10 +1709,10 @@ const startBatchProcessing = async (
                 if (config.autoExport) {
                     handleExport();
                 } else {
-                    showNotification('Processing Complete', 'All items have been processed successfully.', 'success');
+                    showNotification('Processing Complete', config.onlyCategory ? 'All categories have been generated successfully.' : 'All items have been processed successfully.', 'success');
                 }
             } else {
-                const missingBlobs = items.some(i => i.status === 'pending' && !i.thumb);
+                const missingBlobs = items.some(i => i.status === 'pending' && !i.thumb && !i.title);
                 if (missingBlobs) {
                     setStatusMsg('Stopped. Some pending items are missing image data. Please re-upload them.');
                     showNotification('Processing Stopped', 'Some pending items are missing image data.', 'warning');
@@ -1704,8 +1722,8 @@ const startBatchProcessing = async (
                 }
             }
         } else {
-            const titleCount = items.filter(i => (i.status === 'processing' || i.status === 'compressing') && !i.title).length;
-            const catCount = items.filter(i => i.status === 'processing' && i.title && !i.category).length;
+            const titleCount = config.onlyCategory ? 0 : items.filter(i => (i.status === 'processing' || i.status === 'compressing') && !i.title).length;
+            const catCount = items.filter(i => i.status === 'processing' && (config.onlyCategory ? !i.category : (i.title && !i.category))).length;
             if (titleCount > 0 && catCount > 0) {
                 setStatusMsg(`Pipeline active: ${titleCount} generating Title/Keywords, ${catCount} generating Category...`);
             } else if (titleCount > 0) {
@@ -1953,8 +1971,8 @@ const startBatchProcessing = async (
             setStatusMsg("Waiting for available keys...");
         }
     } else {
-        const activeTitle = items.filter(i => (i.status === 'processing' || i.status === 'compressing') && !i.title).length;
-        const activeCat = items.filter(i => i.status === 'processing' && i.title && !i.category).length;
+        const activeTitle = config.onlyCategory ? 0 : items.filter(i => (i.status === 'processing' || i.status === 'compressing') && !i.title).length;
+        const activeCat = items.filter(i => i.status === 'processing' && (config.onlyCategory ? !i.category : (i.title && !i.category))).length;
         if (activeTitle > 0 && activeCat > 0) {
             setStatusMsg(`Pipeline active: ${activeTitle} in Title/Keywords, ${activeCat} in Category...`);
         } else if (activeTitle > 0) {
@@ -2154,8 +2172,12 @@ const startBatchProcessing = async (
   const doneCount = items.filter(i => i.status === 'done').length;
   const progressScore = items.reduce((acc, item) => {
       let score = 0;
-      if (item.title || item.status === 'done' || item.category) score += 0.5;
-      if (item.status === 'done' || item.category) score += 0.5;
+      if (config.onlyCategory) {
+          if (item.status === 'done' || item.category) score += 1;
+      } else {
+          if (item.title || item.status === 'done' || item.category) score += 0.5;
+          if (item.status === 'done' || item.category) score += 0.5;
+      }
       return acc + score;
   }, 0);
   const queueProgressPercent = items.length > 0 ? Math.round((progressScore / items.length) * 100) : 0;
@@ -2301,8 +2323,10 @@ const startBatchProcessing = async (
            <div 
                style={{ 
                   width: `${items.length ? (
-                      ((items.filter(i => i.title && i.keywords).length * 0.5) + 
-                       (items.filter(i => i.category && i.status === 'done').length * 0.5)) / items.length
+                      (config.onlyCategory
+                        ? (items.filter(i => i.category && i.status === 'done').length)
+                        : ((items.filter(i => i.title && i.keywords).length * 0.5) + 
+                           (items.filter(i => i.category && i.status === 'done').length * 0.5))) / items.length
                   ) * 100 : 0}%` 
                }}
                className="h-full bg-gradient-to-r from-purple-500 via-fuchsia-500 to-emerald-500 transition-all duration-300 ease-out shadow-[0_0_15px_rgba(168,85,247,0.5)]"
@@ -2312,8 +2336,10 @@ const startBatchProcessing = async (
                className="absolute transition-all duration-300 ease-out flex flex-col items-center justify-center -translate-x-1/2"
                style={{ 
                   left: `${items.length ? (
-                      ((items.filter(i => i.title && i.keywords).length * 0.5) + 
-                       (items.filter(i => i.category && i.status === 'done').length * 0.5)) / items.length
+                      (config.onlyCategory
+                        ? (items.filter(i => i.category && i.status === 'done').length)
+                        : ((items.filter(i => i.title && i.keywords).length * 0.5) + 
+                           (items.filter(i => i.category && i.status === 'done').length * 0.5))) / items.length
                   ) * 100 : 0}%` 
                }}
              >
@@ -2391,16 +2417,32 @@ const startBatchProcessing = async (
               </div>
               
               <button
+                type="button"
+                onClick={() => setConfig(prev => ({ ...prev, onlyCategory: !prev.onlyCategory }))}
+                title={config.onlyCategory ? "Only Category is ON (Titles & Keywords won't be generated)" : "Full Mode (Title, Keywords & Category will be generated)"}
+                className={`px-3.5 py-2 rounded-lg font-bold text-xs border transition-all flex items-center gap-2 active:scale-95 shadow-sm ${
+                  config.onlyCategory
+                    ? 'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/50 shadow-[0_0_15px_rgba(217,70,239,0.3)]'
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700/80 hover:text-white'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${config.onlyCategory ? 'bg-fuchsia-400 animate-pulse' : 'bg-slate-500'}`} />
+                <span>{config.onlyCategory ? 'Only Category: ON' : 'Only Category: OFF'}</span>
+              </button>
+
+              <button
                 onClick={handleStartStop}
                 disabled={items.length === 0}
                 title={isProcessing ? 'Stop Processing (Ctrl+Enter / Cmd+Enter)' : 'Start Processing (Ctrl+Enter / Cmd+Enter)'}
                 className={`px-6 py-2 rounded-lg font-bold text-sm shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0 ${
                     isProcessing 
                     ? 'bg-gradient-to-r from-orange-600 to-red-600 text-white shadow-orange-900/30' 
+                    : config.onlyCategory
+                    ? 'bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white shadow-fuchsia-900/40 hover:shadow-fuchsia-900/60'
                     : 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-blue-900/30 hover:shadow-blue-900/50'
                 } disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none`}
               >
-                {isProcessing ? 'Stop' : 'Start'} Processing
+                {isProcessing ? 'Stop' : 'Start'} {config.onlyCategory ? 'Category' : 'Processing'}
               </button>
               <button 
                 type="button"
@@ -2554,8 +2596,10 @@ const startBatchProcessing = async (
                            <div 
                                style={{ 
                                    width: `${items.length ? (
-                                      ((items.filter(i => i.title && i.keywords).length * 0.5) + 
-                                        (items.filter(i => i.category && i.status === 'done').length * 0.5)) / items.length
+                                      (config.onlyCategory
+                                        ? (items.filter(i => i.category && i.status === 'done').length)
+                                        : ((items.filter(i => i.title && i.keywords).length * 0.5) + 
+                                           (items.filter(i => i.category && i.status === 'done').length * 0.5))) / items.length
                                   ) * 100 : 0}%` 
                                 }}
                                className="h-full bg-gradient-to-r from-purple-500 via-fuchsia-500 to-emerald-500 transition-all duration-300 ease-out shadow-[0_0_15px_rgba(168,85,247,0.5)]"
@@ -2565,8 +2609,10 @@ const startBatchProcessing = async (
                                className="absolute transition-all duration-300 ease-out flex flex-col items-center justify-center -translate-x-1/2"
                                style={{ 
                                    left: `${items.length ? (
-                                      ((items.filter(i => i.title && i.keywords).length * 0.5) + 
-                                        (items.filter(i => i.category && i.status === 'done').length * 0.5)) / items.length
+                                      (config.onlyCategory
+                                        ? (items.filter(i => i.category && i.status === 'done').length)
+                                        : ((items.filter(i => i.title && i.keywords).length * 0.5) + 
+                                           (items.filter(i => i.category && i.status === 'done').length * 0.5))) / items.length
                                   ) * 100 : 0}%` 
                                 }}
                              >
@@ -2636,9 +2682,9 @@ const startBatchProcessing = async (
                           filter === 'failed' 
                             ? items.filter(i => i.status === 'error') 
                             : filter === 'uncompleted' 
-                            ? items.filter(i => !i.title?.trim() || !i.keywords?.trim() || !i.category?.trim()) 
+                            ? items.filter(i => config.onlyCategory ? !i.category?.trim() : (!i.title?.trim() || !i.keywords?.trim() || !i.category?.trim())) 
                             : filter === 'completed'
-                            ? items.filter(i => i.status === 'done' || (i.status !== 'error' && i.status !== 'processing' && i.status !== 'compressing' && Boolean(i.title?.trim()) && Boolean(i.keywords?.trim()) && Boolean(i.category?.trim())))
+                            ? items.filter(i => config.onlyCategory ? (i.status === 'done' || Boolean(i.category?.trim())) : (i.status === 'done' || (i.status !== 'error' && i.status !== 'processing' && i.status !== 'compressing' && Boolean(i.title?.trim()) && Boolean(i.keywords?.trim()) && Boolean(i.category?.trim()))))
                             : filter === 'ongoing' 
                             ? items.filter(i => i.status === 'processing' || i.status === 'compressing') 
                             : items
@@ -2649,6 +2695,7 @@ const startBatchProcessing = async (
                         onRegenerate={handleRegenerate}
                         onCopy={handleCopy}
                         forceTransparency={config.forceTransparency || false}
+                        onlyCategory={config.onlyCategory}
                       />
                     </div>
                   </div>
