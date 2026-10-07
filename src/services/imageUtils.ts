@@ -131,8 +131,8 @@ export const compressImage = async (
     return { blob: file, dataUrl: null };
   }
 
-  let maxDim = 800;
-  let quality = 0.6;
+  let maxDim = 512;
+  let quality = 0.65;
   let blob: Blob | null = null;
   let attempts = 0;
 
@@ -154,7 +154,10 @@ export const compressImage = async (
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', {
+      alpha: isTransparent,
+      desynchronized: true
+    });
 
     if (!ctx) throw new Error('Could not get canvas context');
 
@@ -164,6 +167,10 @@ export const compressImage = async (
     const resultBlob = await new Promise<Blob | null>((resolve) => 
       canvas.toBlob(resolve, outputMime, quality)
     );
+
+    // Free canvas GPU buffer immediately
+    canvas.width = 0;
+    canvas.height = 0;
 
     if (!resultBlob) throw new Error('Compression failed');
 

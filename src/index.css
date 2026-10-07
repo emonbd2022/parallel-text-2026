@@ -115,3 +115,28 @@ html {
 .animate-spin-slow {
   animation: spin-slow 12s linear infinite;
 }
+
+/* Fluid GPU & CPU High-Efficiency CSS Containment */
+.contain-card {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 460px;
+  contain: layout style paint;
+}
+
+.contain-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 64px;
+  contain: layout style paint;
+}
+
+.gpu-layer {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+
+/* Optimize image rendering performance */
+img {
+  content-visibility: auto;
+}
+

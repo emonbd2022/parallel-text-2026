@@ -2113,11 +2113,14 @@ const startBatchProcessing = async (
       return () => clearInterval(interval);
   }, [isProcessing]);
 
-  // Periodic outlier checker for dynamic speed load balancing across all modes
+  // Periodic outlier checker for dynamic speed load balancing across all modes (efficient interval)
   useEffect(() => {
     if (!isProcessing) return;
 
     const monitorInterval = setInterval(() => {
+      // If tab is hidden or no active tasks, skip to save CPU
+      if (document.hidden || activeCentralAssignmentsRef.current.size === 0) return;
+      
       const now = Date.now();
       let hasStalled = false;
       activeCentralAssignmentsRef.current.forEach(assignment => {
@@ -2129,7 +2132,7 @@ const startBatchProcessing = async (
       if (hasStalled) {
         setTick(t => t + 1);
       }
-    }, 1000);
+    }, 2500);
 
     return () => clearInterval(monitorInterval);
   }, [isProcessing]);

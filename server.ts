@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import path from 'path';
 import crypto from 'crypto';
@@ -818,6 +819,14 @@ app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
 app.use(cors());
+app.use(compression({
+    level: 6, // optimal balance between compression ratio and CPU time
+    threshold: 1024, // only compress responses > 1KB
+    filter: (req, res) => {
+        if (req.headers['x-no-compression']) return false;
+        return compression.filter(req, res);
+    }
+}));
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
@@ -2586,10 +2595,15 @@ async function startServer() {
         }
     } else if (!process.env.VERCEL) {
         const distPath = path.join(process.cwd(), 'dist');
-        app.use(express.static(distPath));
+        app.use(express.static(distPath, {
+            maxAge: '1y',
+            immutable: true,
+            etag: true
+        }));
         app.get('*all', (req, res) => {
             const indexPath = path.join(distPath, 'index.html');
             if (fs.existsSync(indexPath)) {
+                res.setHeader('Cache-Control', 'no-cache');
                 res.sendFile(indexPath);
             } else {
                 res.status(404).send('Not Found');

@@ -13,8 +13,8 @@ self.onmessage = async (e: MessageEvent) => {
       height = 1024;
     }
 
-    let currentMaxDim = maxDim || 800;
-    let currentQuality = quality || 0.6;
+    let currentMaxDim = maxDim || 512;
+    let currentQuality = quality || 0.65;
     let attempts = 0;
     let resultBlob: Blob | null = null;
 
@@ -29,7 +29,11 @@ self.onmessage = async (e: MessageEvent) => {
       }
 
       const offscreen = new OffscreenCanvas(targetW, targetH);
-      const ctx = offscreen.getContext('2d');
+      const isAlpha = mimeType?.includes('png') || mimeType?.includes('webp');
+      const ctx = offscreen.getContext('2d', { 
+        alpha: isAlpha,
+        desynchronized: true 
+      });
       if (!ctx) throw new Error('Could not get OffscreenCanvas 2D context');
 
       ctx.clearRect(0, 0, targetW, targetH);
@@ -39,6 +43,10 @@ self.onmessage = async (e: MessageEvent) => {
         type: mimeType || 'image/webp',
         quality: currentQuality,
       });
+
+      // Free canvas backing store memory
+      offscreen.width = 0;
+      offscreen.height = 0;
 
       if (resultBlob.size <= (targetSizeKB || 50) * 1024 || attempts === 2) {
         break;
