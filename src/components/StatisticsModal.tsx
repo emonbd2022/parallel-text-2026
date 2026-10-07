@@ -1,24 +1,39 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { X, Calendar } from 'lucide-react';
-import { ProcessingLog } from '../types';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LineChart, Line, Cell } from 'recharts';
+import { X, Calendar, Zap, Clock, Activity, CheckCircle, AlertTriangle, RotateCcw, Trash2, Cpu, Key, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { ProcessingLog, ApiKey, ModelSpeedStat, ApiKeySpeedStat } from '../types';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell } from 'recharts';
+import { performanceStats } from '../services/performanceStatsService';
 
 interface Props {
   logs: ProcessingLog[];
   modelStats: Record<string, { totalTimeMs: number, count: number, fails: number }>;
   models: { id: string, name: string }[];
+  localKeys?: ApiKey[];
+  centralKeys?: ApiKey[];
   onClose: () => void;
 }
 
-export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onClose }) => {
-    const [isListExpanded, setIsListExpanded] = useState(false);
+export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelStats, models, localKeys = [], centralKeys = [], onClose }) => {
+    const [activeTab, setActiveTab] = useState<'speed' | 'overview' | 'logs'>('speed');
     const [dateRange, setDateRange] = useState({ start: '', end: '' });
     const [tick, setTick] = useState(0);
 
-    // Auto-refresh data while modal is open
+    // Live performance stats from performanceStatsService
+    const [speedModelStats, setSpeedModelStats] = useState<Record<string, ModelSpeedStat>>(() => performanceStats.getModelStats());
+    const [apiStats, setApiStats] = useState<Record<string, ApiKeySpeedStat>>(() => performanceStats.getApiStats());
+    const [sessionExcluded, setSessionExcluded] = useState(() => performanceStats.getSessionExcludedKeys());
+    const [sessionAttempted, setSessionAttempted] = useState(() => performanceStats.getSessionAttemptedKeys());
+
+    // Subscribe to real-time performance updates
     useEffect(() => {
-        const interval = setInterval(() => setTick(t => t + 1), 1000);
-        return () => clearInterval(interval);
+        const unsubscribe = performanceStats.subscribe(() => {
+            setSpeedModelStats(performanceStats.getModelStats());
+            setApiStats(performanceStats.getApiStats());
+            setSessionExcluded(performanceStats.getSessionExcludedKeys());
+            setSessionAttempted(performanceStats.getSessionAttemptedKeys());
+            setTick(t => t + 1);
+        });
+        return () => unsubscribe();
     }, []);
 
     // Ensure logs are sorted
@@ -45,7 +60,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
     const customRangeTotal = useMemo(() => {
         if (!dateRange.start || !dateRange.end) return 0;
         const start = new Date(dateRange.start).getTime();
-        const end = new Date(dateRange.end).getTime() + 24 * 60 * 60 * 1000; // include end day
+        const end = new Date(dateRange.end).getTime() + 24 * 60 * 60 * 1000;
         let total = 0;
         sortedLogs.forEach(log => {
             const time = new Date(log.timestamp).getTime();
@@ -54,347 +69,481 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
         return total;
     }, [sortedLogs, dateRange, tick]);
 
-    // 3. Daily Activity Graph (last 14 days)
-    const dailyData = useMemo(() => {
-        const dataMap: Record<string, number> = {};
-        const now = new Date();
-        for (let i = 13; i >= 0; i--) {
-            const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-            const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-            dataMap[dateStr] = 0;
-        }
-        
-        sortedLogs.forEach(log => {
-            const dateStr = new Date(log.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-            if (dataMap[dateStr] !== undefined) {
-                dataMap[dateStr] += log.itemCount;
-            }
-        });
+    // 3. Analyzed Model Performance
+    const modelPerformanceList = useMemo(() => {
+        const list = models.filter(m => m.id !== 'turbo').map(m => {
+            const liveStat = speedModelStats[m.id];
+            const fallbackStat = propModelStats[m.id];
+            
+            const count = liveStat?.count || fallbackStat?.count || 0;
+            const fails = liveStat?.fails || fallbackStat?.fails || 0;
+            const totalTimeMs = liveStat?.totalTimeMs || fallbackStat?.totalTimeMs || 0;
+            const avgTimeMs = count > 0 ? totalTimeMs / count : 0;
+            const lastLatencyMs = liveStat?.lastLatencyMs || 0;
+            const totalRuns = count + fails;
+            const successRate = totalRuns > 0 ? (count / totalRuns) * 100 : (count > 0 ? 100 : 0);
 
-        return Object.keys(dataMap).map(date => ({ date, count: dataMap[date] }));
-    }, [sortedLogs]);
-
-    // 4. Time of Day Activity (Screen time like)
-    const hourlyData = useMemo(() => {
-        const hours = Array.from({ length: 24 }, (_, i) => ({ hour: i, count: 0, label: `${i}:00` }));
-        sortedLogs.forEach(log => {
-            const h = new Date(log.timestamp).getHours();
-            hours[h].count += log.itemCount;
-        });
-        return hours;
-    }, [sortedLogs]);
-
-    // 5. Model Efficiency
-    const modelPerformance = useMemo(() => {
-        const results = models.filter(m => m.id !== 'turbo').map(m => {
-            const stat = modelStats[m.id];
-            const avgTime = stat && stat.count > 0 ? stat.totalTimeMs / stat.count : 0;
-            const totalAttempts = stat ? (stat.count + stat.fails) : 0;
-            const successRate = totalAttempts > 0 ? (stat.count / totalAttempts) * 100 : 0;
-            const score = avgTime > 0 ? avgTime + ((stat?.fails || 0) * 5000) : 999999;
             return {
                 id: m.id,
                 name: m.name.split(' (')[0],
-                avgTime,
+                rawName: m.name,
+                isDefault: m.id.includes('3.1-flash-lite'),
+                count,
+                fails,
+                totalRuns,
+                avgTimeMs,
+                avgTimeSec: avgTimeMs > 0 ? Number((avgTimeMs / 1000).toFixed(1)) : 0,
+                lastLatencySec: lastLatencyMs > 0 ? Number((lastLatencyMs / 1000).toFixed(1)) : 0,
                 successRate,
-                score,
-                hasData: !!stat && stat.count > 0
+                hasData: count > 0
             };
-        }).filter(m => m.hasData);
-
-        if (results.length === 0) return { best: null, worst: null };
-
-        const sortedByScore = [...results].sort((a, b) => a.score - b.score);
-        return {
-            best: sortedByScore[0],
-            worst: sortedByScore[sortedByScore.length - 1]
-        };
-    }, [modelStats, models, tick]);
-
-    // 7. Hourly Performance Heatmap
-    const heatmapData = useMemo(() => {
-        const matrix = Array(24).fill(0).map(() => ({ totalMs: 0, count: 0, items: 0 }));
-        sortedLogs.forEach(log => {
-            const h = new Date(log.timestamp).getHours();
-            matrix[h].totalMs += log.durationMs;
-            matrix[h].count += log.itemCount;
-            matrix[h].items += log.itemCount;
         });
-        
-        let minAvg = Infinity;
-        let maxAvg = 0;
-        const hours = matrix.map((h, i) => {
-            const avg = h.count > 0 ? h.totalMs / h.count : 0;
-            if (h.count > 0) {
-                if (avg < minAvg) minAvg = avg;
-                if (avg > maxAvg) maxAvg = avg;
+
+        // Sort by average latency ascending (fastest model first)
+        list.sort((a, b) => {
+            if (a.hasData && !b.hasData) return -1;
+            if (!a.hasData && b.hasData) return 1;
+            if (a.hasData && b.hasData) return a.avgTimeMs - b.avgTimeMs;
+            if (a.isDefault) return -1;
+            if (b.isDefault) return 1;
+            return 0;
+        });
+
+        return list;
+    }, [models, speedModelStats, propModelStats, tick]);
+
+    // 4. Analyzed API Performance (Local and Central keys)
+    const apiPerformanceList = useMemo(() => {
+        const allKeys = [
+            ...localKeys.map(k => ({ ...k, apiType: 'local' as const })),
+            ...centralKeys.map(k => ({ ...k, apiType: 'central' as const }))
+        ];
+
+        return allKeys.map(k => {
+            const stat = apiStats[k.id];
+            const isExcluded = sessionExcluded.has(k.id);
+            const exclusionInfo = sessionExcluded.get(k.id);
+            const isAttempted = sessionAttempted.has(k.id);
+
+            const count = stat?.count || 0;
+            const fails = stat?.fails || k.errorCount || 0;
+            const avgTimeMs = stat && stat.count > 0 ? stat.avgTimeMs : 0;
+            const lastLatencyMs = stat?.lastLatencyMs || 0;
+
+            let status: 'healthy' | 'untried' | 'slow_excluded' | 'error_excluded' = 'healthy';
+            if (isExcluded) {
+                status = exclusionInfo?.reason === 'slow_excluded' ? 'slow_excluded' : 'error_excluded';
+            } else if (!isAttempted && k.apiType === 'local') {
+                status = 'untried';
             }
-            return { hour: i, avg, items: h.items, hasData: h.count > 0 };
-        });
-        
-        return { hours, minAvg, maxAvg };
-    }, [sortedLogs]);
 
-    // 6. Processing Time Trend
-    const latencyData = useMemo(() => {
-        const recentLogs = sortedLogs.slice(-20);
-        return recentLogs.map((log, index) => {
-            const dateStr = new Date(log.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
             return {
-                session: `B${index + 1}`,
-                date: dateStr,
-                avgTimeSec: log.itemCount > 0 ? Number((log.durationMs / log.itemCount / 1000).toFixed(1)) : 0
+                id: k.id,
+                label: k.label,
+                apiType: k.apiType,
+                count,
+                fails,
+                avgTimeMs,
+                avgTimeSec: avgTimeMs > 0 ? Number((avgTimeMs / 1000).toFixed(1)) : 0,
+                lastLatencySec: lastLatencyMs > 0 ? Number((lastLatencyMs / 1000).toFixed(1)) : 0,
+                status,
+                exclusionReason: exclusionInfo?.message,
+                hasData: count > 0
             };
+        }).sort((a, b) => {
+            // Put excluded keys at the bottom
+            if (a.status.includes('excluded') && !b.status.includes('excluded')) return 1;
+            if (!a.status.includes('excluded') && b.status.includes('excluded')) return -1;
+            // Put untried keys next for priority
+            if (a.status === 'untried' && b.status !== 'untried') return -1;
+            if (a.status !== 'untried' && b.status === 'untried') return 1;
+            // Then fastest first
+            if (a.hasData && b.hasData) return a.avgTimeMs - b.avgTimeMs;
+            if (a.hasData && !b.hasData) return -1;
+            if (!a.hasData && b.hasData) return 1;
+            return 0;
         });
-    }, [sortedLogs]);
+    }, [localKeys, centralKeys, apiStats, sessionExcluded, sessionAttempted, tick]);
+
+    const fastestModel = modelPerformanceList.find(m => m.hasData) || modelPerformanceList[0];
+    const fastestApi = apiPerformanceList.find(a => a.hasData && !a.status.includes('excluded'));
+
+    const handleResetSessionPool = () => {
+        performanceStats.resetSessionPool();
+        setSessionExcluded(new Map());
+        setSessionAttempted(new Set());
+    };
+
+    const handleClearStats = () => {
+        performanceStats.clearAllStats();
+        setSpeedModelStats({});
+        setApiStats({});
+        setSessionExcluded(new Map());
+        setSessionAttempted(new Set());
+    };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-            <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col h-[90vh]">
-                <div className="flex items-center justify-between p-6 border-b border-white/5">
-                    <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                        <Calendar className="w-5 h-5 text-purple-400" />
-                        Processing Statistics
-                    </h2>
-                    <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition-colors">
-                        <X className="w-5 h-5" />
-                    </button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+            <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-5xl shadow-2xl flex flex-col h-[90vh] overflow-hidden">
+                {/* Header */}
+                <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/40">
+                    <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center border border-purple-500/30">
+                            <Activity className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                                Processing & Speed Intelligence
+                                <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-fuchsia-500/10 text-fuchsia-300 border border-fuchsia-500/20">
+                                    Adaptive Speed Engine
+                                </span>
+                            </h2>
+                            <p className="text-xs text-slate-400">Real-time benchmark of models, APIs, and session speed routing</p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        {/* Tab Selector */}
+                        <div className="bg-slate-800/80 p-1 rounded-xl flex items-center gap-1 border border-white/5">
+                            <button
+                                type="button"
+                                onClick={() => setActiveTab('speed')}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                                    activeTab === 'speed'
+                                        ? 'bg-purple-600 text-white shadow-md'
+                                        : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                <Zap className="w-3.5 h-3.5" />
+                                Speed & APIs
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setActiveTab('overview')}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                                    activeTab === 'overview'
+                                        ? 'bg-purple-600 text-white shadow-md'
+                                        : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                <Calendar className="w-3.5 h-3.5" />
+                                Volume & Range
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setActiveTab('logs')}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                                    activeTab === 'logs'
+                                        ? 'bg-purple-600 text-white shadow-md'
+                                        : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                <Clock className="w-3.5 h-3.5" />
+                                Logs ({logs.length})
+                            </button>
+                        </div>
+
+                        <button 
+                            onClick={onClose} 
+                            className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors ml-2"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
                 </div>
                 
-                <div className="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
+                {/* Body Content */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-slate-900/50">
                     
-                    {/* Top Stats */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5">
-                            <p className="text-sm font-semibold text-slate-400">Today</p>
-                            <p className="text-3xl font-bold text-purple-400 mt-1">{stats.daily}</p>
-                            <p className="text-xs text-slate-500 mt-1">images processed</p>
-                        </div>
-                        <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5">
-                            <p className="text-sm font-semibold text-slate-400">Last 7 Days</p>
-                            <p className="text-3xl font-bold text-blue-400 mt-1">{stats.weekly}</p>
-                            <p className="text-xs text-slate-500 mt-1">images processed</p>
-                        </div>
-                        <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5">
-                            <p className="text-sm font-semibold text-slate-400">Last 30 Days</p>
-                            <p className="text-3xl font-bold text-emerald-400 mt-1">{stats.monthly}</p>
-                            <p className="text-xs text-slate-500 mt-1">images processed</p>
-                        </div>
-                    </div>
-
-                    {/* Custom Range */}
-                    <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5 flex flex-col md:flex-row items-center gap-4 justify-between">
-                        <div>
-                            <h3 className="font-semibold text-slate-200">Custom Range Calculator</h3>
-                            <p className="text-xs text-slate-500">Select a date range to see total images processed.</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <input 
-                                type="date" 
-                                value={dateRange.start} 
-                                onChange={e => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-                                className="bg-slate-900 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-purple-500"
-                            />
-                            <span className="text-slate-500">to</span>
-                            <input 
-                                type="date" 
-                                value={dateRange.end} 
-                                onChange={e => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-                                className="bg-slate-900 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-purple-500"
-                            />
-                            <div className="ml-4 bg-purple-900/40 border border-purple-500/30 px-4 py-1.5 rounded-lg">
-                                <span className="font-bold text-purple-300">{customRangeTotal}</span>
-                                <span className="text-xs text-purple-400 ml-1">images</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Daily Activity Chart */}
-                    <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
-                        <h3 className="font-semibold text-slate-200 mb-4">Daily Activity (Last 14 Days)</h3>
-                        <div className="h-64">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={dailyData}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                                    <XAxis dataKey="date" stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} />
-                                    <YAxis stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} />
-                                    <Tooltip 
-                                        contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px' }}
-                                        itemStyle={{ color: '#c084fc' }}
-                                    />
-                                    <Line type="monotone" dataKey="count" stroke="#c084fc" strokeWidth={3} dot={{ fill: '#c084fc', strokeWidth: 2 }} activeDot={{ r: 6 }} name="Images" />
-                                </LineChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-
-                    {/* Processing Time Trend Chart */}
-                    <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
-                        <h3 className="font-semibold text-slate-200 mb-4">Average Processing Time Trend (Last 20 Batches)</h3>
-                        <div className="h-64">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={latencyData}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                                    <XAxis dataKey="session" stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} />
-                                    <YAxis stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} tickFormatter={(val) => `${val}s`} />
-                                    <Tooltip 
-                                        contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px' }}
-                                        itemStyle={{ color: '#10b981' }}
-                                        labelStyle={{ color: '#94a3b8', marginBottom: '4px' }}
-                                        formatter={(value: number) => [`${value}s`, 'Avg Latency']}
-                                        labelFormatter={(label, payload) => {
-                                            if (payload && payload.length > 0 && payload[0].payload) {
-                                                return `${label} (${payload[0].payload.date})`;
-                                            }
-                                            return label;
-                                        }}
-                                    />
-                                    <Line type="monotone" dataKey="avgTimeSec" stroke="#10b981" strokeWidth={3} dot={{ fill: '#10b981', strokeWidth: 2 }} activeDot={{ r: 6 }} name="Avg Latency (s)" />
-                                </LineChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-
-                    {/* 24-Hour Performance Heatmap */}
-                    <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="font-semibold text-slate-200">24-Hour Performance Heatmap</h3>
-                            <div className="flex items-center gap-2 text-[10px] uppercase font-bold text-slate-500">
-                                <span>Fast</span>
-                                <div className="flex gap-1">
-                                    <div className="w-3 h-3 rounded bg-emerald-500" />
-                                    <div className="w-3 h-3 rounded bg-amber-500" />
-                                    <div className="w-3 h-3 rounded bg-red-500" />
-                                </div>
-                                <span>Slow</span>
-                            </div>
-                        </div>
-                        <div className="grid gap-1 h-24" style={{ gridTemplateColumns: "repeat(24, minmax(0, 1fr))" }}>
-                            {heatmapData.hours.map((h) => {
-                                let colorClass = "bg-slate-800";
-                                if (h.hasData) {
-                                    // simple thresholding based on ms per item
-                                    const avgSec = h.avg / 1000;
-                                    if (avgSec < 4) colorClass = "bg-emerald-500";
-                                    else if (avgSec < 8) colorClass = "bg-amber-500";
-                                    else colorClass = "bg-red-500";
-                                }
-                                return (
-                                    <div 
-                                        key={h.hour} 
-                                        className={`relative group rounded-sm ${colorClass} transition-opacity hover:opacity-80`}
-                                        style={{ height: '100%' }}
-                                    >
-                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 w-max bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs shadow-xl pointer-events-none">
-                                            <p className="font-bold text-slate-200 mb-1">{h.hour}:00 - {h.hour}:59</p>
-                                            {h.hasData ? (
-                                                <>
-                                                    <p className="text-slate-400">Avg Time: <span className="text-white font-mono">{(h.avg / 1000).toFixed(1)}s</span> / item</p>
-                                                    <p className="text-slate-400">Volume: <span className="text-white font-mono">{h.items}</span> items</p>
-                                                </>
-                                            ) : (
-                                                <p className="text-slate-500">No data</p>
-                                            )}
+                    {activeTab === 'speed' && (
+                        <div className="space-y-6">
+                            {/* Fastest Highlights Banner */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="bg-gradient-to-br from-fuchsia-950/40 to-slate-900 p-4 rounded-xl border border-fuchsia-500/30 flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-xl bg-fuchsia-500/20 text-fuchsia-400 flex items-center justify-center border border-fuchsia-500/30">
+                                            <Zap className="w-5 h-5" />
                                         </div>
-                                        {/* Label at bottom for some hours */}
-                                        {h.hour % 4 === 0 && (
-                                            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 text-[10px] text-slate-500 font-mono">
-                                                {h.hour}h
-                                            </div>
+                                        <div>
+                                            <span className="text-[10px] font-mono uppercase tracking-wider text-fuchsia-400 font-bold">Fastest Model (Prioritized)</span>
+                                            <p className="text-base font-bold text-slate-100 mt-0.5">{fastestModel?.name || 'Gemini 3.1 Flash Lite'}</p>
+                                            <span className="text-xs text-slate-400">
+                                                {fastestModel?.hasData ? `${fastestModel.avgTimeSec}s average per batch` : 'Default high-speed engine (500 RPD)'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <span className="px-2.5 py-1 rounded-full bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-300 font-mono text-xs font-bold">
+                                        ⚡ Rank #1
+                                    </span>
+                                </div>
+
+                                <div className="bg-gradient-to-br from-emerald-950/40 to-slate-900 p-4 rounded-xl border border-emerald-500/30 flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
+                                            <ShieldCheck className="w-5 h-5" />
+                                        </div>
+                                        <div>
+                                            <span className="text-[10px] font-mono uppercase tracking-wider text-emerald-400 font-bold">Fastest API Worker</span>
+                                            <p className="text-base font-bold text-slate-100 mt-0.5">{fastestApi?.label || 'All local keys ready'}</p>
+                                            <span className="text-xs text-slate-400">
+                                                {fastestApi?.hasData ? `${fastestApi.avgTimeSec}s avg · Healthy` : 'Round-robin session verification active'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        {sessionExcluded.size > 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={handleResetSessionPool}
+                                                className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-lg text-xs font-semibold border border-amber-500/30 transition-all flex items-center gap-1"
+                                                title="Re-enable excluded keys for session"
+                                            >
+                                                <RotateCcw className="w-3 h-3" />
+                                                Reset Pool ({sessionExcluded.size})
+                                            </button>
                                         )}
                                     </div>
-                                );
-                            })}
-                        </div>
-                        <div className="mt-6 text-xs text-slate-400 text-center">
-                            Highlighting peak performance hours to optimize large batch processing.
-                        </div>
-                    </div>
+                                </div>
+                            </div>
 
-                    {/* Time of Day Chart */}
-                    <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
-                        <h3 className="font-semibold text-slate-200 mb-4">When You Work (Activity by Hour)</h3>
-                        <div className="h-64">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={hourlyData}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                                    <XAxis dataKey="label" stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} />
-                                    <YAxis stroke="#94a3b8" fontSize={12} tickMargin={10} axisLine={false} tickLine={false} />
-                                    <Tooltip 
-                                        cursor={{ fill: '#1e293b' }}
-                                        contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px' }}
-                                        itemStyle={{ color: '#38bdf8' }}
-                                    />
-                                    <Bar dataKey="count" radius={[4, 4, 0, 0]} name="Images">
-                                        {hourlyData.map((entry, index) => (
-                                            <Cell key={`cell-${index}`} fill={entry.count > 0 ? '#38bdf8' : '#1e293b'} />
-                                        ))}
-                                    </Bar>
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
+                            {/* Section 1: AI Model Speed & Processing Times */}
+                            <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 space-y-4">
+                                <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+                                    <div className="flex items-center gap-2">
+                                        <Cpu className="w-4 h-4 text-purple-400" />
+                                        <h3 className="font-bold text-slate-200 text-sm">AI Model Processing Times</h3>
+                                    </div>
+                                    <span className="text-xs text-slate-400 font-mono">
+                                        Default: <span className="text-fuchsia-400 font-bold">Gemini 3.1 Flash Lite</span>
+                                    </span>
+                                </div>
 
-                    {/* Individual Logs Expandable List */}
-                    <div className="bg-slate-800/30 rounded-xl border border-white/5 overflow-hidden">
-                        <button 
-                            onClick={() => setIsListExpanded(!isListExpanded)}
-                            className="w-full p-4 flex items-center justify-between hover:bg-slate-800/50 transition-colors text-left"
-                        >
-                            <h3 className="font-semibold text-slate-200">Individual Processing Times</h3>
-                            <svg className={`w-5 h-5 text-slate-400 transition-transform ${isListExpanded ? 'rotate-180' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
-                        </button>
-                        {isListExpanded && (
-                            <div className="p-4 pt-0 border-t border-white/5 max-h-64 overflow-y-auto">
-                                {logs.length === 0 ? (
-                                    <p className="text-sm text-slate-500 italic text-center py-4">No processing logs available.</p>
-                                ) : (
-                                    <div className="space-y-2 mt-2">
-                                        {[...logs].reverse().map((log) => (
-                                            <div key={log.id} className="flex items-center justify-between p-2 rounded-lg bg-slate-900/50 border border-slate-700/50 text-sm">
-                                                <div className="text-slate-400">
-                                                    <span className="text-slate-300">{new Date(log.timestamp).toLocaleString()}</span>
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                    {modelPerformanceList.map((m, idx) => (
+                                        <div 
+                                            key={m.id}
+                                            className={`p-3.5 rounded-xl border transition-all ${
+                                                m.isDefault 
+                                                    ? 'bg-purple-950/20 border-purple-500/40 shadow-sm' 
+                                                    : 'bg-slate-950/40 border-slate-800/80 hover:border-slate-700'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div className="flex items-center gap-1.5">
+                                                    <span className="font-semibold text-xs text-slate-200 truncate max-w-[140px]" title={m.rawName}>
+                                                        {m.name}
+                                                    </span>
+                                                    {m.isDefault && (
+                                                        <span className="text-[9px] px-1.5 py-0.2 bg-fuchsia-500/20 text-fuchsia-300 rounded font-mono font-bold">
+                                                            DEFAULT
+                                                        </span>
+                                                    )}
                                                 </div>
-                                                <div className="flex items-center gap-4">
-                                                    <span className="text-slate-400"><span className="text-slate-200">{log.itemCount}</span> items</span>
-                                                    <span className="font-mono text-emerald-400">{(log.durationMs / 1000).toFixed(1)}s</span>
+                                                <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-bold ${
+                                                    idx === 0 && m.hasData ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-400'
+                                                }`}>
+                                                    {m.hasData ? `#${idx + 1} (${m.avgTimeSec}s)` : 'Unrated'}
+                                                </span>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-2 text-[11px] font-mono pt-1 border-t border-white/5">
+                                                <div>
+                                                    <span className="text-slate-500 text-[10px] block">Avg Time</span>
+                                                    <span className={m.avgTimeSec && m.avgTimeSec < 3 ? 'text-emerald-400 font-bold' : 'text-slate-300'}>
+                                                        {m.hasData ? `${m.avgTimeSec}s` : '--'}
+                                                    </span>
+                                                </div>
+                                                <div>
+                                                    <span className="text-slate-500 text-[10px] block">Success Rate</span>
+                                                    <span className={m.successRate >= 95 ? 'text-emerald-400' : 'text-amber-400'}>
+                                                        {m.hasData ? `${m.successRate.toFixed(0)}%` : '--'}
+                                                    </span>
                                                 </div>
                                             </div>
-                                        ))}
-                                    </div>
-                                )}
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
-                        )}
-                    </div>
 
-                    {/* Model Performance Summary */}
-                    {modelPerformance.best && (
-                        <div className="bg-slate-800/30 p-4 rounded-xl border border-white/5">
-                            <h3 className="font-semibold text-slate-200 mb-4">Model Performance Summary</h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="bg-emerald-900/10 border border-emerald-500/20 p-4 rounded-lg flex items-center justify-between">
-                                    <div>
-                                        <p className="text-xs font-bold text-emerald-500 uppercase tracking-wider">Most Efficient</p>
-                                        <p className="font-semibold text-slate-200 mt-1">{modelPerformance.best.name}</p>
+                            {/* Section 2: API Keys Latency & Session Health */}
+                            <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 space-y-4">
+                                <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+                                    <div className="flex items-center gap-2">
+                                        <Key className="w-4 h-4 text-emerald-400" />
+                                        <h3 className="font-bold text-slate-200 text-sm">API Keys Latency & Session Rules</h3>
                                     </div>
-                                    <div className="text-right">
-                                        <p className="text-sm font-mono text-emerald-400">{(modelPerformance.best.avgTime / 1000).toFixed(1)}s avg</p>
-                                        <p className="text-xs text-slate-500">{modelPerformance.best.successRate.toFixed(1)}% success</p>
+                                    <div className="flex items-center gap-3 text-xs">
+                                        <span className="text-slate-400">
+                                            Session Policy: <span className="text-emerald-400 font-medium">Use all local APIs at least once; exclude on slow/error</span>
+                                        </span>
                                     </div>
                                 </div>
-                                {modelPerformance.worst && modelPerformance.worst.id !== modelPerformance.best.id && (
-                                    <div className="bg-red-900/10 border border-red-500/20 p-4 rounded-lg flex items-center justify-between">
-                                        <div>
-                                            <p className="text-xs font-bold text-red-500 uppercase tracking-wider">Least Reliable</p>
-                                            <p className="font-semibold text-slate-200 mt-1">{modelPerformance.worst.name}</p>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                    {apiPerformanceList.map(api => (
+                                        <div 
+                                            key={api.id}
+                                            className={`p-3.5 rounded-xl border transition-all ${
+                                                api.status.includes('excluded')
+                                                    ? 'bg-rose-950/20 border-rose-500/30'
+                                                    : api.status === 'untried'
+                                                    ? 'bg-blue-950/20 border-blue-500/30'
+                                                    : 'bg-slate-950/40 border-slate-800/80'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div className="flex items-center gap-1.5 min-w-0">
+                                                    <span className="font-semibold text-xs text-slate-200 truncate max-w-[150px]" title={api.label}>
+                                                        {api.label}
+                                                    </span>
+                                                    <span className="text-[9px] px-1 py-0.2 bg-slate-800 text-slate-400 rounded uppercase font-mono">
+                                                        {api.apiType}
+                                                    </span>
+                                                </div>
+
+                                                {api.status === 'healthy' && (
+                                                    <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                                        🟢 Active
+                                                    </span>
+                                                )}
+                                                {api.status === 'untried' && (
+                                                    <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                                        🟡 Untried (Next)
+                                                    </span>
+                                                )}
+                                                {api.status === 'slow_excluded' && (
+                                                    <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                                        ⚠️ Excluded (Slow)
+                                                    </span>
+                                                )}
+                                                {api.status === 'error_excluded' && (
+                                                    <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                                                        ⛔ Excluded (Error)
+                                                    </span>
+                                                )}
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-2 text-[11px] font-mono pt-1 border-t border-white/5">
+                                                <div>
+                                                    <span className="text-slate-500 text-[10px] block">Avg Processing</span>
+                                                    <span className="text-slate-200 font-bold">
+                                                        {api.hasData ? `${api.avgTimeSec}s` : '--'}
+                                                    </span>
+                                                </div>
+                                                <div>
+                                                    <span className="text-slate-500 text-[10px] block">Batches / Fails</span>
+                                                    <span className="text-slate-300">
+                                                        {api.count} ok / {api.fails} err
+                                                    </span>
+                                                </div>
+                                            </div>
+
+                                            {api.exclusionReason && (
+                                                <p className="mt-2 text-[10px] text-rose-300/90 font-mono truncate bg-rose-950/40 px-2 py-1 rounded" title={api.exclusionReason}>
+                                                    {api.exclusionReason}
+                                                </p>
+                                            )}
                                         </div>
-                                        <div className="text-right">
-                                            <p className="text-sm font-mono text-red-400">{(modelPerformance.worst.avgTime / 1000).toFixed(1)}s avg</p>
-                                            <p className="text-xs text-slate-500">{modelPerformance.worst.successRate.toFixed(1)}% success</p>
-                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="flex items-center justify-between pt-3 border-t border-slate-800 text-xs">
+                                    <span className="text-slate-500">
+                                        Total APIs Tracked: {apiPerformanceList.length} ({sessionExcluded.size} excluded this session)
+                                    </span>
+                                    <div className="flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={handleResetSessionPool}
+                                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-semibold transition-colors flex items-center gap-1.5"
+                                        >
+                                            <RotateCcw className="w-3.5 h-3.5" />
+                                            Reset Session Exclusions
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={handleClearStats}
+                                            className="px-3 py-1.5 bg-rose-950/30 hover:bg-rose-900/40 text-rose-400 rounded-lg font-semibold transition-colors border border-rose-500/20 flex items-center gap-1.5"
+                                        >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                            Clear All Speed Benchmarks
+                                        </button>
                                     </div>
-                                )}
+                                </div>
                             </div>
+                        </div>
+                    )}
+
+                    {activeTab === 'overview' && (
+                        <div className="space-y-6">
+                            {/* Top Stats */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5">
+                                    <p className="text-sm font-semibold text-slate-400">Today</p>
+                                    <p className="text-3xl font-bold text-purple-400 mt-1">{stats.daily}</p>
+                                    <p className="text-xs text-slate-500 mt-1">images processed</p>
+                                </div>
+                                <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5">
+                                    <p className="text-sm font-semibold text-slate-400">Last 7 Days</p>
+                                    <p className="text-3xl font-bold text-blue-400 mt-1">{stats.weekly}</p>
+                                    <p className="text-xs text-slate-500 mt-1">images processed</p>
+                                </div>
+                                <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5">
+                                    <p className="text-sm font-semibold text-slate-400">Last 30 Days</p>
+                                    <p className="text-3xl font-bold text-emerald-400 mt-1">{stats.monthly}</p>
+                                    <p className="text-xs text-slate-500 mt-1">images processed</p>
+                                </div>
+                            </div>
+
+                            {/* Custom Range */}
+                            <div className="bg-slate-800/50 p-4 rounded-xl border border-white/5 flex flex-col md:flex-row items-center gap-4 justify-between">
+                                <div>
+                                    <h3 className="font-semibold text-slate-200">Custom Range Calculator</h3>
+                                    <p className="text-xs text-slate-500">Select a date range to see total images processed.</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <input 
+                                        type="date" 
+                                        value={dateRange.start} 
+                                        onChange={e => setDateRange(prev => ({ ...prev, start: e.target.value }))}
+                                        className="bg-slate-900 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-purple-500"
+                                    />
+                                    <span className="text-slate-500">to</span>
+                                    <input 
+                                        type="date" 
+                                        value={dateRange.end} 
+                                        onChange={e => setDateRange(prev => ({ ...prev, end: e.target.value }))}
+                                        className="bg-slate-900 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-purple-500"
+                                    />
+                                    <div className="ml-4 bg-purple-900/40 border border-purple-500/30 px-4 py-1.5 rounded-lg">
+                                        <span className="font-bold text-purple-300">{customRangeTotal}</span>
+                                        <span className="text-xs text-purple-400 ml-1">images</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {activeTab === 'logs' && (
+                        <div className="bg-slate-800/30 rounded-xl border border-white/5 overflow-hidden p-4">
+                            <h3 className="font-semibold text-slate-200 mb-3">Individual Processing Batches</h3>
+                            {logs.length === 0 ? (
+                                <p className="text-sm text-slate-500 italic text-center py-8">No processing logs available yet.</p>
+                            ) : (
+                                <div className="space-y-2 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                                    {[...logs].reverse().map((log) => (
+                                        <div key={log.id} className="flex items-center justify-between p-2.5 rounded-lg bg-slate-900/60 border border-slate-800 text-sm">
+                                            <div className="text-slate-400">
+                                                <span className="text-slate-300">{new Date(log.timestamp).toLocaleString()}</span>
+                                            </div>
+                                            <div className="flex items-center gap-4">
+                                                <span className="text-slate-400"><span className="text-slate-200 font-bold">{log.itemCount}</span> items</span>
+                                                <span className="font-mono text-emerald-400 font-bold">{(log.durationMs / 1000).toFixed(1)}s</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -402,4 +551,4 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats, models, onC
             </div>
         </div>
     );
-}
+};

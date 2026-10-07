@@ -960,6 +960,30 @@ export const ApiKeyManager: React.FC<Props> = ({
                               FAILED
                             </span>
                           )}
+
+                          {k.sessionStatus === 'slow_excluded' && (
+                            <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono font-bold" title={k.exclusionReason || 'Excluded for session due to high latency'}>
+                              ⚠️ Excluded (Slow)
+                            </span>
+                          )}
+
+                          {k.sessionStatus === 'error_excluded' && (
+                            <span className="text-[9px] bg-rose-500/20 text-rose-300 border border-rose-500/30 px-1.5 py-0.5 rounded font-mono font-bold" title={k.exclusionReason || 'Excluded for session due to error'}>
+                              ⛔ Excluded (Error)
+                            </span>
+                          )}
+
+                          {k.sessionStatus === 'untried' && (
+                            <span className="text-[9px] bg-blue-500/20 text-blue-300 border border-blue-500/30 px-1.5 py-0.5 rounded font-mono font-bold" title="Scheduled for trial to test all local APIs">
+                              🟡 Untried
+                            </span>
+                          )}
+
+                          {k.avgLatencyMs && k.avgLatencyMs > 0 && !k.sessionStatus?.includes('excluded') && (
+                            <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded font-mono font-bold" title={`Average processing time: ${(k.avgLatencyMs / 1000).toFixed(1)}s`}>
+                              ⚡ {(k.avgLatencyMs / 1000).toFixed(1)}s
+                            </span>
+                          )}
                         </div>
 
                         {/* Masked Key Identifier */}

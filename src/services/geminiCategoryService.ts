@@ -572,12 +572,13 @@ Do not include explanations, markdown, comments, or any additional text.`;
   promptParts.push({ text: categoryPromptText });
 
   const candidateModels = [
-    model || 'gemini-2.5-flash',
-    ...(model !== 'gemini-2.5-flash' ? ['gemini-2.5-flash'] : []),
-    ...(model !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
-    ...(model !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
-    ...(model !== 'gemini-3.5-flash' ? ['gemini-3.5-flash'] : [])
-  ];
+    model || 'gemini-3.1-flash-lite',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-3.5-flash-lite'
+  ].filter((m, i, arr) => arr.indexOf(m) === i);
 
   try {
     let catResponse: any = null;
@@ -585,6 +586,24 @@ Do not include explanations, markdown, comments, or any additional text.`;
 
     for (const candidateModel of candidateModels) {
       if (signal?.aborted) throw new Error("Operation aborted by user");
+      
+      // Fast adaptive per-model attempt timeout (8.5 seconds) to switch models rapidly if one hangs
+      const attemptAbortController = new AbortController();
+      const timeoutId = setTimeout(() => attemptAbortController.abort(), 8500);
+
+      let combinedSignal: AbortSignal = attemptAbortController.signal;
+      if (signal) {
+        if (typeof (AbortSignal as any).any === 'function') {
+          combinedSignal = (AbortSignal as any).any([signal, attemptAbortController.signal]);
+        } else {
+          const c = new AbortController();
+          const onAbort = () => c.abort();
+          signal.addEventListener('abort', onAbort, { once: true });
+          attemptAbortController.signal.addEventListener('abort', onAbort, { once: true });
+          combinedSignal = c.signal;
+        }
+      }
+
       try {
         catResponse = await ai.models.generateContent({
           model: candidateModel,
@@ -592,7 +611,7 @@ Do not include explanations, markdown, comments, or any additional text.`;
           config: {
             systemInstruction: systemInstruction,
             responseMimeType: "application/json",
-            abortSignal: signal,
+            abortSignal: combinedSignal,
             responseSchema: {
               type: Type.ARRAY,
               items: {
@@ -606,11 +625,13 @@ Do not include explanations, markdown, comments, or any additional text.`;
             }
           }
         });
+        clearTimeout(timeoutId);
         if (catResponse?.text) break;
       } catch (err: any) {
+        clearTimeout(timeoutId);
         lastError = err;
         if (signal?.aborted) throw err;
-        console.warn(`[Category] Model ${candidateModel} failed, trying fallback:`, err?.message || err);
+        console.warn(`[Category] Model ${candidateModel} failed, rapidly altering to next model:`, err?.message || err);
         continue;
       }
     }

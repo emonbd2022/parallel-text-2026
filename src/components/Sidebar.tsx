@@ -256,6 +256,9 @@ export const Sidebar: React.FC<Props> = ({
                             const isSelected = config.model === m.id;
                             const cleanName = m.name.split(' (')[0];
                             const rpd = m.name.match(/\((.*?)\)/)?.[1];
+                            const stat = modelStats[m.id];
+                            const hasLatency = stat && stat.count > 0;
+                            const avgTimeSec = hasLatency ? (stat.totalTimeMs / stat.count / 1000).toFixed(1) : null;
 
                             return (
                               <button
@@ -271,8 +274,20 @@ export const Sidebar: React.FC<Props> = ({
                                     : 'hover:bg-slate-800/60 text-slate-300'
                                 }`}
                               >
-                                <span className="truncate pr-2">{cleanName}</span>
+                                <div className="flex items-center gap-2 truncate pr-2">
+                                  <span className="truncate">{cleanName}</span>
+                                  {m.id.includes('3.1-flash-lite') && (
+                                    <span className="text-[9px] font-mono bg-fuchsia-500/20 text-fuchsia-300 px-1 rounded font-bold shrink-0">
+                                      Default
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="flex items-center gap-2 shrink-0">
+                                  {avgTimeSec && (
+                                    <span className="text-[9px] font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20" title={`Average processing time: ${avgTimeSec}s`}>
+                                      ⚡ {avgTimeSec}s
+                                    </span>
+                                  )}
                                   {rpd && (
                                     <span className="text-[9px] font-mono text-slate-500">
                                       {rpd}

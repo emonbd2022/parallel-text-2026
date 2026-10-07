@@ -208,9 +208,9 @@ Return a strictly valid JSON array where each object contains:
   for (const candidateModel of candidateModels) {
     if (signal?.aborted) throw new Error("Operation aborted by user");
     
-    // Per-attempt timeout of 25 seconds to prevent hanging on preview models
+    // Per-attempt fast timeout of 9 seconds to alter models rapidly if one hangs or is throttled
     const attemptAbortController = new AbortController();
-    const timeoutId = setTimeout(() => attemptAbortController.abort(), 25000);
+    const timeoutId = setTimeout(() => attemptAbortController.abort(), 9000);
     
     let combinedSignal: AbortSignal = attemptAbortController.signal;
     if (signal) {

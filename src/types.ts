@@ -19,6 +19,10 @@ export interface ApiKey {
   errorCount: number;
   cooldownUntil?: number; // Timestamp when this key can be used again
   usage: ApiKeyUsage;
+  sessionStatus?: 'active' | 'slow_excluded' | 'error_excluded' | 'untried';
+  exclusionReason?: string;
+  lastLatencyMs?: number;
+  avgLatencyMs?: number;
 }
 
 export interface ProcessingItem {
@@ -92,4 +96,31 @@ export interface ModelStats {
   totalTimeMs: number;
   successCount: number;
   failCount: number;
+}
+
+export interface ModelSpeedStat {
+  modelId: string;
+  modelName: string;
+  totalTimeMs: number;
+  count: number;
+  fails: number;
+  avgTimeMs: number;
+  lastLatencyMs: number;
+  lastUpdated?: number;
+  rank?: number;
+  isFastest?: boolean;
+}
+
+export interface ApiKeySpeedStat {
+  keyId: string;
+  keyLabel: string;
+  apiType: 'local' | 'central';
+  totalTimeMs: number;
+  count: number;
+  fails: number;
+  avgTimeMs: number;
+  lastLatencyMs: number;
+  lastUpdated?: number;
+  sessionStatus?: 'active' | 'slow_excluded' | 'error_excluded' | 'untried';
+  exclusionReason?: string;
 }

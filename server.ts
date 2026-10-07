@@ -1173,11 +1173,12 @@ Return a strictly valid JSON array where each object contains:
         promptParts.push({ text: promptText });
 
         const candidateModels = [
-            config.model || 'gemini-2.5-flash',
-            ...(config.model !== 'gemini-2.5-flash' ? ['gemini-2.5-flash'] : []),
-            ...(config.model !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
-            ...(config.model !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : [])
-        ];
+            config.model || 'gemini-3.1-flash-lite',
+            'gemini-3.1-flash-lite',
+            'gemini-2.5-flash',
+            'gemini-2.5-flash-lite',
+            'gemini-3.8-flash'
+        ].filter((m, i, arr) => arr.indexOf(m) === i);
 
         let response: any = null;
         let lastAiError: any = null;
@@ -1509,11 +1510,12 @@ Return a strictly valid JSON array where each object contains:
         });
 
         const candidateModels = [
-            model || 'gemini-2.5-flash',
-            ...(model !== 'gemini-2.5-flash' ? ['gemini-2.5-flash'] : []),
-            ...(model !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
-            ...(model !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : [])
-        ];
+            model || 'gemini-3.1-flash-lite',
+            'gemini-3.1-flash-lite',
+            'gemini-2.5-flash',
+            'gemini-2.5-flash-lite',
+            'gemini-3.8-flash'
+        ].filter((m, i, arr) => arr.indexOf(m) === i);
 
         let response: any = null;
         let lastCatError: any = null;
