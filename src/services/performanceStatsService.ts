@@ -5,10 +5,13 @@ const STORAGE_API_SPEED_STATS = 'parrarel_api_stats_v2';
 const STORAGE_SESSION_EXCLUDED = 'parrarel_session_excluded_v2';
 const STORAGE_SESSION_ATTEMPTED = 'parrarel_session_attempted_v2';
 
+export const CONSECUTIVE_ERROR_EXCLUSION_THRESHOLD = 5; // 5 errors at a stretch to exclude
+
 export interface SessionExclusionInfo {
   reason: 'error_excluded';
   message: string;
   timestamp: number;
+  consecutiveErrors?: number;
   durationMs?: number;
 }
 
@@ -18,6 +21,7 @@ export interface DynamicApiSpeedProfile {
   lastLatencyMs: number;
   count: number;
   fails: number;
+  consecutiveErrors: number;
   speedRank: number;
   isFastest: boolean;
   speedTag: 'fastest' | 'fast' | 'normal' | 'slower' | 'untried';
@@ -65,7 +69,7 @@ class PerformanceStatsService {
         const parsed = JSON.parse(rawExcluded);
         const map = new Map<string, SessionExclusionInfo>();
         Object.entries(parsed).forEach(([k, v]: [string, any]) => {
-          // ONLY keep error exclusions, discard any slow exclusions
+          // ONLY keep error exclusions
           if (v && v.reason === 'error_excluded') {
             map.set(k, v);
           }
@@ -159,27 +163,43 @@ class PerformanceStatsService {
   }
 
   /**
-   * Exclude a local API key from the remainder of the session ONLY on encountering errors
-   * User requirement: "Prioritize faster api over slow but don't exclude. Only exclude if encounters error"
+   * Exclude an API key from the remainder of the session ONLY when 5 consecutive errors occur.
+   * User requirement: "don't exclude the API immediately just after 1 error. if any api gives 5 errors at a stretch then only exclude that api from that session."
    */
   public excludeLocalKeyForSession(
     keyId: string, 
     reason: 'error_excluded', 
     message: string, 
+    consecutiveErrors: number = 5,
     durationMs?: number
   ) {
     this.sessionExcludedKeys.set(keyId, {
       reason: 'error_excluded',
       message,
       timestamp: Date.now(),
+      consecutiveErrors,
       durationMs
     });
     this.persistSessionState();
     this.notify();
   }
 
+  public unexcludeKey(keyId: string) {
+    if (this.sessionExcludedKeys.has(keyId)) {
+      this.sessionExcludedKeys.delete(keyId);
+      if (this.apiStats[keyId]) {
+        this.apiStats[keyId].consecutiveErrors = 0;
+        this.persistApis();
+      }
+      this.persistSessionState();
+      this.notify();
+    }
+  }
+
   /**
-   * Record processing time for a model and API key
+   * Record processing time and success/failure for a model and API key.
+   * Keeps statistics persisted for later use and analysis.
+   * Handles consecutive error streak calculation.
    */
   public recordExecution(params: {
     modelId: string;
@@ -194,7 +214,7 @@ class PerformanceStatsService {
   }) {
     const { modelId, modelName, keyId, keyLabel, apiType, durationMs, success, errorMsg } = params;
 
-    // 1. Update Model Stats
+    // 1. Update Model Stats (Persisted for later)
     const currentModel = this.modelStats[modelId] || {
       modelId,
       modelName: modelName || modelId,
@@ -218,7 +238,7 @@ class PerformanceStatsService {
     this.modelStats[modelId] = currentModel;
     this.persistModels();
 
-    // 2. Update API Key Stats
+    // 2. Update API Key Stats (Persisted for later)
     const currentApi = this.apiStats[keyId] || {
       keyId,
       keyLabel,
@@ -226,6 +246,7 @@ class PerformanceStatsService {
       totalTimeMs: 0,
       count: 0,
       fails: 0,
+      consecutiveErrors: 0,
       avgTimeMs: 0,
       lastLatencyMs: 0,
       lastUpdated: Date.now()
@@ -236,8 +257,12 @@ class PerformanceStatsService {
       currentApi.count += 1;
       currentApi.avgTimeMs = Math.round(currentApi.totalTimeMs / currentApi.count);
       currentApi.lastLatencyMs = durationMs;
+      // Reset streak on success!
+      currentApi.consecutiveErrors = 0;
     } else {
       currentApi.fails += 1;
+      // Increment consecutive error streak
+      currentApi.consecutiveErrors = (currentApi.consecutiveErrors || 0) + 1;
     }
     currentApi.lastUpdated = Date.now();
     this.apiStats[keyId] = currentApi;
@@ -245,15 +270,19 @@ class PerformanceStatsService {
 
     // 3. Local Session Rules:
     // Mark key as attempted so subsequent dispatches know it has run at least once.
-    // ONLY exclude if it encountered an error!
     if (apiType === 'local') {
       this.markKeyAttempted(keyId);
 
-      if (!success) {
+      // ONLY exclude if it gives 5 errors at a stretch!
+      if (!success && currentApi.consecutiveErrors >= CONSECUTIVE_ERROR_EXCLUSION_THRESHOLD) {
         this.excludeLocalKeyForSession(
           keyId, 
           'error_excluded', 
-          errorMsg || 'Encountered error during processing'
+          errorMsg 
+            ? `${errorMsg} (5 consecutive errors at a stretch)` 
+            : 'Excluded after 5 consecutive errors at a stretch',
+          currentApi.consecutiveErrors,
+          durationMs
         );
       }
     }
@@ -296,6 +325,7 @@ class PerformanceStatsService {
       const isAttempted = this.sessionAttemptedKeys.has(k.id);
       const stat = this.apiStats[k.id];
       const hasData = Boolean(stat && stat.count > 0);
+      const consecutiveErrors = stat?.consecutiveErrors || 0;
 
       if (!hasData) {
         profiles[k.id] = {
@@ -304,6 +334,7 @@ class PerformanceStatsService {
           lastLatencyMs: 0,
           count: 0,
           fails: stat?.fails || k.errorCount || 0,
+          consecutiveErrors,
           speedRank: 99,
           isFastest: false,
           speedTag: isAttempted ? 'normal' : 'untried',
@@ -336,6 +367,7 @@ class PerformanceStatsService {
         lastLatencyMs: stat!.lastLatencyMs,
         count: stat!.count,
         fails: stat!.fails,
+        consecutiveErrors,
         speedRank,
         isFastest,
         speedTag,
@@ -349,10 +381,10 @@ class PerformanceStatsService {
   }
 
   /**
-   * Sort valid API keys according to speed and session fairness:
-   * 1. Exclude error-banned keys (ONLY when encounters error)
+   * Sort valid API keys according to speed, reliability, and session fairness:
+   * 1. Exclude error-banned keys (ONLY when 5 consecutive errors occur)
    * 2. Prioritize untried local keys first ("Try to use all the local API at least once")
-   * 3. Prioritize dynamically faster APIs (lowest avgTimeMs) over slower APIs (DO NOT exclude slow keys!)
+   * 3. Prioritize faster & efficient APIs dynamically over slower APIs (DO NOT exclude slow keys!)
    */
   public prioritizeApiKeys(keys: ApiKey[], apiType: 'local' | 'central'): ApiKey[] {
     // 1. Filter out only error-excluded keys (never exclude for speed)
@@ -365,14 +397,16 @@ class PerformanceStatsService {
     });
 
     if (apiType !== 'local') {
-      // For Central keys: sort dynamically by measured speed & error count
+      // For Central keys: sort dynamically by measured speed & error streak
       return available.sort((a, b) => {
         const statA = this.apiStats[a.id];
         const statB = this.apiStats[b.id];
         const timeA = (statA && statA.count > 0) ? statA.avgTimeMs : 3500;
         const timeB = (statB && statB.count > 0) ? statB.avgTimeMs : 3500;
-        const scoreA = timeA + (a.errorCount * 2500);
-        const scoreB = timeB + (b.errorCount * 2500);
+        const streakA = statA?.consecutiveErrors || 0;
+        const streakB = statB?.consecutiveErrors || 0;
+        const scoreA = timeA + (streakA * 1000) + (a.errorCount * 200);
+        const scoreB = timeB + (streakB * 1000) + (b.errorCount * 200);
         return scoreA - scoreB;
       });
     }
@@ -387,13 +421,15 @@ class PerformanceStatsService {
       if (!aAttempted && bAttempted) return -1;
       if (aAttempted && !bAttempted) return 1;
 
-      // Both untried or both tried: dynamically prioritize faster APIs over slower APIs
+      // Both untried or both tried: dynamically prioritize faster and efficient APIs over slower ones
       const statA = this.apiStats[a.id];
       const statB = this.apiStats[b.id];
       const timeA = (statA && statA.count > 0) ? statA.avgTimeMs : 3000;
       const timeB = (statB && statB.count > 0) ? statB.avgTimeMs : 3000;
-      const scoreA = timeA + (a.errorCount * 3000);
-      const scoreB = timeB + (b.errorCount * 3000);
+      const streakA = statA?.consecutiveErrors || 0;
+      const streakB = statB?.consecutiveErrors || 0;
+      const scoreA = timeA + (streakA * 1200) + (a.errorCount * 300);
+      const scoreB = timeB + (streakB * 1200) + (b.errorCount * 300);
       return scoreA - scoreB;
     });
   }
@@ -450,6 +486,11 @@ class PerformanceStatsService {
     this.sessionAttemptedKeys.clear();
     sessionStorage.removeItem(STORAGE_SESSION_EXCLUDED);
     sessionStorage.removeItem(STORAGE_SESSION_ATTEMPTED);
+    // Reset consecutive errors streak on keys when session pool is reset
+    Object.values(this.apiStats).forEach(stat => {
+      if (stat) stat.consecutiveErrors = 0;
+    });
+    this.persistApis();
     this.notify();
   }
 

@@ -962,8 +962,14 @@ export const ApiKeyManager: React.FC<Props> = ({
                           )}
 
                           {k.sessionStatus === 'error_excluded' && (
-                            <span className="text-[9px] bg-rose-500/20 text-rose-300 border border-rose-500/30 px-1.5 py-0.5 rounded font-mono font-bold" title={k.exclusionReason || 'Excluded for session due to error'}>
-                              ⛔ Excluded (Error)
+                            <span className="text-[9px] bg-rose-500/20 text-rose-300 border border-rose-500/30 px-1.5 py-0.5 rounded font-mono font-bold" title={k.exclusionReason || 'Excluded for session due to 5 consecutive errors'}>
+                              ⛔ Excluded (5 Errors Streak)
+                            </span>
+                          )}
+
+                          {k.sessionStatus !== 'error_excluded' && typeof k.consecutiveErrors === 'number' && k.consecutiveErrors > 0 && k.consecutiveErrors < 5 && (
+                            <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono font-bold" title={`Key encountered ${k.consecutiveErrors} consecutive error(s). Will only be excluded if it reaches 5 consecutive errors at a stretch.`}>
+                              ⚠️ {k.consecutiveErrors}/5 errors streak
                             </span>
                           )}
 

@@ -17,6 +17,7 @@ export interface ApiKey {
   label: string;
   key: string;
   errorCount: number;
+  consecutiveErrors?: number; // Errors at a stretch (excluded at 5)
   cooldownUntil?: number; // Timestamp when this key can be used again
   usage: ApiKeyUsage;
   sessionStatus?: 'active' | 'error_excluded' | 'untried';
@@ -120,6 +121,7 @@ export interface ApiKeySpeedStat {
   totalTimeMs: number;
   count: number;
   fails: number;
+  consecutiveErrors?: number; // Consecutive error streak (excluded if reaches 5)
   avgTimeMs: number;
   lastLatencyMs: number;
   lastUpdated?: number;

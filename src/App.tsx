@@ -428,6 +428,7 @@ export default function App() {
 
       return {
         ...k,
+        consecutiveErrors: metric?.consecutiveErrors ?? perfApiStats[k.id]?.consecutiveErrors ?? 0,
         sessionStatus,
         exclusionReason: excl?.message,
         lastLatencyMs: metric?.lastLatencyMs || undefined,
@@ -1169,7 +1170,7 @@ export default function App() {
       const isQuota = errorMessage.includes('QUOTA_EXCEEDED');
       const isInvalid = errorMessage.includes('INVALID_KEY');
       
-      const cooldownMs = isQuota ? 3600000 : (isInvalid ? 86400000 : 30000); 
+      const cooldownMs = isQuota ? 60000 : (isInvalid ? 60000 : 20000); 
 
       const batchDuration = Date.now() - batchStartTime;
       performanceStats.recordExecution({
@@ -1487,16 +1488,17 @@ const startBatchProcessing = async (
       });
 
       if (errorMsgText.includes('INVALID_KEY')) {
-        errorPenalty = 20; // Kill invalid keys immediately
+        errorPenalty = 1; // Count standard error, let consecutiveErrors reach 5 before session exclusion
+        cooldownTime = 60 * 1000;
       } else if (errorMsgText.includes('QUOTA_EXCEEDED') || errorMsgText.includes('429')) {
         if (errorMsgText.toLowerCase().includes('billing') || errorMsgText.toLowerCase().includes('plan')) {
             // Daily or hard quota
-            cooldownTime = 24 * 60 * 60 * 1000; // 24 hours
-            errorPenalty = 10;
+            cooldownTime = 30 * 60 * 1000; // 30 mins
+            errorPenalty = 1;
         } else {
             // RPM or TPM limit
-            cooldownTime = 60 * 1000; // 1 minute
-            errorPenalty = 0; // Do not penalize for temporary rate limits
+            cooldownTime = 30 * 1000; // 30 seconds
+            errorPenalty = 1; // Standard failure increment
         }
       } else {
         errorPenalty = 1; // Standard penalty for other errors

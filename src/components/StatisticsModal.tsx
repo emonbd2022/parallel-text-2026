@@ -130,6 +130,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
 
             const count = stat?.count || 0;
             const fails = stat?.fails || k.errorCount || 0;
+            const consecutiveErrors = metric?.consecutiveErrors ?? stat?.consecutiveErrors ?? 0;
             const avgTimeMs = stat && stat.count > 0 ? stat.avgTimeMs : 0;
             const lastLatencyMs = stat?.lastLatencyMs || 0;
 
@@ -146,6 +147,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                 apiType: k.apiType,
                 count,
                 fails,
+                consecutiveErrors,
                 avgTimeMs,
                 avgTimeSec: avgTimeMs > 0 ? Number((avgTimeMs / 1000).toFixed(1)) : 0,
                 lastLatencySec: lastLatencyMs > 0 ? Number((lastLatencyMs / 1000).toFixed(1)) : 0,
@@ -381,7 +383,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                                     </div>
                                     <div className="flex items-center gap-3 text-xs">
                                         <span className="text-slate-400">
-                                            Policy: <span className="text-emerald-400 font-medium">Prioritize faster APIs dynamically · Exclude only on error</span>
+                                            Policy: <span className="text-emerald-400 font-medium">Prioritize faster APIs · Exclude ONLY after 5 consecutive errors · Stats persisted</span>
                                         </span>
                                     </div>
                                 </div>
@@ -441,7 +443,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                                                 )}
                                                 {api.status === 'error_excluded' && (
                                                     <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
-                                                        ⛔ Excluded (Error)
+                                                        ⛔ Excluded (5 Errors Streak)
                                                     </span>
                                                 )}
                                             </div>
@@ -454,9 +456,15 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                                                     </span>
                                                 </div>
                                                 <div>
-                                                    <span className="text-slate-500 text-[10px] block">Batches / Fails</span>
+                                                    <span className="text-slate-500 text-[10px] block">Batches / Streak</span>
                                                     <span className="text-slate-300">
-                                                        {api.count} ok / {api.fails} err
+                                                        {api.count} ok · {api.consecutiveErrors > 0 ? (
+                                                            <span className={api.consecutiveErrors >= 5 ? "text-rose-400 font-bold" : "text-amber-400 font-medium"}>
+                                                                {api.consecutiveErrors}/5 streak
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-emerald-400/80">0 streak</span>
+                                                        )}
                                                     </span>
                                                 </div>
                                             </div>
