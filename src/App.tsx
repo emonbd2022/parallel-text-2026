@@ -12,7 +12,7 @@ import { performanceStats } from './services/performanceStatsService';
 import { Clock, Key, Hourglass, Cat, Layers, Upload, Maximize, Minimize, ArrowUp, Activity, CheckCircle2, AlertTriangle, AlertCircle, Info, X } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
-import { useAuth } from './contexts/AuthContext';
+import { useAuth, ADMIN_EMAILS } from './contexts/AuthContext';
 import { auth, db } from './lib/firebase';
 import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
@@ -527,7 +527,7 @@ export default function App() {
 
   // Central API Keys Pool Fetch - strictly in-memory (RAM only), no persistent localStorage cache
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
-    const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+    const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || ADMIN_EMAILS.includes(user?.email || '');
 
     // If not admin and central mode is locked by administrator, restrict regular users from accessing
     if (centralModeEnabled === false && !isAdmin) {
@@ -547,7 +547,7 @@ export default function App() {
       const currentSession = getUsageSessionId();
 
       // 1. Determine eligibility
-      const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+      const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || ADMIN_EMAILS.includes(user?.email || '');
       const hasExplicitAdminGrant = userData?.centralApiAccess === true || isAdmin;
       const validLocalKeys = localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
       const uniqueKeysCount = new Set(validLocalKeys).size;
@@ -629,7 +629,7 @@ export default function App() {
         showNotification("Central Pool Refreshed", `Successfully loaded ${pool.length} active worker nodes.`, "success");
       } else {
         const uniqueKeysCount = new Set(localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20)).size;
-        const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+        const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || ADMIN_EMAILS.includes(user?.email || '');
         if (!isAdmin && uniqueKeysCount < 4 && !userData?.centralApiAccess) {
           showNotification("Eligibility Notice", "Central API access requires at least 4 unique local API keys or Administrator approval.", "warning");
         } else {
@@ -643,7 +643,7 @@ export default function App() {
 
   // Auto-switch regular users to Local API mode if admin locks/turns off Central Mode
   useEffect(() => {
-    const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+    const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || ADMIN_EMAILS.includes(user?.email || '');
     if (centralModeEnabled === false && config.apiMode === 'central' && !isAdmin) {
       setConfig(prev => ({ ...prev, apiMode: 'local' }));
       showNotification('Central API Locked', 'Central API mode has been disabled by the administrator. Switched to Local API mode.', 'warning');
@@ -652,7 +652,7 @@ export default function App() {
 
   // Pull central keys into RAM once per session when user selects Central API mode (ignored if already in memory)
   useEffect(() => {
-    const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+    const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || ADMIN_EMAILS.includes(user?.email || '');
     if (config.apiMode === 'central' && (centralModeEnabled !== false || isAdmin)) {
       if (centralKeys.length === 0) {
         fetchCentralKeysPool(false);

@@ -153,7 +153,11 @@ export const Dashboard: React.FC = () => {
               <div>
                 <h3 className="text-lg font-bold text-white flex items-center gap-2">
                   Authorized Devices
-                  {registeredDeviceIds.length >= MAX_DEVICES_PER_ACCOUNT ? (
+                  {userData?.role === 'admin' ? (
+                    <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                      👑 Admin Bypass (Unlimited Devices)
+                    </span>
+                  ) : registeredDeviceIds.length >= MAX_DEVICES_PER_ACCOUNT ? (
                     <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1">
                       <CheckCircle2 className="w-3.5 h-3.5" /> {registeredDeviceIds.length} / {MAX_DEVICES_PER_ACCOUNT} Max (Slots Full)
                     </span>
@@ -164,7 +168,9 @@ export const Dashboard: React.FC = () => {
                   )}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Multiple Device Protection: 1 Gmail account is strictly limited to a maximum of 2 devices.
+                  {userData?.role === 'admin'
+                    ? 'Administrator Privilege: All feature restrictions & device login limits bypassed.'
+                    : 'Multiple Device Protection: 1 Gmail account is strictly limited to a maximum of 2 devices.'}
                 </p>
               </div>
             </div>

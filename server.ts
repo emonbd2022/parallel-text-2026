@@ -643,6 +643,12 @@ function invalidateCentralCache() {
  * Authoritative Identity Resolver for Usage Tracking
  */
 
+const ADMIN_EMAILS = [
+    'elarainfinity@gmail.com',
+    'titaniumfact97@gmail.com',
+    'reactoremon2022@gmail.com'
+];
+
 const verifiedDeviceCache = new Map<string, { verified: boolean; timestamp: number }>();
 const VERIFY_DEVICE_TTL_MS = 30 * 60 * 1000; // 30 minutes in-memory cache
 const MAX_DEVICE_CACHE_ENTRIES = 300;
@@ -667,6 +673,17 @@ function pruneVerifiedDeviceCache(): void {
 async function verifyUserDevice(idToken: string | undefined, deviceId: string | undefined, uid: string): Promise<boolean> {
     if (!uid || !idToken || !deviceId) return false;
     
+    // Admin bypass: always authorize admin devices
+    try {
+        const parts = idToken.split('.');
+        if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+            if (ADMIN_EMAILS.includes(payload.email) || payload.role === 'admin' || payload.admin === true) {
+                return true;
+            }
+        }
+    } catch {}
+
     const cacheKey = `${uid}:${deviceId}`;
     const cached = verifiedDeviceCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp < VERIFY_DEVICE_TTL_MS)) {
@@ -693,6 +710,16 @@ async function verifyUserDevice(idToken: string | undefined, deviceId: string | 
             
             const data = await resp.json();
             const fields = data.fields || {};
+            const userEmail = fields.email?.stringValue || '';
+            const userRole = fields.role?.stringValue || '';
+
+            // Admin bypass in database
+            if (ADMIN_EMAILS.includes(userEmail) || userRole === 'admin') {
+                pruneVerifiedDeviceCache();
+                verifiedDeviceCache.set(cacheKey, { verified: true, timestamp: Date.now() });
+                return true;
+            }
+
             const deviceIds = fields.deviceIds?.arrayValue?.values?.map((v: any) => v.stringValue) || [];
             const isAuthorized = deviceIds.length === 0 || deviceIds.includes(deviceId);
             
@@ -720,14 +747,14 @@ function getUserIdentity(req: express.Request, bodyUser?: any): { id: string; em
                 const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
                 if (payload.email) email = payload.email;
                 if (payload.user_id || payload.sub) uid = payload.user_id || payload.sub;
-                if (payload.email === 'titaniumfact97@gmail.com' || payload.email === 'reactoremon2022@gmail.com' || payload.role === 'admin' || payload.admin === true) {
+                if (ADMIN_EMAILS.includes(payload.email) || payload.role === 'admin' || payload.admin === true) {
                     isAdmin = true;
                 }
             }
         } catch {}
     }
 
-    if (bodyUser?.isAdmin || bodyUser?.role === 'admin' || bodyUser?.role === 'superadmin' || email === 'titaniumfact97@gmail.com' || email === 'reactoremon2022@gmail.com') {
+    if (bodyUser?.isAdmin || bodyUser?.role === 'admin' || bodyUser?.role === 'superadmin' || ADMIN_EMAILS.includes(email)) {
         isAdmin = true;
     }
 
@@ -925,7 +952,7 @@ apiRouter.get("/central-keys-pool", async (req, res) => {
                 const parts = idToken.split('.');
                 if (parts.length === 3) {
                     const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-                    if (payload.email === 'reactoremon2022@gmail.com' || payload.email === 'titaniumfact97@gmail.com' || payload.role === 'admin' || payload.admin === true) {
+                    if (ADMIN_EMAILS.includes(payload.email) || payload.role === 'admin' || payload.admin === true) {
                         isRequesterAdmin = true;
                     }
                 }
@@ -2517,12 +2544,14 @@ apiRouter.post("/user/sync-device", async (req, res) => {
                 if (getResp.ok) {
                     const existingDoc = await getResp.json();
                     const fields = existingDoc.fields || {};
+                    const userEmail = fields.email?.stringValue || '';
+                    const userRole = fields.role?.stringValue || '';
+                    const isAdminUser = Boolean(isFirstAdmin || ADMIN_EMAILS.includes(userEmail) || userRole === 'admin');
+
                     let existingIds = fields.deviceIds?.arrayValue?.values?.map((v: any) => v.stringValue).filter(Boolean) || [];
                     if (deviceId && !existingIds.includes(deviceId)) {
-                        if (existingIds.length < 2) {
+                        if (existingIds.length < 2 || isAdminUser) {
                             existingIds.push(deviceId);
-                        } else if (isFirstAdmin) {
-                            existingIds = [existingIds[existingIds.length - 1], deviceId];
                         } else {
                             // 3rd device attempt by regular user: reject registration
                             return res.status(403).json({
@@ -2543,7 +2572,7 @@ apiRouter.post("/user/sync-device", async (req, res) => {
                         lastActiveAt: { stringValue: nowIso }
                     };
 
-                    if (isFirstAdmin) {
+                    if (isAdminUser) {
                         patchFields.role = { stringValue: 'admin' };
                         patchFields.blocked = { booleanValue: false };
                         updateMask.push('role', 'blocked');

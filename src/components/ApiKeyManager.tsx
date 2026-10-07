@@ -34,7 +34,7 @@ import { parseApiKeysCsv, CsvParseResult } from '../utils/csvKeyParser';
 import { ImportCsvModal } from './ImportCsvModal';
 import { LocalDeadApiModal } from './LocalDeadApiModal';
 import { syncLocalKeysToServer } from '../utils/keySync';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth, ADMIN_EMAILS } from '../contexts/AuthContext';
 import { validateGeminiApiKey } from '../services/geminiService';
 import { fetchServerCentralUsage, formatTimeUntilReset, CentralUsageStats, calculateLocalCentralLimit } from '../services/centralUsageService';
 
@@ -104,7 +104,7 @@ export const ApiKeyManager: React.FC<Props> = ({
   }, [sourceLocalKeys]);
 
   // Central API eligibility rules
-  const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || user?.email === 'reactoremon2022@gmail.com' || user?.email === 'titaniumfact97@gmail.com';
+  const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || ADMIN_EMAILS.includes(user?.email || '');
   const isCentralDisabledForUser = centralModeEnabled === false && !isAdmin;
   const hasExplicitAdminGrant = userData?.centralApiAccess === true;
   const hasEightKeysUnlocked = Boolean((user || userData) && uniqueLocalKeysCount >= 4);

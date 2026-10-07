@@ -5,6 +5,12 @@ import { auth, db } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite, isFirestoreQuotaExhausted, markFirestoreQuotaExhausted, handleFirestoreError } from '../utils/firestoreAudit';
 import { getOrCreateDeviceId, detectDeviceMetadata, DeviceMetadata, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
 
+export const ADMIN_EMAILS = [
+  'elarainfinity@gmail.com',
+  'titaniumfact97@gmail.com',
+  'reactoremon2022@gmail.com'
+];
+
 export interface UserData {
   uid: string;
   email: string;
@@ -463,13 +469,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           let dbDeviceIds: string[] = Array.isArray(d.deviceIds) ? [...d.deviceIds].filter(Boolean) : [];
           let dbDevices: DeviceMetadata[] = Array.isArray(d.devices) ? [...d.devices].filter(Boolean) : [];
           let shouldUpdateDoc = false;
-          const isFirstAdmin = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
-          let role = d.role || (isFirstAdmin ? 'admin' : 'user');
-          let isBlocked = !!d.blocked;
+          const isFirstAdmin = ADMIN_EMAILS.includes(currentUser.email || '');
+          let role = (isFirstAdmin || d.role === 'admin') ? 'admin' : (d.role || 'user');
+          let isBlocked = isFirstAdmin ? false : !!d.blocked;
           let deviceLimitReached = false;
 
           // Auto-unblock hardcoded admins
-          if (isFirstAdmin && isBlocked) {
+          if (isFirstAdmin && d.blocked) {
             isBlocked = false;
             shouldUpdateDoc = true;
           }
@@ -480,7 +486,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           // Device Authorization Logic (Enforced on initial check & recurring visits)
-          if (dbDeviceIds.includes(deviceId)) {
+          if (isFirstAdmin || role === 'admin') {
+            // Admin device limit bypass: automatically authorize current device without limit
+            if (!dbDeviceIds.includes(deviceId)) {
+              dbDeviceIds.push(deviceId);
+              dbDevices.push({
+                ...currentMeta,
+                registeredAt: new Date().toISOString(),
+                lastActiveAt: new Date().toISOString()
+              });
+              shouldUpdateDoc = true;
+            }
+            deviceLimitReached = false;
+          } else if (dbDeviceIds.includes(deviceId)) {
             // Current device is already registered in slot 1 or 2
             deviceLimitReached = false;
           } else if (dbDeviceIds.length < MAX_DEVICES_PER_ACCOUNT) {
@@ -494,20 +512,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             shouldUpdateDoc = true;
             deviceLimitReached = false;
           } else {
-            // 2 Device slots already registered
-            if (role === 'admin') {
-              // Admin override: ensure active slots are tracked and visible without locking admin out
-              dbDeviceIds = [dbDeviceIds[dbDeviceIds.length - 1], deviceId];
-              dbDevices = [
-                ...dbDevices.filter(m => dbDeviceIds.includes(m.id)),
-                { ...currentMeta, registeredAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }
-              ].slice(-2);
-              shouldUpdateDoc = true;
-              deviceLimitReached = false;
-            } else {
-              // Standard user 3rd device attempt: enforce limit
-              deviceLimitReached = true;
-            }
+            // Standard user 3rd device attempt: enforce limit
+            deviceLimitReached = true;
           }
 
           if (deviceLimitReached) {
@@ -523,11 +529,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 devices: dbDevices,
                 lastActiveAt: new Date().toISOString()
               };
-              if (isFirstAdmin && d.role !== 'admin') {
+              if (isFirstAdmin) {
                 updates.role = 'admin';
-              }
-              if (isFirstAdmin && d.blocked) {
                 updates.blocked = false;
+                updates.unlimited = true;
+                updates.centralApiAccess = true;
+                updates.credits = 999999;
               }
               await updateDoc(userRef, updates);
               recordFirestoreWrite('users', 1, 'AuthContext:updateUserDoc');
@@ -543,19 +550,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             name: d.name || currentUser.displayName || '',
             photoURL: d.photoURL || currentUser.photoURL || '',
             nickname: d.nickname || currentUser.displayName?.split(' ')[0] || 'User',
-            credits: typeof d.credits === 'number' ? d.credits : 100,
-            unlimited: !!d.unlimited,
+            credits: isFirstUser ? 999999 : (typeof d.credits === 'number' ? d.credits : 100),
+            unlimited: isFirstUser || !!d.unlimited,
             totalProcessedImages: typeof d.totalProcessedImages === 'number' ? d.totalProcessedImages : 0,
             joinDate: d.joinDate || new Date().toISOString(),
             blocked: isBlocked,
-            role: d.role === 'admin' ? 'admin' : (isFirstUser ? 'admin' : 'user'),
-            plan: d.plan || 'free',
+            role: (d.role === 'admin' || isFirstUser) ? 'admin' : 'user',
+            plan: isFirstUser ? 'unlimited' : (d.plan || 'free'),
             planStartDate: d.planStartDate,
             planEndDate: d.planEndDate,
             deviceIds: dbDeviceIds,
             devices: dbDevices,
-            centralApiAccess: d.role === 'admin' || isFirstUser ? true : Boolean(d.centralApiAccess),
-            deviceLimitReached,
+            centralApiAccess: (d.role === 'admin' || isFirstUser) ? true : Boolean(d.centralApiAccess),
+            deviceLimitReached: (isFirstAdmin || role === 'admin') ? false : deviceLimitReached,
           };
 
           // Update state & cache if data is changed or freshly fetched
@@ -582,7 +589,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         } else {
           // Genuinely NEW user: create initial user document and admin notification atomically in ONE writeBatch
-          const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+          const isFirstUser = ADMIN_EMAILS.includes(currentUser.email || '');
           const userName = currentUser.displayName || 'User';
           const userEmail = currentUser.email || '';
           const nowISO = new Date().toISOString();
@@ -596,13 +603,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             name: userName,
             photoURL: currentUser.photoURL || '',
             nickname: userName.split(' ')[0] || 'User',
-            credits: 100,
-            unlimited: false,
+            credits: isFirstUser ? 999999 : 100,
+            unlimited: isFirstUser,
             totalProcessedImages: 0,
             joinDate: nowISO,
             blocked: false,
             role: isFirstUser ? 'admin' : 'user',
-            plan: 'free',
+            plan: isFirstUser ? 'unlimited' : 'free',
             deviceIds: [deviceId],
             devices: [{ ...currentMeta, registeredAt: nowISO, lastActiveAt: nowISO }],
             centralApiAccess: isFirstUser ? true : false,
@@ -647,7 +654,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (cached) {
             setUserData(cached);
           } else {
-            const isFirstUser = currentUser.email === 'titaniumfact97@gmail.com' || currentUser.email === 'reactoremon2022@gmail.com';
+            const isFirstUser = ADMIN_EMAILS.includes(currentUser.email || '');
             const deviceId = getOrCreateDeviceId();
             const currentMeta = detectDeviceMetadata(deviceId);
             const nowISO = new Date().toISOString();
@@ -657,13 +664,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               name: currentUser.displayName || 'User',
               photoURL: currentUser.photoURL || '',
               nickname: (currentUser.displayName || currentUser.email || 'User').split(' ')[0],
-              credits: 100,
-              unlimited: false,
+              credits: isFirstUser ? 999999 : 100,
+              unlimited: isFirstUser,
               totalProcessedImages: 0,
               joinDate: nowISO,
               blocked: false,
               role: isFirstUser ? 'admin' : 'user',
-              plan: 'free',
+              plan: isFirstUser ? 'unlimited' : 'free',
               deviceIds: [deviceId],
               devices: [{ ...currentMeta, registeredAt: nowISO, lastActiveAt: nowISO }],
               centralApiAccess: isFirstUser,
