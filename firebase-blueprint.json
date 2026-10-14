@@ -39,9 +39,35 @@
         "userName": { "type": "string" },
         "userEmail": { "type": "string" },
         "createdAt": { "type": "string" },
-        "read": { "type": "boolean" }
+        "read": { "type": "boolean" },
+        "paymentId": { "type": "string" },
+        "trxId": { "type": "string" },
+        "amount": { "type": "number" },
+        "method": { "type": "string" },
+        "userUid": { "type": "string" }
       },
       "required": ["id", "targetUid", "type", "message", "createdAt", "read"]
+    },
+    "Payment": {
+      "title": "Payment Record",
+      "description": "User bKash / Nagad subscription payment request and approval status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "enum": ["bkash", "nagad"] },
+        "trxId": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "plan": { "type": "string" },
+        "durationDays": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "approvedAt": { "type": "string" },
+        "expiresAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "userEmail", "amount", "method", "trxId", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -52,6 +78,10 @@
     "/notifications/{notificationId}": {
       "schema": "Notification",
       "description": "System and admin alerts."
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Stores user subscription payments and verification details."
     },
     "/settings/{document}": {
       "schema": "object",

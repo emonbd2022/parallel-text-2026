@@ -95,7 +95,22 @@ export const compressImage = async (
       const taskId = `img_${++workerTaskId}_${Date.now()}`;
       
       const compressedBlob = await new Promise<Blob>((resolve, reject) => {
-        pendingWorkerTasks.set(taskId, { resolve, reject });
+        const timeoutId = setTimeout(() => {
+          pendingWorkerTasks.delete(taskId);
+          reject(new Error('Worker compression timeout, falling back to canvas'));
+        }, 5000);
+
+        pendingWorkerTasks.set(taskId, {
+          resolve: (val) => {
+            clearTimeout(timeoutId);
+            resolve(val);
+          },
+          reject: (err) => {
+            clearTimeout(timeoutId);
+            reject(err);
+          }
+        });
+
         worker.postMessage(
           {
             id: taskId,

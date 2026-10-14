@@ -130,3 +130,39 @@ export interface ApiKeySpeedStat {
   speedTag?: 'fastest' | 'fast' | 'normal' | 'slower' | 'untried';
   relativeSpeedRatio?: number;
 }
+
+export interface PaymentRecord {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  amount: number; // 200
+  method: 'bkash' | 'nagad';
+  trxId: string;
+  status: 'pending' | 'approved' | 'rejected';
+  plan: 'unlimited';
+  durationDays: number;
+  createdAt: string;
+  approvedAt?: string;
+  rejectedAt?: string;
+  expiresAt?: string;
+  rejectionReason?: string;
+  adminNote?: string;
+}
+
+export interface AppNotification {
+  id: string;
+  targetUid: string;
+  type: string;
+  message: string;
+  userName?: string;
+  userEmail?: string;
+  createdAt: string;
+  read: boolean;
+  paymentId?: string;
+  trxId?: string;
+  amount?: number;
+  method?: 'bkash' | 'nagad';
+  userUid?: string;
+  status?: string;
+}

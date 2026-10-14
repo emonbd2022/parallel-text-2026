@@ -100,16 +100,27 @@ export const generateMetadataBatch = async (
       deviceId = localStorage.getItem('parrarel_device_id_v2') || '';
     } catch (e) {}
 
-    const res = await fetch('/api/central-generate', {
-       method: 'POST',
-       signal,
-       headers: { 
-         'Content-Type': 'application/json',
-         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-         ...(deviceId ? { 'X-Device-Id': deviceId } : {})
-       },
-       body: JSON.stringify({ items, config, virtualKeyId: apiKey, localKeys, isAdmin: isAdmin ?? true, hasExplicitAdminGrant: true })
-    });
+    const timeoutController = new AbortController();
+    const timeoutTimer = setTimeout(() => timeoutController.abort(), 25000);
+    const combinedSignal = signal 
+      ? (typeof (AbortSignal as any).any === 'function' ? (AbortSignal as any).any([signal, timeoutController.signal]) : signal)
+      : timeoutController.signal;
+
+    let res: Response;
+    try {
+      res = await fetch('/api/central-generate', {
+         method: 'POST',
+         signal: combinedSignal,
+         headers: { 
+           'Content-Type': 'application/json',
+           ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+           ...(deviceId ? { 'X-Device-Id': deviceId } : {})
+         },
+         body: JSON.stringify({ items, config, virtualKeyId: apiKey, localKeys, isAdmin: isAdmin ?? true, hasExplicitAdminGrant: true })
+      });
+    } finally {
+      clearTimeout(timeoutTimer);
+    }
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('text/html')) {
       throw new Error("Central API backend routing error: production endpoint returned HTML instead of JSON.");

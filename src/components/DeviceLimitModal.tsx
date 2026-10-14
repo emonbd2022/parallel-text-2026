@@ -1,15 +1,44 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { ShieldAlert, Laptop, Smartphone, LogOut, AlertTriangle, Lock } from 'lucide-react';
+import { ShieldAlert, Laptop, Smartphone, LogOut, AlertTriangle, Lock, RefreshCw, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { getOrCreateDeviceId, formatDeviceId, detectDeviceMetadata, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
 
 export const DeviceLimitModal: React.FC = () => {
-  const { user, userData, logout } = useAuth();
+  const { user, userData, logout, refreshUserData } = useAuth();
+  const [checking, setChecking] = useState(false);
+  const [checkStatus, setCheckStatus] = useState<string | null>(null);
 
   const currentDeviceId = getOrCreateDeviceId();
   const currentMeta = detectDeviceMetadata(currentDeviceId);
   const registeredIds = Array.isArray(userData?.deviceIds) ? userData.deviceIds : [];
+
+  const handleManualCheck = async () => {
+    setChecking(true);
+    setCheckStatus('Checking device slots with server...');
+    try {
+      const updated = await refreshUserData(true);
+      if (updated && !updated.deviceLimitReached) {
+        setCheckStatus('Access granted! Entering app...');
+      } else {
+        setCheckStatus('Device slots still full. Ask administrator to reset your devices.');
+      }
+    } catch (e: any) {
+      setCheckStatus('Failed to verify. Please try again.');
+    } finally {
+      setTimeout(() => setChecking(false), 600);
+    }
+  };
+
+  // Automatic background poll while modal is visible so admin resets unlock instantly
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        await refreshUserData(true);
+      } catch {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [refreshUserData]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md overflow-y-auto">
@@ -43,11 +72,17 @@ export const DeviceLimitModal: React.FC = () => {
         {/* Status Explanation */}
         <div className="p-4 bg-slate-950/70 rounded-2xl border border-slate-800 space-y-2.5">
           <p className="text-slate-300 text-sm leading-relaxed">
-            Your account <strong className="text-white font-mono bg-slate-800 px-1.5 py-0.5 rounded text-xs">{user?.email || userData?.email || 'this account'}</strong> already has <strong className="text-rose-400">{MAX_DEVICES_PER_ACCOUNT} registered devices</strong>.
+            Your account <strong className="text-white font-mono bg-slate-800 px-1.5 py-0.5 rounded text-xs">{user?.email || userData?.email || 'this account'}</strong> currently has <strong className="text-rose-400">{MAX_DEVICES_PER_ACCOUNT} registered devices</strong>.
           </p>
           <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-200 leading-relaxed font-medium">
-            Strict multi-device protection is enabled. The 3rd device cannot log in or re-authorize devices. Only an administrator can re-authorize devices or reset your device authorization slots.
+            Strict multi-device protection is enabled. When an administrator resets your device authorization slots, click <strong>"Check & Re-verify Access"</strong> below or wait a moment for automatic login.
           </div>
+          {checkStatus && (
+            <div className={`p-2.5 rounded-xl text-xs font-medium flex items-center gap-2 ${checkStatus.includes('granted') ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-slate-800 text-slate-300 border border-slate-700'}`}>
+              {checkStatus.includes('granted') ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /> : <RefreshCw className={`w-3.5 h-3.5 text-slate-400 shrink-0 ${checking ? 'animate-spin' : ''}`} />}
+              <span>{checkStatus}</span>
+            </div>
+          )}
         </div>
 
         {/* Device Status Breakdown */}
@@ -92,7 +127,7 @@ export const DeviceLimitModal: React.FC = () => {
                 </div>
                 <div>
                   <span className="text-xs font-bold text-rose-200 block flex items-center gap-1.5">
-                    This Machine (Blocked)
+                    This Machine (Pending Reset)
                   </span>
                   <span className="text-[11px] text-slate-400">
                     {currentMeta.name} • {formatDeviceId(currentDeviceId)}
@@ -110,17 +145,27 @@ export const DeviceLimitModal: React.FC = () => {
         <div className="space-y-2.5 pt-2">
           <button
             type="button"
-            onClick={() => logout()}
-            className="w-full py-3 px-4 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white text-sm font-bold rounded-xl shadow-lg shadow-rose-900/30 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-[0.99]"
+            onClick={handleManualCheck}
+            disabled={checking}
+            className="w-full py-3 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg shadow-emerald-900/30 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-[0.99]"
           >
-            <LogOut className="w-4 h-4" />
+            <RefreshCw className={`w-4 h-4 ${checking ? 'animate-spin' : ''}`} />
+            <span>{checking ? 'Checking Slots...' : 'Check & Re-verify Access'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => logout()}
+            className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium rounded-xl border border-slate-700 flex items-center justify-center gap-2 transition-all cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
             <span>Sign Out & Switch Account</span>
           </button>
         </div>
 
         {/* Footer Support */}
         <div className="text-center text-[11px] text-slate-500 pt-1">
-          Need help? Contact an administrator to manage your authorized devices.
+          Need help? Contact an administrator to reset your authorized device slots.
         </div>
       </motion.div>
     </div>

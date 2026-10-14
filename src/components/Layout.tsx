@@ -3,7 +3,16 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, AppNotification } from '../contexts/AuthContext';
 import { logout } from '../lib/firebase';
 import { APP_VERSION } from '../config/version';
-import { Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, Wrench, Bell, Upload, UserPlus, HelpCircle, Info, AlertTriangle, CheckCircle } from 'lucide-react';
+import { 
+  Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, 
+  Wrench, Bell, Upload, UserPlus, HelpCircle, Info, AlertTriangle, 
+  CheckCircle, MessageCircle, CheckCircle2, Copy, RefreshCw 
+} from 'lucide-react';
+import { 
+  WHATSAPP_COMMUNITY_URL, 
+  approveSubscriptionPayment, 
+  rejectSubscriptionPayment 
+} from '../services/paymentService';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { userData, loading, maintenanceMode, notifications, deleteNotification } = useAuth();
@@ -12,6 +21,56 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [mobileMenu, setMobileMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [viewingNotification, setViewingNotification] = useState<AppNotification | null>(null);
+  const [isApproving, setIsApproving] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [approveStatus, setApproveStatus] = useState<string | null>(null);
+  const [copiedTrx, setCopiedTrx] = useState(false);
+
+  const handleApproveFromNotif = async () => {
+    if (!viewingNotification || !userData) return;
+    setIsApproving(true);
+    setApproveStatus(null);
+    try {
+      await approveSubscriptionPayment({
+        paymentId: viewingNotification.paymentId || viewingNotification.id.replace('notif_', ''),
+        userId: viewingNotification.userUid,
+        userEmail: viewingNotification.userEmail,
+        userName: viewingNotification.userName,
+        trxId: viewingNotification.trxId,
+        amount: viewingNotification.amount || 200,
+        method: viewingNotification.method || 'bkash',
+        adminEmail: userData.email
+      });
+      setApproveStatus('approved');
+    } catch (e: any) {
+      alert(e?.message || 'Failed to approve subscription');
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  const handleRejectFromNotif = async () => {
+    if (!viewingNotification || !userData) return;
+    const reason = prompt('Please enter rejection reason (e.g., Invalid TrxID / Payment not received):', 'TrxID could not be verified');
+    if (reason === null) return;
+    setIsRejecting(true);
+    try {
+      await rejectSubscriptionPayment({
+        paymentId: viewingNotification.paymentId || viewingNotification.id.replace('notif_', ''),
+        userId: viewingNotification.userUid,
+        userEmail: viewingNotification.userEmail,
+        userName: viewingNotification.userName,
+        trxId: viewingNotification.trxId,
+        reason,
+        adminEmail: userData.email
+      });
+      setApproveStatus('rejected');
+    } catch (e: any) {
+      alert(e?.message || 'Failed to reject payment');
+    } finally {
+      setIsRejecting(false);
+    }
+  };
 
   const handleUploadClick = () => {
     if (location.pathname !== '/') {
@@ -26,6 +85,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
   const handleViewNotification = async (notification: AppNotification) => {
     setViewingNotification(notification);
+    setApproveStatus(null);
+    setCopiedTrx(false);
     // Dismiss locally for current user's notification icon and badge (does not delete from server)
     await deleteNotification(notification.id, false);
   };
@@ -281,18 +342,26 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           }`}>
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className={`flex items-center gap-2 font-bold ${
-                viewingNotification.targetUid === 'all' 
-                  ? (viewingNotification.type === 'warning' ? 'text-amber-400' : viewingNotification.type === 'success' ? 'text-emerald-400' : 'text-blue-400')
-                  : 'text-purple-400'
+                viewingNotification.type === 'subscription_request' || viewingNotification.paymentId
+                  ? 'text-pink-400'
+                  : viewingNotification.targetUid === 'all' 
+                    ? (viewingNotification.type === 'warning' ? 'text-amber-400' : viewingNotification.type === 'success' ? 'text-emerald-400' : 'text-blue-400')
+                    : 'text-purple-400'
               }`}>
-                {viewingNotification.targetUid === 'all' ? (
+                {viewingNotification.type === 'subscription_request' || viewingNotification.paymentId ? (
+                  <CreditCard className="w-5 h-5 text-pink-400" />
+                ) : viewingNotification.targetUid === 'all' ? (
                   viewingNotification.type === 'warning' ? <AlertTriangle className="w-5 h-5" /> :
                   viewingNotification.type === 'success' ? <CheckCircle className="w-5 h-5" /> :
                   <Info className="w-5 h-5" />
                 ) : (
                   <UserPlus className="w-5 h-5" />
                 )}
-                <span>{viewingNotification.targetUid === 'all' ? viewingNotification.userName || 'Global Notice' : 'New User Registration'}</span>
+                <span>
+                  {viewingNotification.type === 'subscription_request' || viewingNotification.paymentId
+                    ? 'Subscription Payment Request'
+                    : viewingNotification.targetUid === 'all' ? viewingNotification.userName || 'Global Notice' : 'New User Registration'}
+                </span>
               </div>
               <button
                 onClick={() => setViewingNotification(null)}
@@ -302,7 +371,112 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               </button>
             </div>
             
-            {viewingNotification.targetUid === 'all' ? (
+            {/* Notification Body */}
+            {viewingNotification.type === 'subscription_request' || viewingNotification.paymentId ? (
+              <div className="bg-slate-950/80 rounded-xl p-4 border border-slate-800/80 space-y-3.5 text-sm">
+                <div className="flex items-center justify-between border-b border-slate-800/80 pb-2.5">
+                  <span className="text-slate-400 text-xs">প্ল্যান ও মূল্য:</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-extrabold text-white text-base">৳{viewingNotification.amount || 200}</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30">
+                      ১ মাস Unlimited
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-400">ব্যবহারকারী:</span>
+                  <span className="text-white font-medium">{viewingNotification.userName || 'User'}</span>
+                </div>
+
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-400">ইমেইল (লগইন):</span>
+                  <span className="text-purple-300 font-mono text-xs">{viewingNotification.userEmail || 'N/A'}</span>
+                </div>
+
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-slate-400">পেমেন্ট মাধ্যম:</span>
+                  <span className={`px-2 py-0.5 rounded font-bold uppercase text-[11px] ${
+                    viewingNotification.method === 'nagad' ? 'bg-[#F7941D]/20 text-[#F7941D]' : 'bg-[#E2136E]/20 text-[#E2136E]'
+                  }`}>
+                    {viewingNotification.method === 'nagad' ? 'Nagad (নগদ)' : 'bKash (বিকাশ)'}
+                  </span>
+                </div>
+
+                {viewingNotification.trxId && (
+                  <div className="flex justify-between items-center text-xs bg-slate-900 p-2.5 rounded-lg border border-purple-500/20">
+                    <span className="text-slate-400 font-medium">TrxID:</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-yellow-300 text-sm tracking-wider">{viewingNotification.trxId}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (viewingNotification.trxId) {
+                            navigator.clipboard.writeText(viewingNotification.trxId);
+                            setCopiedTrx(true);
+                            setTimeout(() => setCopiedTrx(false), 2000);
+                          }
+                        }}
+                        className="p-1 hover:bg-slate-800 rounded text-purple-300 transition-colors"
+                        title="Copy TrxID"
+                      >
+                        {copiedTrx ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800/50">
+                  জমা দেওয়ার সময়: {new Date(viewingNotification.createdAt).toLocaleString()}
+                </div>
+
+                {/* Status Feedback */}
+                {approveStatus === 'approved' && (
+                  <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>প্ল্যান অনুমোদিত হয়েছে! ১ মাসের আনলিমিটেড সাবস্ক্রিপশন চালু হয়েছে।</span>
+                  </div>
+                )}
+                {approveStatus === 'rejected' && (
+                  <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>পেমেন্ট রিকোয়েস্ট বাতিল করা হয়েছে।</span>
+                  </div>
+                )}
+
+                {/* Admin Direct Approval Actions */}
+                {userData?.role === 'admin' && !approveStatus && (
+                  <div className="pt-2 flex flex-col gap-2">
+                    <button
+                      type="button"
+                      disabled={isApproving || isRejecting}
+                      onClick={handleApproveFromNotif}
+                      className="w-full py-2.5 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/40 cursor-pointer transition-all"
+                    >
+                      {isApproving ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>অনুমোদন হচ্ছে...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Approve Plan (১ মাস Unlimited অনুমোদন)</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isApproving || isRejecting}
+                      onClick={handleRejectFromNotif}
+                      className="w-full py-2 px-3 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/40 text-rose-300 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <span>Reject (বাতিল করুন)</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : viewingNotification.targetUid === 'all' ? (
               <div className="bg-slate-950/80 rounded-xl p-4 border border-slate-800/80 space-y-2.5 text-sm">
                 <div className="whitespace-pre-line text-slate-200 leading-relaxed">
                   {viewingNotification.message}
@@ -326,8 +500,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                   <span className="text-slate-300 text-xs">{new Date(viewingNotification.createdAt).toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Starting Credits:</span>
-                  <span className="text-emerald-400 font-medium">100 Credits</span>
+                  <span className="text-slate-400">Trial Credits:</span>
+                  <span className="text-emerald-400 font-medium">10 Free Trial Credits</span>
                 </div>
               </div>
             )}
@@ -335,7 +509,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <div className="text-[11px] text-slate-400 text-center">
               {viewingNotification.targetUid === 'all' 
                 ? (userData?.role === 'admin' ? 'Global announcement • Active on server' : 'Marked as viewed and removed from your notification panel.') 
-                : (userData?.role === 'admin' ? 'New user registration alert • Active on server' : 'Notification viewed and removed from your panel.')}
+                : (userData?.role === 'admin' ? 'Alert active on server' : 'Notification viewed and removed from your panel.')}
             </div>
             
             <div className="flex justify-end pt-1">
@@ -367,6 +541,18 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           </div>
         </div>
       )}
+
+      {/* Floating WhatsApp Community Support Button */}
+      <a
+        href={WHATSAPP_COMMUNITY_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="fixed bottom-5 right-5 z-[90] flex items-center gap-2.5 px-4 py-2.5 bg-[#25D366] hover:bg-[#20ba59] text-slate-950 font-bold rounded-full shadow-2xl shadow-[#25D366]/40 hover:scale-105 active:scale-95 transition-all text-xs sm:text-sm group border border-white/20"
+        title="Parallel text community - যেকোনো সমস্যা বা সাপোর্টের জন্য হোয়াটসঅ্যাপ গ্রুপে যোগ দিন"
+      >
+        <MessageCircle className="w-5 h-5 text-slate-950 fill-current" />
+        <span className="font-extrabold tracking-tight">Parallel text community</span>
+      </a>
     </div>
   );
 };

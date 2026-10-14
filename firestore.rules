@@ -15,7 +15,7 @@ service cloud.firestore {
     // Verify if the caller has administrator privileges
     function isAdmin() {
       return isAuthenticated() && (
-        (request.auth.token.email != null && request.auth.token.email in ['titaniumfact97@gmail.com', 'reactoremon2022@gmail.com']) ||
+        (request.auth.token.email != null && request.auth.token.email in ['elarainfinity@gmail.com', 'titaniumfact97@gmail.com', 'reactoremon2022@gmail.com']) ||
         (
           exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
@@ -31,7 +31,7 @@ service cloud.firestore {
         'joinDate', 'createdAt', 'blocked', 'role',
         'plan', 'planStartDate', 'planEndDate',
         'deviceIds', 'devices', 'centralApiAccess', 'lastActiveAt',
-        'deviceLimitReached'
+        'deviceLimitReached', 'subscriptionExpiresAt'
       ]);
     }
 
@@ -39,7 +39,8 @@ service cloud.firestore {
     // Enforced for BOTH normal users and administrators.
     function hasOnlyNotificationFields() {
       return request.resource.data.keys().hasOnly([
-        'id', 'targetUid', 'type', 'message', 'userName', 'userEmail', 'createdAt', 'read'
+        'id', 'targetUid', 'type', 'message', 'userName', 'userEmail', 'createdAt', 'read',
+        'paymentId', 'trxId', 'amount', 'method', 'userUid'
       ]);
     }
 
@@ -151,18 +152,17 @@ service cloud.firestore {
     // Enforced against schema allowlist for BOTH admins and normal users.
     // =========================================================
     match /notifications/{notificationId} {
-      // Read: Admins can read all. Users can read global notifications.
-      allow read: if isAuthenticated() && (isAdmin() || resource.data.targetUid == 'all');
+      // Read: Admins can read all. Users can read global or their own personal notifications.
+      allow read: if isAuthenticated() && (isAdmin() || resource.data.targetUid == 'all' || resource.data.targetUid == request.auth.uid);
 
-      // Create: Enforces schema allowlist and prohibits local data.
-      // Admins can create. Newly registered users can ONLY create their own signup alert to admin.
+      // Create: Admins can create. Users can create signup alert or subscription payment request to admin.
       allow create: if isAuthenticated() &&
         hasOnlyNotificationFields() &&
         hasNoForbiddenLocalData() &&
         request.resource.data.createdAt is string &&
         request.resource.data.read is bool &&
         (
-          (isAdmin() && request.resource.data.targetUid in ['admin', 'all']) ||
+          (isAdmin() && request.resource.data.targetUid in ['admin', 'all', request.resource.data.targetUid]) ||
           (
             request.resource.data.targetUid == 'admin' &&
             notificationId == ('signup_' + request.auth.uid) &&
@@ -172,15 +172,52 @@ service cloud.firestore {
             request.resource.data.userEmail is string &&
             request.resource.data.message is string &&
             request.resource.data.read == false
+          ) ||
+          (
+            request.resource.data.targetUid == 'admin' &&
+            request.resource.data.type == 'subscription_request' &&
+            request.resource.data.userUid == request.auth.uid &&
+            request.resource.data.read == false
           )
         );
 
-      // Update: Restricted to administrators AND restricted to 'read' field only
-      allow update: if isAdmin() &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) &&
-        request.resource.data.read is bool;
+      // Update: Restricted to administrators (or user marking their own notification as read)
+      allow update: if isAuthenticated() && (
+        isAdmin() || 
+        (resource.data.targetUid == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']))
+      );
 
-      // Delete: Strictly restricted to administrators
+      // Delete: Restricted to administrators
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================
+    // PAYMENTS COLLECTION
+    // Subscription payments (bKash / Nagad 200 BDT)
+    // =========================================================
+    match /payments/{paymentId} {
+      // Read: Admins can read all payments; Users can read their own payment records
+      allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+
+      // Create: Authenticated users can create pending payment request for themselves
+      allow create: if isAuthenticated() &&
+        hasNoForbiddenLocalData() &&
+        request.resource.data.keys().hasOnly([
+          'id', 'userId', 'userEmail', 'userName', 'amount', 'method', 'trxId',
+          'status', 'plan', 'durationDays', 'createdAt', 'approvedAt', 'rejectedAt',
+          'expiresAt', 'rejectionReason', 'adminNote'
+        ]) &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.amount == 200 &&
+        request.resource.data.trxId is string &&
+        request.resource.data.trxId.size() >= 3 &&
+        request.resource.data.method in ['bkash', 'nagad'];
+
+      // Update: Only administrators can approve/reject payment requests
+      allow update: if isAdmin();
+
+      // Delete: Only administrators can remove records
       allow delete: if isAdmin();
     }
 

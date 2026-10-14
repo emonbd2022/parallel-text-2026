@@ -686,7 +686,8 @@ async function verifyUserDevice(idToken: string | undefined, deviceId: string | 
 
     const cacheKey = `${uid}:${deviceId}`;
     const cached = verifiedDeviceCache.get(cacheKey);
-    if (cached && (Date.now() - cached.timestamp < VERIFY_DEVICE_TTL_MS)) {
+    // Only cache negative verifications for 3 seconds so admin resets take effect immediately
+    if (cached && (Date.now() - cached.timestamp < (cached.verified ? VERIFY_DEVICE_TTL_MS : 3000))) {
         return cached.verified;
     }
 
@@ -721,7 +722,7 @@ async function verifyUserDevice(idToken: string | undefined, deviceId: string | 
             }
 
             const deviceIds = fields.deviceIds?.arrayValue?.values?.map((v: any) => v.stringValue) || [];
-            const isAuthorized = deviceIds.length === 0 || deviceIds.includes(deviceId);
+            const isAuthorized = deviceIds.length < 2 || deviceIds.includes(deviceId);
             
             pruneVerifiedDeviceCache();
             verifiedDeviceCache.set(cacheKey, { verified: isAuthorized, timestamp: Date.now() });

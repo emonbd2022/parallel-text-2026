@@ -1,9 +1,11 @@
 import { motion } from 'motion/react';
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { User, Calendar, Image as ImageIcon, Zap, Crown, BarChart2, ShieldCheck, Laptop, Smartphone, CheckCircle2 } from 'lucide-react';
+import { User, Calendar, Image as ImageIcon, Zap, Crown, BarChart2, ShieldCheck, Laptop, Smartphone, CheckCircle2, CreditCard, Sparkles, MessageCircle } from 'lucide-react';
 import { StatisticsModal } from '../components/StatisticsModal';
 import { getOrCreateDeviceId, formatDeviceId, detectDeviceMetadata, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
+import { WHATSAPP_COMMUNITY_URL } from '../services/paymentService';
 
 const MODELS = [
   { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite (Default)' },
@@ -18,6 +20,7 @@ const MODELS = [
 
 export const Dashboard: React.FC = () => {
   const { userData } = useAuth();
+  const navigate = useNavigate();
   const [showStats, setShowStats] = useState(false);
   const [logs, setLogs] = useState([]);
 
@@ -89,25 +92,54 @@ export const Dashboard: React.FC = () => {
 
           <div className="bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-700 rounded-3xl p-8 shadow-xl relative overflow-hidden group">
             <div className="absolute -right-10 -top-10 w-40 h-40 bg-purple-500/10 rounded-full blur-3xl group-hover:bg-purple-500/20 transition-colors"></div>
-            <h3 className="text-slate-400 font-medium flex items-center gap-2 mb-4">
-              <Crown className="w-5 h-5 text-amber-400" /> Current Plan
-            </h3>
-            <div className="text-4xl font-black text-white mb-2 capitalize">
-              {userData.plan && userData.plan !== 'free' ? userData.plan : (userData.unlimited ? 'Unlimited' : 'Free')}
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-slate-400 font-medium flex items-center gap-2">
+                <Crown className="w-5 h-5 text-amber-400" /> Current Plan
+              </h3>
+              {userData.unlimited && (
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
+                  সক্রিয় Unlimited
+                </span>
+              )}
             </div>
-            {userData.plan && userData.plan !== 'free' ? (
-              <p className="text-slate-400">
-                {userData.planEndDate ? (
-                   userData.plan === 'unlimited' ? <>Lifetime</> : <>Valid until <strong className="text-white">{new Date(userData.planEndDate).toLocaleDateString()}</strong></>
-                ) : (
-                   'Active Subscription'
-                )}
-              </p>
-            ) : (
-              <p className="text-slate-400">
-                You are on the free plan. Upgrade for more credits.
-              </p>
-            )}
+            <div className="text-3xl sm:text-4xl font-black text-white mb-2">
+              {userData.unlimited ? '১ মাস আনলিমিটেড' : 'ফ্রি ট্রায়াল (Free Trial)'}
+            </div>
+            <div className="space-y-3">
+              {userData.unlimited ? (
+                <p className="text-xs sm:text-sm text-slate-300">
+                  {userData.planEndDate ? (
+                    <>মেয়াদ শেষ হবে: <strong className="text-emerald-400 font-mono font-bold">{new Date(userData.planEndDate).toLocaleDateString()}</strong> (পরবর্তী ১ মাস বৈধ)</>
+                  ) : (
+                    '১ মাস আনলিমিটেড প্রসেসিং সক্রিয়'
+                  )}
+                </p>
+              ) : (
+                <p className="text-xs sm:text-sm text-slate-400">
+                  নতুন ব্যবহারকারীদের জন্য ১০টি ফ্রি ট্রায়াল ক্রেডিট। সীমাহীন প্রসেসিং পেতে সাবস্ক্রিপশন নিন (৳২০০/মাস)।
+                </p>
+              )}
+
+              <div className="pt-2 flex flex-wrap gap-2.5">
+                <button
+                  onClick={() => navigate('/pricing')}
+                  className="px-4 py-2 bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-500 hover:to-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+                >
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>{userData.unlimited ? 'পেমেন্ট হিস্ট্রি / রিনিউ' : 'সাবস্ক্রিপশন কিনুন (৳২০০)'}</span>
+                </button>
+
+                <a
+                  href={WHATSAPP_COMMUNITY_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3.5 py-2 bg-[#25D366]/20 hover:bg-[#25D366]/30 border border-[#25D366]/40 text-[#25D366] rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" />
+                  <span>Parallel text community</span>
+                </a>
+              </div>
+            </div>
           </div>
         </div>
 

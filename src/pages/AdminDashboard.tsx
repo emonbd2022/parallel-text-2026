@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch, getAggregateFromServer, sum } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Upload, Laptop, Smartphone, ShieldCheck, Flame, Power, CheckSquare, Square, SlidersHorizontal } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Upload, Laptop, Smartphone, ShieldCheck, Flame, Power, CheckSquare, Square, SlidersHorizontal, CreditCard, Clock } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
@@ -18,14 +18,21 @@ import {
 } from '../services/centralKeyService';
 import { DeadApiModal } from '../components/DeadApiModal';
 import { recordFirestoreRead, recordFirestoreWrite, isFirestoreQuotaExhausted, handleFirestoreError } from '../utils/firestoreAudit';
+import { 
+  getAllPayments, 
+  approveSubscriptionPayment, 
+  rejectSubscriptionPayment, 
+  SUBSCRIPTION_PRICE_BDT 
+} from '../services/paymentService';
+import { PaymentRecord } from '../types';
 
 type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active';
 
 export const AdminDashboard: React.FC = () => {
   const { userData: currentAdmin, maintenanceMode, setMaintenanceMode, centralModeEnabled, setCentralModeEnabled, notifications, setNotifications, deleteNotification } = useAuth();
   
-  // Dashboard Tabs: 'users' | 'notifications'
-  const [activeTab, setActiveTab] = useState<'users' | 'notifications' | 'keys'>('users');
+  // Dashboard Tabs: 'users' | 'notifications' | 'keys' | 'payments'
+  const [activeTab, setActiveTab] = useState<'users' | 'notifications' | 'keys' | 'payments'>('users');
   const [sortBy, setSortBy] = useState<SortOption>('recent_active');
   const [viewMode, setViewMode] = useState<'paginated' | 'all'>('paginated');
 
@@ -89,9 +96,90 @@ export const AdminDashboard: React.FC = () => {
     }
   });
   const [loadingNotifs, setLoadingNotifs] = useState(false);
-  const [notifFilter, setNotifFilter] = useState<'all' | 'global' | 'signups'>('all');
+  const [notifFilter, setNotifFilter] = useState<'all' | 'global' | 'signups' | 'payments'>('all');
   const [deletingNotifId, setDeletingNotifId] = useState<string | null>(null);
   const [viewingAdminNotif, setViewingAdminNotif] = useState<AppNotification | null>(null);
+
+  // Payments & Subscription Management State
+  const [payments, setPayments] = useState<PaymentRecord[]>([]);
+  const [loadingPayments, setLoadingPayments] = useState(false);
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  const [paymentSearch, setPaymentSearch] = useState('');
+  const [approvingPaymentId, setApprovingPaymentId] = useState<string | null>(null);
+  const [rejectingPaymentId, setRejectingPaymentId] = useState<string | null>(null);
+  const [copiedPaymentTrx, setCopiedPaymentTrx] = useState<string | null>(null);
+
+  const fetchPayments = async () => {
+    setLoadingPayments(true);
+    try {
+      const list = await getAllPayments();
+      setPayments(list);
+    } catch (e) {
+      console.error("Error fetching payments:", e);
+    } finally {
+      setLoadingPayments(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'payments') {
+      fetchPayments();
+    }
+  }, [activeTab]);
+
+  const handleAdminApprovePayment = async (pay: { id: string; userId?: string; userEmail?: string; userName?: string; trxId?: string; amount?: number; method?: 'bkash' | 'nagad' }) => {
+    if (!currentAdmin?.email) return;
+    setApprovingPaymentId(pay.id);
+    try {
+      await approveSubscriptionPayment({
+        paymentId: pay.id,
+        userId: pay.userId,
+        userEmail: pay.userEmail,
+        userName: pay.userName,
+        trxId: pay.trxId,
+        amount: pay.amount || SUBSCRIPTION_PRICE_BDT,
+        method: pay.method || 'bkash',
+        adminEmail: currentAdmin.email
+      });
+      setPayments(prev => prev.map(p => p.id === pay.id ? { ...p, status: 'approved', approvedAt: new Date().toISOString() } : p));
+      if (viewingAdminNotif && (viewingAdminNotif.paymentId === pay.id || viewingAdminNotif.id === `notif_${pay.id}`)) {
+        setViewingAdminNotif(null);
+      }
+      fetchServerNotifications(true);
+      alert('পেমেন্ট সফলভাবে অনুমোদিত হয়েছে! ব্যবহারকারীর ১ মাসের Unlimited সাবস্ক্রিপশন সক্রিয় হয়েছে।');
+    } catch (e: any) {
+      alert(e?.message || 'Failed to approve payment');
+    } finally {
+      setApprovingPaymentId(null);
+    }
+  };
+
+  const handleAdminRejectPayment = async (pay: { id: string; userId?: string; userEmail?: string; userName?: string; trxId?: string }) => {
+    if (!currentAdmin?.email) return;
+    const reason = prompt('বাতিল করার কারণ লিখুন (Rejection Reason):', 'TrxID could not be verified / Payment not received');
+    if (reason === null) return;
+    setRejectingPaymentId(pay.id);
+    try {
+      await rejectSubscriptionPayment({
+        paymentId: pay.id,
+        userId: pay.userId,
+        userEmail: pay.userEmail,
+        userName: pay.userName,
+        trxId: pay.trxId,
+        reason,
+        adminEmail: currentAdmin.email
+      });
+      setPayments(prev => prev.map(p => p.id === pay.id ? { ...p, status: 'rejected', rejectionReason: reason } : p));
+      if (viewingAdminNotif && (viewingAdminNotif.paymentId === pay.id || viewingAdminNotif.id === `notif_${pay.id}`)) {
+        setViewingAdminNotif(null);
+      }
+      fetchServerNotifications(true);
+    } catch (e: any) {
+      alert(e?.message || 'Failed to reject payment');
+    } finally {
+      setRejectingPaymentId(null);
+    }
+  };
 
   // API Keys state
   const [centralKeys, setCentralKeys] = useState<CentralKeyRecord[]>([]);
@@ -1134,6 +1222,26 @@ export const AdminDashboard: React.FC = () => {
             <Key className="w-4 h-4" />
             <span>Central API Keys</span>
           </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('payments');
+              fetchPayments();
+            }}
+            className={`flex items-center gap-2.5 pb-3 px-1 font-bold text-sm transition-all border-b-2 whitespace-nowrap ${
+              activeTab === 'payments'
+                ? 'border-purple-500 text-purple-400'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <CreditCard className="w-4 h-4" />
+            <span>Payments & Subscriptions</span>
+            {(payments.filter(p => p.status === 'pending').length > 0 || serverNotifications.filter(n => n.type === 'subscription_request' || !!n.paymentId).length > 0) && (
+              <span className="px-2 py-0.5 text-xs rounded-full bg-pink-500/20 text-pink-300 border border-pink-500/30 font-mono font-bold">
+                {payments.filter(p => p.status === 'pending').length || serverNotifications.filter(n => n.type === 'subscription_request' || !!n.paymentId).length}
+              </span>
+            )}
+          </button>
         </div>
 
         {/* TAB 1: USER MANAGEMENT */}
@@ -1556,8 +1664,9 @@ export const AdminDashboard: React.FC = () => {
                 <div className="flex items-center gap-2">
                   {[
                     { id: 'all', label: `All (${serverNotifications.length})` },
+                    { id: 'payments', label: `Subscriptions (${serverNotifications.filter(n => n.type === 'subscription_request' || !!n.paymentId).length})` },
                     { id: 'global', label: `Global (${serverNotifications.filter(n => n.targetUid === 'all').length})` },
-                    { id: 'signups', label: `Signups (${serverNotifications.filter(n => n.targetUid === 'admin').length})` },
+                    { id: 'signups', label: `Signups (${serverNotifications.filter(n => n.targetUid === 'admin' && n.type !== 'subscription_request' && !n.paymentId).length})` },
                   ].map(f => (
                     <button
                       key={f.id}
@@ -1575,7 +1684,7 @@ export const AdminDashboard: React.FC = () => {
 
                 <div className="flex items-center gap-3 w-full sm:w-auto">
                   <button
-                    onClick={fetchServerNotifications}
+                    onClick={() => fetchServerNotifications(true)}
                     disabled={loadingNotifs}
                     className="flex items-center gap-2 px-3.5 py-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-bold text-slate-300 transition-colors disabled:opacity-50"
                   >
@@ -1614,42 +1723,76 @@ export const AdminDashboard: React.FC = () => {
                   {serverNotifications
                     .filter(n => {
                       if (notifFilter === 'global') return n.targetUid === 'all';
-                      if (notifFilter === 'signups') return n.targetUid === 'admin';
+                      if (notifFilter === 'signups') return n.targetUid === 'admin' && n.type !== 'subscription_request' && !n.paymentId;
+                      if (notifFilter === 'payments') return n.type === 'subscription_request' || !!n.paymentId;
                       return true;
                     })
                     .map(n => {
                       const isGlobal = n.targetUid === 'all';
+                      const isSubscription = n.type === 'subscription_request' || !!n.paymentId;
                       const isDeleting = deletingNotifId === n.id;
+                      const paymentTargetId = n.paymentId || n.id.replace('notif_', '');
+                      const isApproving = approvingPaymentId === paymentTargetId;
                       return (
                         <div
                           key={n.id}
-                          className="bg-slate-950/70 border border-slate-800/90 hover:border-slate-700/80 rounded-xl p-4 transition-all duration-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 group"
+                          className={`border rounded-xl p-4 transition-all duration-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 group ${
+                            isSubscription 
+                              ? 'bg-slate-950/90 border-pink-500/30 hover:border-pink-500/50' 
+                              : 'bg-slate-950/70 border-slate-800/90 hover:border-slate-700/80'
+                          }`}
                         >
                           <div className="space-y-1.5 flex-1 min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               {/* Type Badge */}
                               <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md ${
-                                isGlobal
-                                  ? (n.type === 'warning' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : n.type === 'success' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20')
-                                  : 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                                isSubscription
+                                  ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
+                                  : isGlobal
+                                    ? (n.type === 'warning' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : n.type === 'success' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20')
+                                    : 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
                               }`}>
-                                {isGlobal ? (
+                                {isSubscription ? (
+                                  <CreditCard className="w-3 h-3 text-pink-400" />
+                                ) : isGlobal ? (
                                   n.type === 'warning' ? <AlertTriangle className="w-3 h-3" /> :
                                   n.type === 'success' ? <CheckCircle className="w-3 h-3" /> :
                                   <Info className="w-3 h-3" />
                                 ) : (
                                   <UserPlus className="w-3 h-3" />
                                 )}
-                                <span className="capitalize">{n.type || 'Notice'}</span>
+                                <span className="capitalize">{isSubscription ? 'Subscription (৳200)' : n.type || 'Notice'}</span>
                               </span>
 
                               {/* Target Badge */}
                               <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md ${
-                                isGlobal ? 'bg-emerald-500/10 text-emerald-300' : 'bg-slate-800 text-slate-400'
+                                isSubscription 
+                                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                                  : isGlobal ? 'bg-emerald-500/10 text-emerald-300' : 'bg-slate-800 text-slate-400'
                               }`}>
-                                {isGlobal ? <Globe className="w-3 h-3 text-emerald-400" /> : <Shield className="w-3 h-3 text-purple-400" />}
-                                <span>{isGlobal ? 'Global (All Users)' : 'Admin Only'}</span>
+                                {isSubscription ? (
+                                  <span className="font-bold">1 Month Unlimited</span>
+                                ) : isGlobal ? (
+                                  <>
+                                    <Globe className="w-3 h-3 text-emerald-400" />
+                                    <span>Global (All Users)</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Shield className="w-3 h-3 text-purple-400" />
+                                    <span>Admin Only</span>
+                                  </>
+                                )}
                               </span>
+
+                              {/* Method Badge if Payment */}
+                              {n.method && (
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase ${
+                                  n.method === 'nagad' ? 'bg-[#F7941D]/20 text-[#F7941D]' : 'bg-[#E2136E]/20 text-[#E2136E]'
+                                }`}>
+                                  {n.method}
+                                </span>
+                              )}
 
                               {/* Timestamp */}
                               <span className="text-[11px] text-slate-500">
@@ -1657,8 +1800,13 @@ export const AdminDashboard: React.FC = () => {
                               </span>
                             </div>
 
-                            <div className="font-bold text-sm text-slate-200 truncate">
-                              {n.userName || (isGlobal ? 'Global Notice' : 'New User Signup')}
+                            <div className="font-bold text-sm text-slate-200 truncate flex items-center gap-2">
+                              <span>{n.userName || (isSubscription ? 'Subscription Payment' : isGlobal ? 'Global Notice' : 'New User Signup')}</span>
+                              {n.trxId && (
+                                <span className="font-mono text-xs text-yellow-300 bg-slate-900 px-2 py-0.5 rounded border border-yellow-500/20">
+                                  TrxID: {n.trxId}
+                                </span>
+                              )}
                             </div>
 
                             <div className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
@@ -1674,6 +1822,31 @@ export const AdminDashboard: React.FC = () => {
 
                           {/* Action Buttons */}
                           <div className="flex items-center gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-850">
+                            {/* Direct Plan Approval Button */}
+                            {isSubscription && (
+                              <button
+                                onClick={() => handleAdminApprovePayment({
+                                  id: paymentTargetId,
+                                  userId: n.userUid,
+                                  userEmail: n.userEmail,
+                                  userName: n.userName,
+                                  trxId: n.trxId,
+                                  amount: n.amount,
+                                  method: n.method
+                                })}
+                                disabled={isApproving}
+                                className="px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-emerald-950/40 cursor-pointer"
+                                title="Approve 1 Month Unlimited Plan immediately"
+                              >
+                                {isApproving ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                )}
+                                <span>Approve Plan</span>
+                              </button>
+                            )}
+
                             <button
                               onClick={() => setViewingAdminNotif(n)}
                               className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
@@ -1694,7 +1867,7 @@ export const AdminDashboard: React.FC = () => {
                               ) : (
                                 <Trash2 className="w-3.5 h-3.5 text-rose-400" />
                               )}
-                              <span>Delete from Server</span>
+                              <span>Delete</span>
                             </button>
                           </div>
                         </div>
@@ -1705,7 +1878,6 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </div>
         )}
-      </div>
 
       {/* Clean Database Modal */}
       {cleanModalOpen && (
@@ -2589,6 +2761,285 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
 
+      {/* TAB 4: PAYMENTS & SUBSCRIPTIONS */}
+        {activeTab === 'payments' && (
+          <div className="space-y-6">
+            {/* KPI Metrics */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">মোট আবেদন (Total Requests)</span>
+                  <div className="w-8 h-8 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-400">
+                    <CreditCard className="w-4 h-4" />
+                  </div>
+                </div>
+                <div className="text-2xl font-bold text-white mt-2">{payments.length}</div>
+                <div className="text-xs text-slate-500 mt-1">সর্বমোট পেমেন্ট সাবমিশন</div>
+              </div>
+
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">অপেক্ষমাণ (Pending)</span>
+                  <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400">
+                    <Clock className="w-4 h-4" />
+                  </div>
+                </div>
+                <div className="text-2xl font-bold text-amber-400 mt-2">
+                  {payments.filter(p => p.status === 'pending').length}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">যাচাই ও অনুমোদনের অপেক্ষায়</div>
+              </div>
+
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">অনুমোদিত (Active Unlimited)</span>
+                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                    <ShieldCheck className="w-4 h-4" />
+                  </div>
+                </div>
+                <div className="text-2xl font-bold text-emerald-400 mt-2">
+                  {payments.filter(p => p.status === 'approved').length}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">১ মাস আনলিমিটেড মেম্বারশিপ</div>
+              </div>
+
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">মোট রাজস্ব (Total Revenue)</span>
+                  <div className="w-8 h-8 rounded-lg bg-teal-500/10 flex items-center justify-center text-teal-400">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                </div>
+                <div className="text-2xl font-bold text-teal-400 mt-2">
+                  ৳{(payments.filter(p => p.status === 'approved').reduce((acc, p) => acc + (p.amount || SUBSCRIPTION_PRICE_BDT), 0)).toLocaleString()}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">৳২০০/মাস সাবস্ক্রিপশন ফি</div>
+              </div>
+            </div>
+
+            {/* Management Table Container */}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+              {/* Header & Filter Controls */}
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-4 border-b border-slate-800">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {[
+                    { id: 'all', label: `সব পেমেন্ট (${payments.length})` },
+                    { id: 'pending', label: `অপেক্ষমাণ (${payments.filter(p => p.status === 'pending').length})` },
+                    { id: 'approved', label: `অনুমোদিত (${payments.filter(p => p.status === 'approved').length})` },
+                    { id: 'rejected', label: `বাতিল (${payments.filter(p => p.status === 'rejected').length})` },
+                  ].map(f => (
+                    <button
+                      key={f.id}
+                      onClick={() => setPaymentFilter(f.id as any)}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        paymentFilter === f.id
+                          ? 'bg-purple-600 text-white shadow-md shadow-purple-900/30'
+                          : 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-3 w-full sm:w-auto">
+                  <div className="relative flex-1 sm:w-64">
+                    <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="TrxID, ইমেইল বা নাম দিয়ে খুঁজুন..."
+                      value={paymentSearch}
+                      onChange={e => setPaymentSearch(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 outline-none focus:border-purple-500"
+                    />
+                  </div>
+
+                  <button
+                    onClick={fetchPayments}
+                    disabled={loadingPayments}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-bold text-slate-300 transition-colors disabled:opacity-50 shrink-0"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-purple-400 ${loadingPayments ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Payments List Table */}
+              {loadingPayments ? (
+                <div className="py-16 text-center text-slate-500 flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="w-6 h-6 text-purple-400 animate-spin" />
+                  <span className="text-sm font-medium">পেমেন্ট হিস্ট্রি লোড হচ্ছে...</span>
+                </div>
+              ) : payments.length === 0 ? (
+                <div className="py-16 text-center text-slate-500 flex flex-col items-center justify-center gap-3">
+                  <CreditCard className="w-10 h-10 text-slate-700 mb-1" />
+                  <div className="font-bold text-slate-300 text-base">কোনো পেমেন্ট রিকোয়েস্ট পাওয়া যায়নি</div>
+                  <div className="text-xs text-slate-500 max-w-sm">
+                    ব্যবহারকারীরা বিকাশ বা নগদে ২০০ টাকা পাঠিয়ে TrxID সাবমিট করলে এখানে দেখতে পাবেন।
+                  </div>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs sm:text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 text-xs">
+                        <th className="pb-3 pl-3 font-semibold">তারিখ ও সময়</th>
+                        <th className="pb-3 font-semibold">ব্যবহারকারী (User)</th>
+                        <th className="pb-3 font-semibold">মাধ্যম</th>
+                        <th className="pb-3 font-semibold">TrxID</th>
+                        <th className="pb-3 font-semibold">পরিমাণ</th>
+                        <th className="pb-3 font-semibold">স্ট্যাটাস</th>
+                        <th className="pb-3 font-semibold">মেয়াদ (Expiry)</th>
+                        <th className="pb-3 pr-3 text-right font-semibold">অ্যাকশন</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-mono">
+                      {payments
+                        .filter(p => {
+                          if (paymentFilter === 'pending') return p.status === 'pending';
+                          if (paymentFilter === 'approved') return p.status === 'approved';
+                          if (paymentFilter === 'rejected') return p.status === 'rejected';
+                          return true;
+                        })
+                        .filter(p => {
+                          if (!paymentSearch.trim()) return true;
+                          const q = paymentSearch.toLowerCase();
+                          return (
+                            p.trxId.toLowerCase().includes(q) ||
+                            p.userEmail.toLowerCase().includes(q) ||
+                            p.userName.toLowerCase().includes(q)
+                          );
+                        })
+                        .map(p => {
+                          const isApproving = approvingPaymentId === p.id;
+                          const isRejecting = rejectingPaymentId === p.id;
+                          return (
+                            <tr key={p.id} className="hover:bg-slate-800/30 transition-colors">
+                              <td className="py-3 pl-3 text-slate-300 font-sans text-xs">
+                                <div>{new Date(p.createdAt).toLocaleDateString()}</div>
+                                <div className="text-[10px] text-slate-500 font-mono">
+                                  {new Date(p.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </div>
+                              </td>
+
+                              <td className="py-3 font-sans">
+                                <div className="font-bold text-white text-xs sm:text-sm">{p.userName || 'User'}</div>
+                                <div className="text-purple-300 font-mono text-[11px] truncate max-w-[180px]" title={p.userEmail}>
+                                  {p.userEmail}
+                                </div>
+                              </td>
+
+                              <td className="py-3 font-sans">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase ${
+                                  p.method === 'nagad' ? 'bg-[#F7941D]/20 text-[#F7941D]' : 'bg-[#E2136E]/20 text-[#E2136E]'
+                                }`}>
+                                  {p.method}
+                                </span>
+                              </td>
+
+                              <td className="py-3">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-bold text-yellow-300 font-mono text-xs tracking-wider">{p.trxId}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(p.trxId);
+                                      setCopiedPaymentTrx(p.id);
+                                      setTimeout(() => setCopiedPaymentTrx(null), 2000);
+                                    }}
+                                    className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
+                                    title="Copy TrxID"
+                                  >
+                                    {copiedPaymentTrx === p.id ? (
+                                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                    ) : (
+                                      <Copy className="w-3.5 h-3.5" />
+                                    )}
+                                  </button>
+                                </div>
+                              </td>
+
+                              <td className="py-3 font-sans font-extrabold text-white">
+                                ৳{p.amount}
+                              </td>
+
+                              <td className="py-3 font-sans">
+                                {p.status === 'approved' ? (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-semibold border border-emerald-500/30">
+                                    <CheckCircle2 className="w-3 h-3" /> অনুমোদিত
+                                  </span>
+                                ) : p.status === 'rejected' ? (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 text-xs font-semibold border border-rose-500/30">
+                                    <AlertTriangle className="w-3 h-3" /> বাতিল
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-semibold border border-amber-500/30">
+                                    <Clock className="w-3 h-3 animate-pulse" /> অপেক্ষমাণ
+                                  </span>
+                                )}
+                              </td>
+
+                              <td className="py-3 font-sans text-xs text-slate-400">
+                                {p.expiresAt ? (
+                                  <span className="text-emerald-300 font-medium">
+                                    {new Date(p.expiresAt).toLocaleDateString()}
+                                  </span>
+                                ) : (
+                                  '১ মাস (Pending)'
+                                )}
+                              </td>
+
+                              <td className="py-3 pr-3 text-right">
+                                {p.status === 'pending' ? (
+                                  <div className="flex items-center justify-end gap-2">
+                                    <button
+                                      type="button"
+                                      disabled={isApproving || isRejecting}
+                                      onClick={() => handleAdminApprovePayment(p)}
+                                      className="px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-md shadow-emerald-950/40 transition-all cursor-pointer"
+                                      title="১ মাসের Unlimited প্রসেসিং অনুমোদন করুন"
+                                    >
+                                      {isApproving ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      ) : (
+                                        <CheckCircle2 className="w-3.5 h-3.5" />
+                                      )}
+                                      <span>অনুমোদন</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      disabled={isApproving || isRejecting}
+                                      onClick={() => handleAdminRejectPayment(p)}
+                                      className="px-2.5 py-1.5 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/40 text-rose-300 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                                      title="বাতিল করুন"
+                                    >
+                                      <span>বাতিল</span>
+                                    </button>
+                                  </div>
+                                ) : p.status === 'approved' ? (
+                                  <span className="text-xs text-emerald-400 font-semibold font-sans">
+                                    Active Unlimited
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-rose-400 font-sans" title={p.rejectionReason}>
+                                    Rejected
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Admin Notification Preview & Deletion Modal */}
       {viewingAdminNotif && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -2596,11 +3047,15 @@ export const AdminDashboard: React.FC = () => {
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                  viewingAdminNotif.targetUid === 'all'
-                    ? (viewingAdminNotif.type === 'warning' ? 'bg-amber-500/10 text-amber-400' : viewingAdminNotif.type === 'success' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-blue-500/10 text-blue-400')
-                    : 'bg-purple-500/10 text-purple-400'
+                  viewingAdminNotif.type === 'subscription_request' || !!viewingAdminNotif.paymentId
+                    ? 'bg-pink-500/20 text-pink-400'
+                    : viewingAdminNotif.targetUid === 'all'
+                      ? (viewingAdminNotif.type === 'warning' ? 'bg-amber-500/10 text-amber-400' : viewingAdminNotif.type === 'success' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-blue-500/10 text-blue-400')
+                      : 'bg-purple-500/10 text-purple-400'
                 }`}>
-                  {viewingAdminNotif.targetUid === 'all' ? (
+                  {viewingAdminNotif.type === 'subscription_request' || !!viewingAdminNotif.paymentId ? (
+                    <CreditCard className="w-5 h-5 text-pink-400" />
+                  ) : viewingAdminNotif.targetUid === 'all' ? (
                     viewingAdminNotif.type === 'warning' ? <AlertTriangle className="w-5 h-5" /> :
                     viewingAdminNotif.type === 'success' ? <CheckCircle className="w-5 h-5" /> :
                     <Info className="w-5 h-5" />
@@ -2610,7 +3065,9 @@ export const AdminDashboard: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="font-bold text-slate-100 text-lg">
-                    {viewingAdminNotif.userName || (viewingAdminNotif.targetUid === 'all' ? 'Global Notice' : 'New User Registration')}
+                    {viewingAdminNotif.type === 'subscription_request' || !!viewingAdminNotif.paymentId
+                      ? 'সাবস্ক্রিপশন পেমেন্ট রিকোয়েস্ট'
+                      : viewingAdminNotif.userName || (viewingAdminNotif.targetUid === 'all' ? 'Global Notice' : 'New User Registration')}
                   </h3>
                   <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
                     <span>{viewingAdminNotif.createdAt ? new Date(viewingAdminNotif.createdAt).toLocaleString() : 'Unknown date'}</span>
@@ -2630,31 +3087,150 @@ export const AdminDashboard: React.FC = () => {
 
             <div className="flex flex-wrap gap-2">
               <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg ${
-                viewingAdminNotif.targetUid === 'all' ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-purple-500/10 text-purple-300 border border-purple-500/20'
+                viewingAdminNotif.type === 'subscription_request' || !!viewingAdminNotif.paymentId
+                  ? 'bg-pink-500/10 text-pink-300 border border-pink-500/20'
+                  : viewingAdminNotif.targetUid === 'all' ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-purple-500/10 text-purple-300 border border-purple-500/20'
               }`}>
-                {viewingAdminNotif.targetUid === 'all' ? <Globe className="w-3.5 h-3.5" /> : <Shield className="w-3.5 h-3.5" />}
-                <span>{viewingAdminNotif.targetUid === 'all' ? 'Broadcast to All Users' : 'Direct Admin Alert'}</span>
+                {viewingAdminNotif.type === 'subscription_request' || !!viewingAdminNotif.paymentId ? (
+                  <>
+                    <CreditCard className="w-3.5 h-3.5 text-pink-400" />
+                    <span>১ মাস Unlimited Plan (৳200)</span>
+                  </>
+                ) : viewingAdminNotif.targetUid === 'all' ? (
+                  <>
+                    <Globe className="w-3.5 h-3.5" />
+                    <span>Broadcast to All Users</span>
+                  </>
+                ) : (
+                  <>
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>Direct Admin Alert</span>
+                  </>
+                )}
               </span>
 
-              <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-400">
-                <span>Category:</span>
-                <span className="font-semibold text-slate-200 capitalize">{viewingAdminNotif.type || 'Standard'}</span>
-              </span>
-            </div>
-
-            <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-xl space-y-3">
-              <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Message Content</div>
-              <div className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
-                {viewingAdminNotif.message}
-              </div>
-
-              {viewingAdminNotif.userEmail && (
-                <div className="pt-2 border-t border-slate-850 flex items-center justify-between text-xs">
-                  <span className="text-slate-400">Registered Email:</span>
-                  <span className="font-mono text-purple-300 font-medium">{viewingAdminNotif.userEmail}</span>
-                </div>
+              {viewingAdminNotif.method && (
+                <span className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-lg uppercase ${
+                  viewingAdminNotif.method === 'nagad' ? 'bg-[#F7941D]/20 text-[#F7941D]' : 'bg-[#E2136E]/20 text-[#E2136E]'
+                }`}>
+                  {viewingAdminNotif.method} Send Money
+                </span>
               )}
             </div>
+
+            {/* If subscription request, render detailed breakdown & approve button */}
+            {viewingAdminNotif.type === 'subscription_request' || !!viewingAdminNotif.paymentId ? (
+              <div className="p-4 bg-slate-950/90 border border-slate-800 rounded-xl space-y-3.5 text-sm">
+                <div className="flex justify-between items-center border-b border-slate-850 pb-2">
+                  <span className="text-slate-400 text-xs">প্ল্যানের ধরন:</span>
+                  <span className="font-bold text-white">আনলিমিটেড প্রসেসিং (১ মাস)</span>
+                </div>
+
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400 text-xs">মূল্য:</span>
+                  <span className="font-extrabold text-emerald-400 text-base">৳{viewingAdminNotif.amount || 200}</span>
+                </div>
+
+                {viewingAdminNotif.userEmail && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400 text-xs">ইউজার ইমেইল (লগইন):</span>
+                    <span className="font-mono text-purple-300 text-xs font-medium">{viewingAdminNotif.userEmail}</span>
+                  </div>
+                )}
+
+                {viewingAdminNotif.userName && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400 text-xs">নাম:</span>
+                    <span className="text-slate-200 text-xs">{viewingAdminNotif.userName}</span>
+                  </div>
+                )}
+
+                {viewingAdminNotif.trxId && (
+                  <div className="flex justify-between items-center bg-slate-900 p-2.5 rounded-lg border border-purple-500/20">
+                    <span className="text-slate-400 text-xs font-medium">Transaction ID:</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-yellow-300 text-sm tracking-wider">{viewingAdminNotif.trxId}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (viewingAdminNotif.trxId) {
+                            navigator.clipboard.writeText(viewingAdminNotif.trxId);
+                            setCopiedPaymentTrx(viewingAdminNotif.id);
+                            setTimeout(() => setCopiedPaymentTrx(null), 2000);
+                          }
+                        }}
+                        className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white"
+                        title="Copy TrxID"
+                      >
+                        {copiedPaymentTrx === viewingAdminNotif.id ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Direct Action Buttons Inside Notification Modal */}
+                <div className="pt-2 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    disabled={approvingPaymentId === (viewingAdminNotif.paymentId || viewingAdminNotif.id.replace('notif_', ''))}
+                    onClick={() => handleAdminApprovePayment({
+                      id: viewingAdminNotif.paymentId || viewingAdminNotif.id.replace('notif_', ''),
+                      userId: viewingAdminNotif.userUid,
+                      userEmail: viewingAdminNotif.userEmail,
+                      userName: viewingAdminNotif.userName,
+                      trxId: viewingAdminNotif.trxId,
+                      amount: viewingAdminNotif.amount,
+                      method: viewingAdminNotif.method
+                    })}
+                    className="w-full py-3 px-4 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/40 cursor-pointer transition-all"
+                  >
+                    {approvingPaymentId === (viewingAdminNotif.paymentId || viewingAdminNotif.id.replace('notif_', '')) ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>অনুমোদন হচ্ছে...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Approve Subscription (১ মাস Unlimited অনুমোদন করুন)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleAdminRejectPayment({
+                      id: viewingAdminNotif.paymentId || viewingAdminNotif.id.replace('notif_', ''),
+                      userId: viewingAdminNotif.userUid,
+                      userEmail: viewingAdminNotif.userEmail,
+                      userName: viewingAdminNotif.userName,
+                      trxId: viewingAdminNotif.trxId
+                    })}
+                    className="w-full py-2 px-3 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/40 text-rose-300 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <span>Reject Payment (বাতিল করুন)</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-xl space-y-3">
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Message Content</div>
+                <div className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap font-sans">
+                  {viewingAdminNotif.message}
+                </div>
+
+                {viewingAdminNotif.userEmail && (
+                  <div className="pt-2 border-t border-slate-850 flex items-center justify-between text-xs">
+                    <span className="text-slate-400">Registered Email:</span>
+                    <span className="font-mono text-purple-300 font-medium">{viewingAdminNotif.userEmail}</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center justify-between pt-2 border-t border-slate-800">
               <button
