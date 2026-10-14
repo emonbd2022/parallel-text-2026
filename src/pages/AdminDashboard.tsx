@@ -2,8 +2,8 @@ import { motion } from 'motion/react';
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch, getAggregateFromServer, sum } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import { useAuth, UserData, AppNotification } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Upload, Laptop, Smartphone, ShieldCheck, Flame, Power, CheckSquare, Square, SlidersHorizontal, CreditCard, Clock } from 'lucide-react';
+import { useAuth, UserData, AppNotification, ADMIN_EMAILS } from '../contexts/AuthContext';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Upload, Laptop, Smartphone, ShieldCheck, Flame, Power, CheckSquare, Square, SlidersHorizontal, CreditCard, Clock, RotateCcw } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
@@ -26,7 +26,7 @@ import {
 } from '../services/paymentService';
 import { PaymentRecord } from '../types';
 
-type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active';
+type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active' | 'plan_active' | 'plan_expired' | 'plan_ending_soon';
 
 export const AdminDashboard: React.FC = () => {
   const { userData: currentAdmin, maintenanceMode, setMaintenanceMode, centralModeEnabled, setCentralModeEnabled, notifications, setNotifications, deleteNotification } = useAuth();
@@ -34,6 +34,7 @@ export const AdminDashboard: React.FC = () => {
   // Dashboard Tabs: 'users' | 'notifications' | 'keys' | 'payments'
   const [activeTab, setActiveTab] = useState<'users' | 'notifications' | 'keys' | 'payments'>('users');
   const [sortBy, setSortBy] = useState<SortOption>('recent_active');
+  const [planFilter, setPlanFilter] = useState<'all' | 'active' | 'expired' | 'free'>('all');
   const [viewMode, setViewMode] = useState<'paginated' | 'all'>('paginated');
 
   // Cache pages in sessionStorage so navigating away and returning costs 0 Firestore reads
@@ -71,6 +72,10 @@ export const AdminDashboard: React.FC = () => {
   // User Deletion State
   const [userToDelete, setUserToDelete] = useState<UserData | null>(null);
   const [isDeletingUser, setIsDeletingUser] = useState(false);
+
+  // User Plan Reset State
+  const [userToResetPlan, setUserToResetPlan] = useState<UserData | null>(null);
+  const [isResettingPlan, setIsResettingPlan] = useState(false);
   
   // Clean Data Modal & Execution State
   const [globalNotifModalOpen, setGlobalNotifModalOpen] = useState(false);
@@ -884,6 +889,71 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const confirmResetUserPlan = async () => {
+    if (!userToResetPlan || !db) return;
+    setIsResettingPlan(true);
+    try {
+      const uid = userToResetPlan.uid;
+      const targetName = userToResetPlan.name || userToResetPlan.email || 'user';
+      const pastDate = new Date(Date.now() - 1000).toISOString();
+      const updates = {
+        credits: 0,
+        unlimited: false,
+        plan: 'expired',
+        planEndDate: pastDate,
+        subscriptionExpiresAt: pastDate,
+        lastActiveAt: new Date().toISOString()
+      };
+
+      if (!isFirestoreQuotaExhausted()) {
+        await updateDoc(doc(db, 'users', uid), updates);
+        recordFirestoreWrite('users', 1, 'AdminDashboard:resetUserPlan');
+
+        // Send warning notification to user doc
+        const notifId = `reset_${uid}_${Date.now()}`;
+        await setDoc(doc(db, 'notifications', notifId), {
+          id: notifId,
+          targetUid: uid,
+          type: 'warning',
+          message: 'আপনার সাবস্ক্রিপশন প্ল্যান রিসেট করা হয়েছে এবং ক্রেডিট শূন্য (০) করা হয়েছে। আনলিমিটেড প্রসেসিং অব্যাহত রাখতে দয়া করে প্ল্যান রিনিউ করুন (৳২০০/মাস)।',
+          userName: targetName,
+          userEmail: userToResetPlan.email || '',
+          createdAt: new Date().toISOString(),
+          read: false
+        }).catch(() => {});
+      }
+
+      setUsersByPage(prev => {
+        const next = { ...prev };
+        for (const p of Object.keys(next)) {
+          const pageNum = Number(p);
+          next[pageNum] = (next[pageNum] || []).map(u => u.uid === uid ? { ...u, ...updates } as any : u);
+        }
+        try {
+          sessionStorage.setItem('adminCachedUsersByPage', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      setAllUsers(prev => {
+        const next = prev.map(u => u.uid === uid ? { ...u, ...updates } as any : u);
+        try {
+          sessionStorage.setItem('adminCachedAllUsers', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      setUserToResetPlan(null);
+      alert(`Plan successfully reset to zero for ${targetName}. Their credits are set to 0 and unlimited status is revoked.`);
+    } catch (error: any) {
+      handleFirestoreError(error, 'AdminDashboard:resetUserPlan');
+      console.error("Error resetting plan to zero:", error);
+      alert(`Failed to reset plan: ${error?.message || 'Unknown error'}`);
+    } finally {
+      setIsResettingPlan(false);
+    }
+  };
+
   const handlePlanChange = (uid: string, newPlan: string) => {
     const start = new Date();
     const end = new Date();
@@ -900,11 +970,16 @@ export const AdminDashboard: React.FC = () => {
        end.setMonth(end.getMonth() + 6);
        newCredits = 10000;
     } else if (newPlan === 'unlimited') {
-       end.setFullYear(end.getFullYear() + 100);
+       end.setMonth(end.getMonth() + 1); // 1 Month Unlimited
        unlimited = true;
-       newCredits = -1;
+       newCredits = 0;
+    } else if (newPlan === 'expired') {
+       unlimited = false;
+       newCredits = 0;
+       end.setTime(Date.now() - 1000); // Already past
     } else {
        newPlan = 'free';
+       newCredits = 10;
     }
 
     handleUpdateUser(uid, {
@@ -1065,6 +1140,15 @@ export const AdminDashboard: React.FC = () => {
       }
     }
 
+    // Apply plan filter
+    if (planFilter === 'active') {
+      list = list.filter(u => (u.unlimited || u.plan === 'unlimited') && !!u.planEndDate && new Date(u.planEndDate).getTime() > Date.now());
+    } else if (planFilter === 'expired') {
+      list = list.filter(u => u.role !== 'admin' && (u.plan === 'expired' || (!!u.planEndDate && new Date(u.planEndDate).getTime() <= Date.now())));
+    } else if (planFilter === 'free') {
+      list = list.filter(u => u.role !== 'admin' && !u.unlimited && u.plan !== 'expired' && (!u.planEndDate || new Date(u.planEndDate).getTime() > Date.now()));
+    }
+
     const getAvgPerDay = (u: UserData) => {
       if (!u.joinDate) return 0;
       const join = new Date(u.joinDate);
@@ -1094,10 +1178,32 @@ export const AdminDashboard: React.FC = () => {
       case 'least_active':
         // Lowest Avg/Day first
         return list.sort((a, b) => getAvgPerDay(a) - getAvgPerDay(b));
+      case 'plan_active':
+        return list.sort((a, b) => {
+          const aActive = a.unlimited && (!a.planEndDate || new Date(a.planEndDate).getTime() > Date.now());
+          const bActive = b.unlimited && (!b.planEndDate || new Date(b.planEndDate).getTime() > Date.now());
+          if (aActive && !bActive) return -1;
+          if (!aActive && bActive) return 1;
+          return new Date(b.planEndDate || 0).getTime() - new Date(a.planEndDate || 0).getTime();
+        });
+      case 'plan_expired':
+        return list.sort((a, b) => {
+          const aExp = a.plan === 'expired' || (!!a.planEndDate && new Date(a.planEndDate).getTime() <= Date.now());
+          const bExp = b.plan === 'expired' || (!!b.planEndDate && new Date(b.planEndDate).getTime() <= Date.now());
+          if (aExp && !bExp) return -1;
+          if (!aExp && bExp) return 1;
+          return new Date(b.planEndDate || 0).getTime() - new Date(a.planEndDate || 0).getTime();
+        });
+      case 'plan_ending_soon':
+        return list.sort((a, b) => {
+          const aTime = (a.unlimited && a.planEndDate) ? new Date(a.planEndDate).getTime() : Infinity;
+          const bTime = (b.unlimited && b.planEndDate) ? new Date(b.planEndDate).getTime() : Infinity;
+          return aTime - bTime;
+        });
       default:
         return list;
     }
-  }, [users, allUsers, viewMode, searchTerm, sortBy]);
+  }, [users, allUsers, viewMode, searchTerm, sortBy, planFilter]);
 
   return (
     <>
@@ -1314,6 +1420,56 @@ export const AdminDashboard: React.FC = () => {
                     )}
                   </button>
 
+                  <div className="flex items-center gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800 shrink-0 text-xs">
+                    <span className="text-[11px] font-bold text-slate-400 px-2 uppercase tracking-wider">Plan:</span>
+                    <button
+                      type="button"
+                      onClick={() => setPlanFilter('all')}
+                      className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                        planFilter === 'all'
+                          ? 'bg-purple-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                      }`}
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPlanFilter('active')}
+                      className={`px-2.5 py-1 rounded-lg font-bold transition-all flex items-center gap-1 ${
+                        planFilter === 'active'
+                          ? 'bg-emerald-600 text-white shadow-sm'
+                          : 'text-emerald-400 hover:text-emerald-300 hover:bg-slate-900'
+                      }`}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Active</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPlanFilter('expired')}
+                      className={`px-2.5 py-1 rounded-lg font-bold transition-all flex items-center gap-1 ${
+                        planFilter === 'expired'
+                          ? 'bg-rose-600 text-white shadow-sm'
+                          : 'text-rose-400 hover:text-rose-300 hover:bg-slate-900'
+                      }`}
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      <span>Expired</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPlanFilter('free')}
+                      className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                        planFilter === 'free'
+                          ? 'bg-slate-700 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                      }`}
+                    >
+                      Free/Trial
+                    </button>
+                  </div>
+
                   <div className="flex items-center gap-2 bg-slate-950 p-2 px-3.5 rounded-xl border border-slate-800 shrink-0">
                     <ArrowUpDown className="w-4 h-4 text-purple-400 shrink-0" />
                     <span className="text-xs font-bold text-slate-400 whitespace-nowrap">Sort By:</span>
@@ -1323,6 +1479,9 @@ export const AdminDashboard: React.FC = () => {
                       className="bg-transparent border-none outline-none text-xs font-bold text-purple-300 cursor-pointer pr-1"
                     >
                       <option value="recent_active" className="bg-slate-900 text-slate-200">Recent Active Users</option>
+                      <option value="plan_ending_soon" className="bg-slate-900 text-slate-200">Plan Ending Soonest</option>
+                      <option value="plan_active" className="bg-slate-900 text-slate-200">Plan Active (Unlimited)</option>
+                      <option value="plan_expired" className="bg-slate-900 text-slate-200">Plan Expired (0 Credits)</option>
                       <option value="recently_signed_up" className="bg-slate-900 text-slate-200">Recently Signed Up</option>
                       <option value="top_users" className="bg-slate-900 text-slate-200">Top Users</option>
                       <option value="least_active" className="bg-slate-900 text-slate-200">Least Active Users</option>
@@ -1338,7 +1497,7 @@ export const AdminDashboard: React.FC = () => {
                       <th className="pb-3 font-semibold w-1/4">User</th>
                       <th className="pb-3 font-semibold">Nickname</th>
                       <th className="pb-3 font-semibold">Credits</th>
-                      <th className="pb-3 font-semibold">Plan & Validity</th>
+                      <th className="pb-3 font-semibold">Plan & Ending Date</th>
                       <th className="pb-3 font-semibold">Central API</th>
                       <th className="pb-3 font-semibold">Devices (Max 2)</th>
                       <th className="pb-3 font-semibold">Processed</th>
@@ -1419,24 +1578,82 @@ export const AdminDashboard: React.FC = () => {
                             </td>
                             
                             <td className="py-4">
-                               <div className="flex flex-col gap-1">
-                                <select
-                                  value={user.plan || (user.unlimited ? 'unlimited' : (user.credits >= 5000 ? 'pro' : 'free'))}
-                                  onChange={(e) => handlePlanChange(user.uid, e.target.value)}
-                                  className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm outline-none text-slate-200 capitalize w-28"
-                                >
-                                  <option value="free">Free</option>
-                                  <option value="starter">Starter</option>
-                                  <option value="pro">Pro</option>
-                                  <option value="elite">Elite</option>
-                                  <option value="unlimited">Unlimited</option>
-                                </select>
-                                {user.plan && user.plan !== 'free' && user.planStartDate && (
-                                    <span className="text-[10px] text-slate-500">
-                                       From: {new Date(user.planStartDate).toLocaleDateString()}
+                              <div className="flex flex-col gap-1.5 min-w-[190px]">
+                                {/* Plan Badge & Expiry Details */}
+                                {user.role === 'admin' ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 w-fit">
+                                    <Shield className="w-3 h-3 text-purple-400" />
+                                    Admin (Unlimited)
+                                  </span>
+                                ) : (user.unlimited && user.planEndDate && new Date(user.planEndDate).getTime() > Date.now()) ? (
+                                  <div className="space-y-0.5">
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 w-fit">
+                                      <ShieldCheck className="w-3 h-3 text-emerald-400 shrink-0" />
+                                      Plan Active ({Math.max(0, Math.ceil((new Date(user.planEndDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))}d left)
                                     </span>
+                                    <div className="text-[11px] font-mono text-emerald-400 font-bold">
+                                      Ends: {new Date(user.planEndDate).toLocaleDateString()} {new Date(user.planEndDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </div>
+                                    {user.planStartDate && (
+                                      <div className="text-[10px] text-slate-500">
+                                        Started: {new Date(user.planStartDate).toLocaleDateString()}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (user.plan === 'expired' || (user.planEndDate && new Date(user.planEndDate).getTime() <= Date.now())) ? (
+                                  <div className="space-y-0.5">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 w-fit">
+                                      <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                                      Plan Expired (0 cr)
+                                    </span>
+                                    <div className="text-[11px] font-mono text-rose-400/90 font-medium">
+                                      Ended: {new Date(user.planEndDate).toLocaleDateString()}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-0.5">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700 w-fit">
+                                      Trial ({user.credits ?? 0} cr)
+                                    </span>
+                                    <div className="text-[10px] text-slate-500">
+                                      No ending date
+                                    </div>
+                                  </div>
                                 )}
-                               </div>
+
+                                {/* Admin Plan Changer Dropdown */}
+                                <div className="flex items-center gap-1 pt-0.5">
+                                  <select
+                                    value={
+                                      user.role === 'admin'
+                                        ? 'unlimited'
+                                        : (user.plan === 'expired' || (user.planEndDate && new Date(user.planEndDate).getTime() <= Date.now()))
+                                        ? 'expired'
+                                        : user.unlimited
+                                        ? 'unlimited'
+                                        : (user.plan || 'free')
+                                    }
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      if (val === 'expired') {
+                                        setUserToResetPlan(user);
+                                      } else {
+                                        handlePlanChange(user.uid, val);
+                                      }
+                                    }}
+                                    disabled={user.role === 'admin'}
+                                    className="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-xs outline-none text-slate-300 capitalize disabled:opacity-50 cursor-pointer"
+                                    title="Quick change or reset plan"
+                                  >
+                                    <option value="free">Free (10 cr)</option>
+                                    <option value="unlimited">Unlimited (1 Month)</option>
+                                    <option value="starter">Starter (2,000 cr)</option>
+                                    <option value="pro">Pro (5,000 cr)</option>
+                                    <option value="elite">Elite (10,000 cr)</option>
+                                    <option value="expired">Reset to Zero (Expired)</option>
+                                  </select>
+                                </div>
+                              </div>
                             </td>
                             
                             <td className="py-4">
@@ -1526,6 +1743,17 @@ export const AdminDashboard: React.FC = () => {
 
                             <td className="py-4 text-right pr-3">
                               <div className="flex items-center justify-end gap-1.5">
+                                {/* Reset Plan to Zero Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => setUserToResetPlan(user)}
+                                  disabled={user.role === 'admin'}
+                                  className="p-1.5 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-800/60 hover:border-amber-600 text-amber-400 hover:text-amber-300 rounded-lg transition-all shadow-sm disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center justify-center group"
+                                  title={user.role === 'admin' ? "Admin plan cannot be reset" : `Reset plan to 0 credits for ${user.name || user.email}`}
+                                >
+                                  <RotateCcw className="w-4 h-4 group-hover:-rotate-90 transition-transform" />
+                                </button>
+
                                 {registeredDevicesCount > 0 && user.role !== 'admin' && (
                                   <button
                                     type="button"
@@ -3397,6 +3625,93 @@ export const AdminDashboard: React.FC = () => {
                   <>
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Delete User</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Plan to Zero Confirmation Modal */}
+      {userToResetPlan && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl p-6 max-w-md w-full shadow-2xl shadow-amber-950/40 relative space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <RotateCcw className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Reset Plan to Zero</h3>
+                  <p className="text-xs text-amber-400 font-medium">Expire Subscription & Zero Credits</p>
+                </div>
+              </div>
+              <button
+                onClick={() => !isResettingPlan && setUserToResetPlan(null)}
+                disabled={isResettingPlan}
+                className="text-slate-500 hover:text-slate-300 p-1.5 rounded-lg hover:bg-slate-800 transition-colors disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 bg-slate-950/80 border border-slate-800/80 rounded-xl space-y-2.5 text-xs text-slate-300">
+              <div className="flex items-center gap-3 pb-2.5 border-b border-slate-850">
+                <img 
+                  src={userToResetPlan.photoURL || 'https://via.placeholder.com/36'} 
+                  alt="" 
+                  className="w-9 h-9 rounded-full border border-slate-700 shrink-0" 
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-slate-100 truncate text-sm">{userToResetPlan.name || 'User'}</div>
+                  <div className="text-purple-300 font-mono text-xs truncate">{userToResetPlan.email}</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 pt-1 text-slate-400">
+                <div>Current Plan: <span className="text-slate-200 font-semibold capitalize">{userToResetPlan.plan || 'Free'}</span></div>
+                <div>Current Credits: <span className="text-slate-200 font-semibold">{userToResetPlan.unlimited ? '∞' : (userToResetPlan.credits || 0).toLocaleString()}</span></div>
+                <div className="col-span-2">
+                  Plan Ending Date:{' '}
+                  <span className="text-slate-200 font-mono font-semibold">
+                    {userToResetPlan.planEndDate ? new Date(userToResetPlan.planEndDate).toLocaleString() : 'No expiration date'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-amber-950/30 border border-amber-800/40 rounded-xl text-xs text-amber-200 flex items-start gap-2.5 leading-relaxed">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <span>
+                Are you sure you want to <strong>reset this user's plan to zero</strong>? Their available credits will immediately be set to <strong>0</strong>, Unlimited processing will be revoked, and their status will become <strong>Expired</strong> until they pay for a new subscription.
+              </span>
+            </div>
+
+            <div className="flex justify-end items-center gap-3 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setUserToResetPlan(null)}
+                disabled={isResettingPlan}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-semibold text-xs transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmResetUserPlan}
+                disabled={isResettingPlan}
+                className="px-5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold text-xs flex items-center gap-2 transition-all shadow-lg shadow-amber-950/50 disabled:opacity-50 cursor-pointer"
+              >
+                {isResettingPlan ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Resetting to 0...</span>
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Reset Plan to 0</span>
                   </>
                 )}
               </button>

@@ -1796,10 +1796,20 @@ export default function App() {
     scheduleAgainRef.current = false;
     
     try {
+    const isPlanExpired = userData?.plan === 'expired' || 
+      (userData?.role !== 'admin' && !ADMIN_EMAILS.includes(userData?.email || '') && !!userData?.planEndDate && new Date(userData.planEndDate).getTime() < Date.now());
+
+    if (userData && isPlanExpired) {
+        setIsProcessing(false);
+        setStatusMsg('প্রসেসিং স্থগিত: আপনার ১ মাসের সাবস্ক্রিপশনের মেয়াদ শেষ হয়েছে।');
+        showNotification('প্ল্যানের মেয়াদ শেষ!', 'আপনার ১ মাসের সাবস্ক্রিপশনের মেয়াদ শেষ হয়েছে এবং ক্রেডিট শূন্য (০) হয়েছে। আনলিমিটেড ব্যবহার করতে প্ল্যান রিনিউ করুন (৳২০০/মাস)।', 'warning');
+        return;
+    }
+
     if (userData && !userData.unlimited && (userData.credits ?? 0) <= 0) {
         setIsProcessing(false);
-        setStatusMsg('প্রসেসিং স্থগিত: আপনার ট্রায়াল ক্রেডিট শেষ হয়েছে।');
-        showNotification('ট্রায়াল ক্রেডিট শেষ!', 'আপনার ১০টি ফ্রি ট্রায়াল ক্রেডিট শেষ হয়েছে। আনলিমিটেড প্রসেসিং পেতে ২০০ টাকায় সাবস্ক্রিপশন নিন।', 'warning');
+        setStatusMsg('প্রসেসিং স্থগিত: আপনার ক্রেডিট শেষ হয়েছে।');
+        showNotification('ক্রেডিট শেষ!', 'আপনার ক্রেডিট শেষ হয়েছে। আনলিমিটেড প্রসেসিং পেতে ২০০ টাকায় সাবস্ক্রিপশন নিন।', 'warning');
         return;
     }
 
@@ -2303,6 +2313,19 @@ export default function App() {
   const handleStartStop = async () => {
       if (!userData) {
           navigate('/login');
+          return;
+      }
+
+      const isExpired = userData.plan === 'expired' || 
+          (!userData.role?.includes('admin') && !ADMIN_EMAILS.includes(userData.email) && !!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now());
+
+      if (isExpired) {
+          showNotification(
+              'প্ল্যানের মেয়াদ শেষ!',
+              'আপনার ১ মাসের আনলিমিটেড সাবস্ক্রিপশনের মেয়াদ শেষ হয়েছে এবং ক্রেডিট শূন্য (০) হয়েছে। প্রসেসিং চালিয়ে যেতে দয়া করে প্ল্যান রিনিউ করুন (৳২০০/মাস)।',
+              'warning'
+          );
+          navigate('/pricing');
           return;
       }
 

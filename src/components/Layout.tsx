@@ -6,7 +6,7 @@ import { APP_VERSION } from '../config/version';
 import { 
   Menu, LogOut, Home, User, CreditCard, Shield, X, ChevronLeft, Layers, 
   Wrench, Bell, Upload, UserPlus, HelpCircle, Info, AlertTriangle, 
-  CheckCircle, MessageCircle, CheckCircle2, Copy, RefreshCw 
+  CheckCircle, MessageCircle, CheckCircle2, Copy, RefreshCw, ShieldCheck 
 } from 'lucide-react';
 import { 
   WHATSAPP_COMMUNITY_URL, 
@@ -167,6 +167,20 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 {item.name}
               </button>
             ))}
+
+            {/* Parallel Text Community Navbar Link */}
+            <a
+              href={WHATSAPP_COMMUNITY_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 rounded-lg font-bold text-xs transition-all flex items-center gap-1.5 bg-[#25D366]/15 hover:bg-[#25D366]/25 border border-[#25D366]/40 text-[#25D366] hover:text-[#38e87b] shadow-sm cursor-pointer"
+              title="Parallel text community - Official WhatsApp Group"
+            >
+              <MessageCircle className="w-4 h-4 text-[#25D366] shrink-0 fill-current" />
+              <span className="hidden xl:inline whitespace-nowrap">Parallel text community</span>
+              <span className="xl:hidden whitespace-nowrap">Community</span>
+            </a>
+
             <button
               onClick={handleUploadClick}
               className="ml-1 px-3.5 py-2 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-purple-900/30 flex items-center gap-1.5 border border-purple-400/30 active:scale-95 shrink-0"
@@ -240,15 +254,42 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                   </div>
                 )}
                 <div className="flex items-center gap-3 mr-4">
-                  <span className="text-sm text-slate-400">{userData.credits === -1 || userData.unlimited ? '∞ Credits' : `${userData.credits || 0} Credits`}</span>
+                  {userData.unlimited && (!userData.planEndDate || new Date(userData.planEndDate).getTime() > Date.now()) ? (
+                    <span 
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm"
+                      title={userData.planEndDate ? `Plan Active • Expires: ${new Date(userData.planEndDate).toLocaleDateString()}` : 'Plan Active'}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span>Plan Active</span>
+                    </span>
+                  ) : (userData.role !== 'admin' && (userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() <= Date.now()))) ? (
+                    <button
+                      onClick={() => navigate('/pricing')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-500/25 hover:bg-rose-500/35 text-rose-300 border border-rose-500/50 transition-all cursor-pointer animate-pulse shadow-sm"
+                      title="1 Month Plan Expired. Click to Renew."
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                      <span>Plan Expired • Renew (৳২০০)</span>
+                    </button>
+                  ) : (
+                    <span className="text-sm text-slate-400 font-medium">{userData.credits || 0} Credits</span>
+                  )}
                   <div className="relative">
                     <div className="relative group cursor-pointer" onClick={() => navigate('/dashboard')}>
                       <img src={userData.photoURL || 'https://via.placeholder.com/32'} alt="User" className="w-8 h-8 rounded-full border border-slate-700" />
-                      {(userData.plan && userData.plan !== 'free') && (
+                      {userData.unlimited ? (
+                        <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-gradient-to-r from-emerald-600 to-teal-600 text-[8px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider shadow-sm border border-white/10 whitespace-nowrap z-10 pointer-events-none">
+                          Unlimited
+                        </div>
+                      ) : userData.plan === 'expired' ? (
+                        <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-rose-600 text-[8px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider shadow-sm border border-white/10 whitespace-nowrap z-10 pointer-events-none">
+                          Expired
+                        </div>
+                      ) : (userData.plan && userData.plan !== 'free') ? (
                         <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-gradient-to-r from-purple-600 to-fuchsia-600 text-[8px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider shadow-sm border border-white/10 whitespace-nowrap z-10 pointer-events-none">
                           {userData.plan}
                         </div>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -301,6 +342,19 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               {item.name}
             </button>
           ))}
+
+          {/* Parallel Text Community Mobile Link */}
+          <a
+            href={WHATSAPP_COMMUNITY_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => setMobileMenu(false)}
+            className="w-full px-4 py-3 rounded-xl font-medium text-base transition-colors flex items-center gap-3 bg-[#25D366]/15 border border-[#25D366]/30 text-[#25D366]"
+          >
+            <MessageCircle className="w-5 h-5 text-[#25D366] shrink-0 fill-current" />
+            <span>Parallel text community</span>
+          </a>
+
           <button
             onClick={() => { setMobileMenu(false); handleUploadClick(); }}
             className="w-full px-4 py-3 rounded-xl font-medium text-base transition-colors flex items-center gap-3 bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white"
@@ -308,6 +362,33 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <Upload className="w-5 h-5" />
             Upload
           </button>
+          {userData && userData.role !== 'admin' && (userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() <= Date.now())) && (
+            <button
+              onClick={() => { navigate('/pricing'); setMobileMenu(false); }}
+              className="w-full px-4 py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-between bg-rose-500/20 border border-rose-500/40 text-rose-300 animate-pulse"
+            >
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400" />
+                <span>Plan Expired (মেয়াদ শেষ)</span>
+              </div>
+              <span className="text-xs bg-rose-600 text-white px-2 py-0.5 rounded font-bold">Renew (৳২০০)</span>
+            </button>
+          )}
+
+          {userData && userData.unlimited && (!userData.planEndDate || new Date(userData.planEndDate).getTime() > Date.now()) && (
+            <div className="px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-bold flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>Plan Active (১ মাস)</span>
+              </div>
+              {userData.planEndDate && (
+                <span className="text-[10px] text-slate-400 font-mono">
+                  Ends: {new Date(userData.planEndDate).toLocaleDateString()}
+                </span>
+              )}
+            </div>
+          )}
+
           {userData ? (
             <button
               onClick={() => { handleLogout(); setMobileMenu(false); }}
@@ -324,6 +405,25 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               Sign In
             </button>
           )}
+        </div>
+      )}
+
+      {/* 1-Month Plan Expired Global Notice Banner */}
+      {userData && userData.role !== 'admin' && (userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() <= Date.now())) && (
+        <div className="bg-gradient-to-r from-rose-950 via-slate-900 to-purple-950 border-b border-rose-500/40 px-4 py-2 text-xs text-white flex flex-wrap items-center justify-between gap-2 z-40 shrink-0 shadow-md">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 animate-bounce" />
+            <span className="text-slate-200">
+              <strong className="text-rose-300">আপনার ১ মাসের প্ল্যানের মেয়াদ শেষ হয়েছে:</strong> ক্রেডিট ০ এ রিসেট করা হয়েছে। আনলিমিটেড ব্যবহার চালু রাখতে দয়া করে প্ল্যান রিনিউ করুন।
+            </span>
+          </div>
+          <button
+            onClick={() => navigate('/pricing')}
+            className="px-3 py-1 bg-gradient-to-r from-rose-600 via-pink-600 to-purple-600 hover:from-rose-500 hover:to-purple-500 text-white font-bold rounded-lg text-xs transition-all shadow-md flex items-center gap-1.5 cursor-pointer shrink-0"
+          >
+            <CreditCard className="w-3.5 h-3.5" />
+            <span>Renew Plan (৳২০০/মাস)</span>
+          </button>
         </div>
       )}
 
@@ -541,18 +641,6 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           </div>
         </div>
       )}
-
-      {/* Floating WhatsApp Community Support Button */}
-      <a
-        href={WHATSAPP_COMMUNITY_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="fixed bottom-5 right-5 z-[90] flex items-center gap-2.5 px-4 py-2.5 bg-[#25D366] hover:bg-[#20ba59] text-slate-950 font-bold rounded-full shadow-2xl shadow-[#25D366]/40 hover:scale-105 active:scale-95 transition-all text-xs sm:text-sm group border border-white/20"
-        title="Parallel text community - যেকোনো সমস্যা বা সাপোর্টের জন্য হোয়াটসঅ্যাপ গ্রুপে যোগ দিন"
-      >
-        <MessageCircle className="w-5 h-5 text-slate-950 fill-current" />
-        <span className="font-extrabold tracking-tight">Parallel text community</span>
-      </a>
     </div>
   );
 };

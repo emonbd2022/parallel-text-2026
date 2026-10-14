@@ -2,7 +2,7 @@ import { motion } from 'motion/react';
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { User, Calendar, Image as ImageIcon, Zap, Crown, BarChart2, ShieldCheck, Laptop, Smartphone, CheckCircle2, CreditCard, Sparkles, MessageCircle } from 'lucide-react';
+import { User, Calendar, Image as ImageIcon, Zap, Crown, BarChart2, ShieldCheck, Laptop, Smartphone, CheckCircle2, CreditCard, Sparkles, MessageCircle, AlertCircle, AlertTriangle } from 'lucide-react';
 import { StatisticsModal } from '../components/StatisticsModal';
 import { getOrCreateDeviceId, formatDeviceId, detectDeviceMetadata, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
 import { WHATSAPP_COMMUNITY_URL } from '../services/paymentService';
@@ -96,24 +96,42 @@ export const Dashboard: React.FC = () => {
               <h3 className="text-slate-400 font-medium flex items-center gap-2">
                 <Crown className="w-5 h-5 text-amber-400" /> Current Plan
               </h3>
-              {userData.unlimited && (
-                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
-                  সক্রিয় Unlimited
+              {userData.unlimited ? (
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Plan Active (১ মাস সক্রিয়)
+                </span>
+              ) : (userData.plan === 'expired' || (!!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now())) ? (
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30 font-bold flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" /> Plan Expired (মেয়াদ শেষ)
+                </span>
+              ) : (
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold">
+                  ফ্রি ট্রায়াল
                 </span>
               )}
             </div>
             <div className="text-3xl sm:text-4xl font-black text-white mb-2">
-              {userData.unlimited ? '১ মাস আনলিমিটেড' : 'ফ্রি ট্রায়াল (Free Trial)'}
+              {userData.unlimited ? '১ মাস আনলিমিটেড' : (userData.plan === 'expired' || (!!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now())) ? 'প্ল্যানের মেয়াদ শেষ' : 'ফ্রি ট্রায়াল (Free Trial)'}
             </div>
             <div className="space-y-3">
               {userData.unlimited ? (
                 <p className="text-xs sm:text-sm text-slate-300">
                   {userData.planEndDate ? (
-                    <>মেয়াদ শেষ হবে: <strong className="text-emerald-400 font-mono font-bold">{new Date(userData.planEndDate).toLocaleDateString()}</strong> (পরবর্তী ১ মাস বৈধ)</>
+                    <>মেয়াদ শেষ হবে: <strong className="text-emerald-400 font-mono font-bold">{new Date(userData.planEndDate).toLocaleDateString()}</strong> (পরবর্তী ১ মাস সক্রিয়)</>
                   ) : (
                     '১ মাস আনলিমিটেড প্রসেসিং সক্রিয়'
                   )}
                 </p>
+              ) : (userData.plan === 'expired' || (!!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now())) ? (
+                <div className="p-3 bg-rose-950/40 border border-rose-800/60 rounded-xl text-xs text-rose-200 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5 text-rose-300">
+                    <AlertTriangle className="w-4 h-4 text-rose-400" />
+                    আপনার ১ মাসের সাবস্ক্রিপশনের মেয়াদ শেষ হয়েছে!
+                  </div>
+                  <p className="text-slate-300">
+                    ক্রেডিট শূন্য (০) হয়েছে। আনলিমিটেড ইমেজ মেটাডাটা প্রসেসিং পুনরায় চালু করতে দয়া করে প্ল্যান রিনিউ করুন (৳২০০/মাস)।
+                  </p>
+                </div>
               ) : (
                 <p className="text-xs sm:text-sm text-slate-400">
                   নতুন ব্যবহারকারীদের জন্য ১০টি ফ্রি ট্রায়াল ক্রেডিট। সীমাহীন প্রসেসিং পেতে সাবস্ক্রিপশন নিন (৳২০০/মাস)।
@@ -123,10 +141,20 @@ export const Dashboard: React.FC = () => {
               <div className="pt-2 flex flex-wrap gap-2.5">
                 <button
                   onClick={() => navigate('/pricing')}
-                  className="px-4 py-2 bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-500 hover:to-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+                  className={`px-4 py-2 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer ${
+                    (userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now()))
+                      ? 'bg-gradient-to-r from-rose-600 via-pink-600 to-purple-600 hover:from-rose-500 hover:to-purple-500 shadow-rose-900/40 animate-pulse'
+                      : 'bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-500 hover:to-emerald-500 shadow-purple-900/30'
+                  }`}
                 >
                   <CreditCard className="w-3.5 h-3.5" />
-                  <span>{userData.unlimited ? 'পেমেন্ট হিস্ট্রি / রিনিউ' : 'সাবস্ক্রিপশন কিনুন (৳২০০)'}</span>
+                  <span>
+                    {(userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now()))
+                      ? 'Renew Plan (প্ল্যান রিনিউ করুন - ৳২০০)'
+                      : userData.unlimited
+                      ? 'পেমেন্ট হিস্ট্রি / রিনিউ'
+                      : 'সাবস্ক্রিপশন কিনুন (৳২০০)'}
+                  </span>
                 </button>
 
                 <a

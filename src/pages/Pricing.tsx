@@ -118,6 +118,7 @@ export const Pricing: React.FC = () => {
   };
 
   const isUnlimitedActive = userData?.unlimited && (!userData.planEndDate || new Date(userData.planEndDate).getTime() > Date.now());
+  const isPlanExpired = userData?.plan === 'expired' || (!userData?.unlimited && !!userData?.planEndDate && new Date(userData.planEndDate).getTime() <= Date.now());
   const formattedEndDate = userData?.planEndDate ? new Date(userData.planEndDate).toLocaleDateString('bn-BD', {
     day: 'numeric',
     month: 'long',
@@ -161,17 +162,28 @@ export const Pricing: React.FC = () => {
         {userData && (
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${isUnlimitedActive ? 'bg-emerald-500/20 text-emerald-400' : 'bg-purple-500/20 text-purple-400'}`}>
-                {isUnlimitedActive ? <ShieldCheck className="w-6 h-6" /> : <Zap className="w-6 h-6" />}
+              <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${isUnlimitedActive ? 'bg-emerald-500/20 text-emerald-400' : isPlanExpired ? 'bg-rose-500/20 text-rose-400' : 'bg-purple-500/20 text-purple-400'}`}>
+                {isUnlimitedActive ? <ShieldCheck className="w-6 h-6" /> : isPlanExpired ? <AlertCircle className="w-6 h-6" /> : <Zap className="w-6 h-6" />}
               </div>
               <div>
                 <div className="text-xs text-slate-400">আপনার বর্তমান প্ল্যান</div>
                 <div className="text-lg font-bold text-white flex items-center gap-2">
-                  {isUnlimitedActive ? '১ মাস আনলিমিটেড (Active Unlimited)' : 'ফ্রি ট্রায়াল (Free Trial)'}
-                  {isUnlimitedActive && (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                      সক্রিয়
-                    </span>
+                  {isUnlimitedActive ? (
+                    <>
+                      <span>১ মাস আনলিমিটেড</span>
+                      <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold inline-flex items-center gap-1">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Plan Active (সক্রিয়)
+                      </span>
+                    </>
+                  ) : isPlanExpired ? (
+                    <>
+                      <span>প্ল্যানের মেয়াদ শেষ</span>
+                      <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30 font-bold inline-flex items-center gap-1">
+                        <AlertCircle className="w-3.5 h-3.5" /> Plan Expired (রিনিউ প্রয়োজন)
+                      </span>
+                    </>
+                  ) : (
+                    <span>ফ্রি ট্রায়াল (Free Trial)</span>
                   )}
                 </div>
               </div>
@@ -181,6 +193,13 @@ export const Pricing: React.FC = () => {
                 <div>
                   <div className="text-xs text-slate-400">মেয়াদ শেষ হবে</div>
                   <div className="text-sm font-semibold text-emerald-400">{formattedEndDate || '১ মাস'}</div>
+                </div>
+              ) : isPlanExpired ? (
+                <div>
+                  <div className="text-xs text-rose-400 font-semibold">অবশিষ্ট ক্রেডিট: ০ (Zero Credits)</div>
+                  <a href="#payment-section" className="text-xs font-bold text-purple-400 hover:text-purple-300 underline">
+                    এখনই প্ল্যান রিনিউ করুন →
+                  </a>
                 </div>
               ) : (
                 <div>
@@ -367,7 +386,7 @@ export const Pricing: React.FC = () => {
           <form onSubmit={handleSubmitPayment} className="bg-slate-950 border border-slate-800 rounded-2xl p-6 space-y-6">
             <h3 className="text-lg font-bold text-white border-b border-slate-800/80 pb-3 flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-purple-400" />
-              পেমেন্ট যাচাইয়ের ফর্ম (Submit TrxID)
+              {isPlanExpired ? 'প্ল্যান রিনিউ করার ফর্ম (Renew 1-Month Plan - ৳২০০)' : 'পেমেন্ট যাচাইয়ের ফর্ম (Submit TrxID)'}
             </h3>
 
             {/* Payment Method Selector (bKash & Nagad with authentic branded visuals) */}
@@ -494,7 +513,7 @@ export const Pricing: React.FC = () => {
                 ) : (
                   <>
                     <Send className="w-4 h-4" />
-                    সাবমিট করুন (Submit Payment)
+                    {isPlanExpired ? 'প্ল্যান রিনিউ সাবমিট করুন (Renew Subscription)' : 'পেমেন্ট সাবমিট করুন (Submit Payment)'}
                   </>
                 )}
               </button>
