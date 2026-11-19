@@ -199,11 +199,14 @@ export const ApiKeyManager: React.FC<Props> = ({
     };
   }, [uniqueLocalKeysCount, apiMode, user, userData, isAdmin]);
 
-  // Update time for cooldown countdowns
+  // Update time only while at least one key is actively cooling down (zero idle CPU)
+  const hasActiveCooldowns = keys.some(k => k.cooldownUntil && k.cooldownUntil > Date.now());
   useEffect(() => {
+    if (!hasActiveCooldowns) return;
+    setNow(Date.now());
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [hasActiveCooldowns]);
 
   const contributeToCentralPool = (contributedKeys: { label: string; key: string }[]) => {
     const contributorName = (user as any)?.displayName || userData?.name || userData?.nickname || (userData?.email ? userData.email.split('@')[0] : 'User');
@@ -657,8 +660,8 @@ export const ApiKeyManager: React.FC<Props> = ({
             <div className="grid grid-cols-2 gap-2.5">
               <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
                 <span className="text-slate-400 text-[10px] block mb-0.5">Active Central Nodes</span>
-                <span className="text-base font-bold text-white font-mono flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse inline-block"></span>
+                <span className="text-base font-bold text-white font-mono tabular-nums flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
                   {keys.length > 0 ? keys.length : '16'} Nodes
                 </span>
               </div>

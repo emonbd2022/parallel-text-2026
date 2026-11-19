@@ -25,6 +25,7 @@ import {
   SUBSCRIPTION_PRICE_BDT 
 } from '../services/paymentService';
 import { PaymentRecord } from '../types';
+import { formatExpiryDate, isPlanLifetime, isUserPlanExpired, isUserUnlimitedActive } from '../utils/planUtils';
 
 type SortOption = 'recent_active' | 'recently_signed_up' | 'top_users' | 'least_active' | 'plan_active' | 'plan_expired' | 'plan_ending_soon';
 
@@ -959,27 +960,38 @@ export const AdminDashboard: React.FC = () => {
     const end = new Date();
     let newCredits = 0;
     let unlimited = false;
+    let planEndDate: string | null = end.toISOString();
 
     if (newPlan === 'starter') {
        end.setMonth(end.getMonth() + 1);
        newCredits = 2000;
+       planEndDate = end.toISOString();
     } else if (newPlan === 'pro') {
        end.setMonth(end.getMonth() + 2);
        newCredits = 5000;
+       planEndDate = end.toISOString();
     } else if (newPlan === 'elite') {
        end.setMonth(end.getMonth() + 6);
        newCredits = 10000;
+       planEndDate = end.toISOString();
     } else if (newPlan === 'unlimited') {
        end.setMonth(end.getMonth() + 1); // 1 Month Unlimited
        unlimited = true;
        newCredits = 0;
+       planEndDate = end.toISOString();
+    } else if (newPlan === 'lifetime') {
+       unlimited = true;
+       newCredits = 999999;
+       planEndDate = null; // Unlimited with no ending date
     } else if (newPlan === 'expired') {
        unlimited = false;
        newCredits = 0;
        end.setTime(Date.now() - 1000); // Already past
+       planEndDate = end.toISOString();
     } else {
        newPlan = 'free';
        newCredits = 10;
+       planEndDate = null;
     }
 
     handleUpdateUser(uid, {
@@ -987,7 +999,7 @@ export const AdminDashboard: React.FC = () => {
        credits: newCredits,
        unlimited,
        planStartDate: start.toISOString(),
-       planEndDate: end.toISOString()
+       planEndDate
     });
   };
 
@@ -1051,7 +1063,7 @@ export const AdminDashboard: React.FC = () => {
             nickname: raw.nickname || '',
             credits: typeof raw.credits === 'number' ? raw.credits : 0,
             totalProcessedImages: typeof raw.totalProcessedImages === 'number' ? raw.totalProcessedImages : 0,
-            plan: raw.plan || (raw.unlimited ? 'unlimited' : 'free'),
+            plan: raw.plan || (raw.unlimited ? (raw.planEndDate ? 'unlimited' : 'lifetime') : 'free'),
             planStartDate: raw.planStartDate || null,
             planEndDate: raw.planEndDate || null,
             unlimited: Boolean(raw.unlimited),
@@ -1142,11 +1154,11 @@ export const AdminDashboard: React.FC = () => {
 
     // Apply plan filter
     if (planFilter === 'active') {
-      list = list.filter(u => (u.unlimited || u.plan === 'unlimited') && !!u.planEndDate && new Date(u.planEndDate).getTime() > Date.now());
+      list = list.filter(u => isUserUnlimitedActive(u));
     } else if (planFilter === 'expired') {
-      list = list.filter(u => u.role !== 'admin' && (u.plan === 'expired' || (!!u.planEndDate && new Date(u.planEndDate).getTime() <= Date.now())));
+      list = list.filter(u => isUserPlanExpired(u));
     } else if (planFilter === 'free') {
-      list = list.filter(u => u.role !== 'admin' && !u.unlimited && u.plan !== 'expired' && (!u.planEndDate || new Date(u.planEndDate).getTime() > Date.now()));
+      list = list.filter(u => u.role !== 'admin' && !isUserUnlimitedActive(u) && !isUserPlanExpired(u));
     }
 
     const getAvgPerDay = (u: UserData) => {
@@ -1180,24 +1192,26 @@ export const AdminDashboard: React.FC = () => {
         return list.sort((a, b) => getAvgPerDay(a) - getAvgPerDay(b));
       case 'plan_active':
         return list.sort((a, b) => {
-          const aActive = a.unlimited && (!a.planEndDate || new Date(a.planEndDate).getTime() > Date.now());
-          const bActive = b.unlimited && (!b.planEndDate || new Date(b.planEndDate).getTime() > Date.now());
+          const aActive = isUserUnlimitedActive(a);
+          const bActive = isUserUnlimitedActive(b);
           if (aActive && !bActive) return -1;
           if (!aActive && bActive) return 1;
-          return new Date(b.planEndDate || 0).getTime() - new Date(a.planEndDate || 0).getTime();
+          const aScore = isPlanLifetime(a) ? Number.MAX_SAFE_INTEGER : new Date(a.planEndDate || 0).getTime();
+          const bScore = isPlanLifetime(b) ? Number.MAX_SAFE_INTEGER : new Date(b.planEndDate || 0).getTime();
+          return bScore - aScore;
         });
       case 'plan_expired':
         return list.sort((a, b) => {
-          const aExp = a.plan === 'expired' || (!!a.planEndDate && new Date(a.planEndDate).getTime() <= Date.now());
-          const bExp = b.plan === 'expired' || (!!b.planEndDate && new Date(b.planEndDate).getTime() <= Date.now());
+          const aExp = isUserPlanExpired(a);
+          const bExp = isUserPlanExpired(b);
           if (aExp && !bExp) return -1;
           if (!aExp && bExp) return 1;
           return new Date(b.planEndDate || 0).getTime() - new Date(a.planEndDate || 0).getTime();
         });
       case 'plan_ending_soon':
         return list.sort((a, b) => {
-          const aTime = (a.unlimited && a.planEndDate) ? new Date(a.planEndDate).getTime() : Infinity;
-          const bTime = (b.unlimited && b.planEndDate) ? new Date(b.planEndDate).getTime() : Infinity;
+          const aTime = (a.unlimited && !isPlanLifetime(a) && a.planEndDate) ? new Date(a.planEndDate).getTime() : Infinity;
+          const bTime = (b.unlimited && !isPlanLifetime(b) && b.planEndDate) ? new Date(b.planEndDate).getTime() : Infinity;
           return aTime - bTime;
         });
       default:
@@ -1578,41 +1592,56 @@ export const AdminDashboard: React.FC = () => {
                             </td>
                             
                             <td className="py-4">
-                              <div className="flex flex-col gap-1.5 min-w-[190px]">
+                              <div className="flex flex-col gap-1.5 min-w-[205px]">
                                 {/* Plan Badge & Expiry Details */}
                                 {user.role === 'admin' ? (
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 w-fit">
                                     <Shield className="w-3 h-3 text-purple-400" />
                                     Admin (Unlimited)
                                   </span>
-                                ) : (user.unlimited && user.planEndDate && new Date(user.planEndDate).getTime() > Date.now()) ? (
+                                ) : isPlanLifetime(user) ? (
                                   <div className="space-y-0.5">
                                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 w-fit">
                                       <ShieldCheck className="w-3 h-3 text-emerald-400 shrink-0" />
-                                      Plan Active ({Math.max(0, Math.ceil((new Date(user.planEndDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))}d left)
+                                      Plan Active · Unlimited
                                     </span>
                                     <div className="text-[11px] font-mono text-emerald-400 font-bold">
-                                      Ends: {new Date(user.planEndDate).toLocaleDateString()} {new Date(user.planEndDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                      Lifetime · No Ending Date
                                     </div>
                                     {user.planStartDate && (
-                                      <div className="text-[10px] text-slate-500">
-                                        Started: {new Date(user.planStartDate).toLocaleDateString()}
+                                      <div className="text-[10px] text-slate-500 tabular-nums">
+                                        Started: {formatExpiryDate(user.planStartDate)}
                                       </div>
                                     )}
                                   </div>
-                                ) : (user.plan === 'expired' || (user.planEndDate && new Date(user.planEndDate).getTime() <= Date.now())) ? (
+                                ) : (user.unlimited && user.planEndDate && new Date(user.planEndDate).getTime() > Date.now()) ? (
+                                  <div className="space-y-0.5">
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 w-fit tabular-nums">
+                                      <ShieldCheck className="w-3 h-3 text-emerald-400 shrink-0" />
+                                      Plan Active ({Math.max(0, Math.ceil((new Date(user.planEndDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))}d left)
+                                    </span>
+                                    <div className="text-[11px] font-mono text-emerald-400 font-bold tabular-nums">
+                                      Ends: {formatExpiryDate(user.planEndDate)}
+                                    </div>
+                                    {user.planStartDate && (
+                                      <div className="text-[10px] text-slate-500 tabular-nums">
+                                        Started: {formatExpiryDate(user.planStartDate)}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : isUserPlanExpired(user) ? (
                                   <div className="space-y-0.5">
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 w-fit">
                                       <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
                                       Plan Expired (0 cr)
                                     </span>
-                                    <div className="text-[11px] font-mono text-rose-400/90 font-medium">
-                                      Ended: {new Date(user.planEndDate).toLocaleDateString()}
+                                    <div className="text-[11px] font-mono text-rose-400/90 font-medium tabular-nums">
+                                      Ended: {formatExpiryDate(user.planEndDate)}
                                     </div>
                                   </div>
                                 ) : (
                                   <div className="space-y-0.5">
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700 w-fit">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700 w-fit tabular-nums">
                                       Trial ({user.credits ?? 0} cr)
                                     </span>
                                     <div className="text-[10px] text-slate-500">
@@ -1626,9 +1655,11 @@ export const AdminDashboard: React.FC = () => {
                                   <select
                                     value={
                                       user.role === 'admin'
-                                        ? 'unlimited'
-                                        : (user.plan === 'expired' || (user.planEndDate && new Date(user.planEndDate).getTime() <= Date.now()))
+                                        ? 'lifetime'
+                                        : isUserPlanExpired(user)
                                         ? 'expired'
+                                        : isPlanLifetime(user)
+                                        ? 'lifetime'
                                         : user.unlimited
                                         ? 'unlimited'
                                         : (user.plan || 'free')
@@ -1647,6 +1678,7 @@ export const AdminDashboard: React.FC = () => {
                                   >
                                     <option value="free">Free (10 cr)</option>
                                     <option value="unlimited">Unlimited (1 Month)</option>
+                                    <option value="lifetime">Unlimited (No Ending Date)</option>
                                     <option value="starter">Starter (2,000 cr)</option>
                                     <option value="pro">Pro (5,000 cr)</option>
                                     <option value="elite">Elite (10,000 cr)</option>
@@ -1785,7 +1817,7 @@ export const AdminDashboard: React.FC = () => {
               {viewMode === 'all' ? (
                 <div className="flex flex-col sm:flex-row justify-between items-center mt-6 pt-4 border-t border-slate-800 text-xs text-slate-400 gap-3">
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></span>
+                    <span className="w-2 h-2 rounded-full bg-purple-400"></span>
                     <span>
                       {searchTerm.trim() ? (
                         <>Matching <strong className="text-purple-300 font-semibold">{filteredUsers.length}</strong> of {allUsers.length} total user accounts</>
@@ -3203,15 +3235,15 @@ export const AdminDashboard: React.FC = () => {
                                   </span>
                                 ) : (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-semibold border border-amber-500/30">
-                                    <Clock className="w-3 h-3 animate-pulse" /> অপেক্ষমাণ
+                                    <Clock className="w-3 h-3" /> অপেক্ষমাণ
                                   </span>
                                 )}
                               </td>
 
-                              <td className="py-3 font-sans text-xs text-slate-400">
+                              <td className="py-3 font-sans text-xs text-slate-400 tabular-nums">
                                 {p.expiresAt ? (
                                   <span className="text-emerald-300 font-medium">
-                                    {new Date(p.expiresAt).toLocaleDateString()}
+                                    {formatExpiryDate(p.expiresAt)}
                                   </span>
                                 ) : (
                                   '১ মাস (Pending)'
@@ -3674,8 +3706,8 @@ export const AdminDashboard: React.FC = () => {
                 <div>Current Credits: <span className="text-slate-200 font-semibold">{userToResetPlan.unlimited ? '∞' : (userToResetPlan.credits || 0).toLocaleString()}</span></div>
                 <div className="col-span-2">
                   Plan Ending Date:{' '}
-                  <span className="text-slate-200 font-mono font-semibold">
-                    {userToResetPlan.planEndDate ? new Date(userToResetPlan.planEndDate).toLocaleString() : 'No expiration date'}
+                  <span className="text-slate-200 font-mono font-semibold tabular-nums">
+                    {isPlanLifetime(userToResetPlan) ? 'Lifetime (No Ending Date)' : (userToResetPlan.planEndDate ? formatExpiryDate(userToResetPlan.planEndDate) : 'No expiration date')}
                   </span>
                 </div>
               </div>

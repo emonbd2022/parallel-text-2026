@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://ais-pre-s7ssdfjp2rhhxgzwai4nic-516580777315.asia-southeast1.run.app/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://ais-pre-s7ssdfjp2rhhxgzwai4nic-516580777315.asia-southeast1.run.app/pricing</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://ais-pre-s7ssdfjp2rhhxgzwai4nic-516580777315.asia-southeast1.run.app/tutorial</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://ais-pre-s7ssdfjp2rhhxgzwai4nic-516580777315.asia-southeast1.run.app/login</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+</urlset>

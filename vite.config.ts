@@ -30,10 +30,10 @@ export default defineConfig(({mode}) => {
         registerType: 'autoUpdate',
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
         manifest: {
-          name: 'Parallel Text',
-          short_name: 'ParallelText',
-          description: 'A tool for text processing',
-          theme_color: '#0f172a',
+          name: 'Parallel Text – AI Stock Image Metadata Generator',
+          short_name: 'Parallel Text',
+          description: 'Generate SEO-optimized Adobe Stock titles, keywords, and categories in bulk with Gemini AI.',
+          theme_color: '#020617',
           icons: []
         },
         workbox: {

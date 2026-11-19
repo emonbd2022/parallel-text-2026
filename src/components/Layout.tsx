@@ -13,6 +13,7 @@ import {
   approveSubscriptionPayment, 
   rejectSubscriptionPayment 
 } from '../services/paymentService';
+import { formatExpiryDate, isPlanLifetime, isUserPlanExpired, isUserUnlimitedActive } from '../utils/planUtils';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { userData, loading, maintenanceMode, notifications, deleteNotification } = useAuth();
@@ -137,8 +138,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             </button>
           ) : null}
           <button onClick={() => navigate('/')} className="flex items-center gap-3 hover:opacity-80 transition-opacity outline-none group">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-emerald-500 flex items-center justify-center text-white shadow-lg group-hover:animate-pulse-glow">
-              <Layers className="w-5 h-5 group-hover:animate-spin-slow" />
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-emerald-500 flex items-center justify-center text-white shadow-lg">
+              <Layers className="w-5 h-5" />
             </div>
             <div className="flex items-center gap-2">
               <span className="font-bold text-lg hidden sm:block bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-emerald-400">Parallel Text</span>
@@ -194,7 +195,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 <div className="relative cursor-pointer mr-2 flex items-center" onClick={handleToggleNotifications}>
                   <Bell className="w-5 h-5 text-slate-400 hover:text-white transition-colors" />
                   {notifications.length > 0 && (
-                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center tabular-nums">
                       {notifications.length}
                     </span>
                   )}
@@ -254,32 +255,38 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                   </div>
                 )}
                 <div className="flex items-center gap-3 mr-4">
-                  {userData.unlimited && (!userData.planEndDate || new Date(userData.planEndDate).getTime() > Date.now()) ? (
+                  {isUserUnlimitedActive(userData) ? (
                     <span 
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm"
-                      title={userData.planEndDate ? `Plan Active • Expires: ${new Date(userData.planEndDate).toLocaleDateString()}` : 'Plan Active'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm tabular-nums"
+                      title={
+                        isPlanLifetime(userData)
+                          ? 'Plan Active • Unlimited (No Ending Date)'
+                          : userData.planEndDate
+                            ? `Plan Active • Expires: ${formatExpiryDate(userData.planEndDate)}`
+                            : 'Plan Active'
+                      }
                     >
                       <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                       <span>Plan Active</span>
                     </span>
-                  ) : (userData.role !== 'admin' && (userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() <= Date.now()))) ? (
+                  ) : isUserPlanExpired(userData) ? (
                     <button
                       onClick={() => navigate('/pricing')}
-                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-500/25 hover:bg-rose-500/35 text-rose-300 border border-rose-500/50 transition-all cursor-pointer animate-pulse shadow-sm"
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-500/25 hover:bg-rose-500/35 text-rose-300 border border-rose-500/50 transition-colors cursor-pointer shadow-sm"
                       title="1 Month Plan Expired. Click to Renew."
                     >
                       <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
                       <span>Plan Expired • Renew (৳২০০)</span>
                     </button>
                   ) : (
-                    <span className="text-sm text-slate-400 font-medium">{userData.credits || 0} Credits</span>
+                    <span className="text-sm text-slate-400 font-medium tabular-nums">{userData.credits || 0} Credits</span>
                   )}
                   <div className="relative">
                     <div className="relative group cursor-pointer" onClick={() => navigate('/dashboard')}>
                       <img src={userData.photoURL || 'https://via.placeholder.com/32'} alt="User" className="w-8 h-8 rounded-full border border-slate-700" />
                       {userData.unlimited ? (
                         <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-gradient-to-r from-emerald-600 to-teal-600 text-[8px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider shadow-sm border border-white/10 whitespace-nowrap z-10 pointer-events-none">
-                          Unlimited
+                          {isPlanLifetime(userData) ? 'Lifetime' : 'Unlimited'}
                         </div>
                       ) : userData.plan === 'expired' ? (
                         <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-rose-600 text-[8px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider shadow-sm border border-white/10 whitespace-nowrap z-10 pointer-events-none">
@@ -362,10 +369,10 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             <Upload className="w-5 h-5" />
             Upload
           </button>
-          {userData && userData.role !== 'admin' && (userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() <= Date.now())) && (
+          {isUserPlanExpired(userData) && (
             <button
               onClick={() => { navigate('/pricing'); setMobileMenu(false); }}
-              className="w-full px-4 py-3 rounded-xl font-bold text-sm transition-all flex items-center justify-between bg-rose-500/20 border border-rose-500/40 text-rose-300 animate-pulse"
+              className="w-full px-4 py-3 rounded-xl font-bold text-sm transition-colors flex items-center justify-between bg-rose-500/20 border border-rose-500/40 text-rose-300"
             >
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-rose-400" />
@@ -375,17 +382,21 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
             </button>
           )}
 
-          {userData && userData.unlimited && (!userData.planEndDate || new Date(userData.planEndDate).getTime() > Date.now()) && (
+          {userData && isUserUnlimitedActive(userData) && (
             <div className="px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-bold flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span>Plan Active (১ মাস)</span>
+                <span>{isPlanLifetime(userData) ? 'Plan Active (Lifetime)' : 'Plan Active (১ মাস)'}</span>
               </div>
-              {userData.planEndDate && (
-                <span className="text-[10px] text-slate-400 font-mono">
-                  Ends: {new Date(userData.planEndDate).toLocaleDateString()}
+              {isPlanLifetime(userData) ? (
+                <span className="text-[10px] text-emerald-300 font-mono">
+                  No Ending Date
                 </span>
-              )}
+              ) : userData.planEndDate ? (
+                <span className="text-[10px] text-slate-400 font-mono tabular-nums">
+                  Ends: {formatExpiryDate(userData.planEndDate)}
+                </span>
+              ) : null}
             </div>
           )}
 
@@ -409,10 +420,10 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
       )}
 
       {/* 1-Month Plan Expired Global Notice Banner */}
-      {userData && userData.role !== 'admin' && (userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() <= Date.now())) && (
+      {isUserPlanExpired(userData) && (
         <div className="bg-gradient-to-r from-rose-950 via-slate-900 to-purple-950 border-b border-rose-500/40 px-4 py-2 text-xs text-white flex flex-wrap items-center justify-between gap-2 z-40 shrink-0 shadow-md">
           <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 animate-bounce" />
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
             <span className="text-slate-200">
               <strong className="text-rose-300">আপনার ১ মাসের প্ল্যানের মেয়াদ শেষ হয়েছে:</strong> ক্রেডিট ০ এ রিসেট করা হয়েছে। আনলিমিটেড ব্যবহার চালু রাখতে দয়া করে প্ল্যান রিনিউ করুন।
             </span>

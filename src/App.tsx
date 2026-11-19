@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { ApiKey, ProcessingItem, ProcessingConfig, HistoryRecord, ProcessingLog } from './types';
 import { ProcessingQueue } from './components/ProcessingQueue';
 import { Sidebar } from './components/Sidebar';
@@ -18,6 +18,7 @@ import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
 import { fetchCentralKeysFromFirestore, shuffleArray } from './services/centralKeyService';
 import { recordFirestoreWrite, recordFirestoreRead, getFirestoreAuditStats, isFirestoreQuotaExhausted, handleFirestoreError } from './utils/firestoreAudit';
+import { isUserPlanExpired } from './utils/planUtils';
 import { APP_VERSION } from './config/version';
 
 
@@ -27,18 +28,17 @@ const STORAGE_HISTORY = 'parrarel_history_v3';
 const STORAGE_LOGS = 'parrarel_logs_v1';
 const STORAGE_CONFIG = 'parrarel_config_v3';
 
-// Models
+// Active Free-Tier Gemini Models (exact RPM & RPD tiers)
 const MODELS = [
-  { id: 'gemini-3.1-flash-lite-preview', name: 'Gemini 3.1 Flash Lite (Default 500 RPD)', rpm: 10 },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', rpm: 10 },
-  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', rpm: 15 },
-  { id: 'turbo', name: 'Turbo (Adaptive Auto)', rpm: 5 },
-  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (20 RPD)', rpm: 5 },
-  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash (20 RPD)', rpm: 5 },
-  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (20 RPD)', rpm: 5 },
-  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash (20 RPD)', rpm: 5 },
-  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite (500 RPD)', rpm: 15 },
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview (20 RPD)', rpm: 5 }
+  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite (15 RPM · 500 RPD)', rpm: 15, rpd: 500 },
+  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite (15 RPM · 500 RPD)', rpm: 15, rpd: 500 },
+  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite (10 RPM · 20 RPD)', rpm: 10, rpd: 20 },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (5 RPM · 20 RPD)', rpm: 5, rpd: 20 },
+  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (5 RPM · 20 RPD)', rpm: 5, rpd: 20 },
+  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (5 RPM · 20 RPD)', rpm: 5, rpd: 20 },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (5 RPM · 20 RPD)', rpm: 5, rpd: 20 },
+  { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen (5 RPM · 20 RPD)', rpm: 5, rpd: 20 },
+  { id: 'turbo', name: 'Turbo (Adaptive Auto)', rpm: 15, rpd: 1120 }
 ];
 
 // Helper: Get Session Date (Resets at 2:00 PM GMT+6)
@@ -64,6 +64,19 @@ export const getUsageSessionId = () => {
   const day = String(dhakaTime.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
+
+const createEmptyUsage = (sessionDate: string) => ({
+  date: sessionDate,
+  flash: 0,
+  lite: 0,
+  pro: 0,
+  flash_3: 0,
+  flash_3_1_lite: 0,
+  flash_3_5_lite: 0,
+  flash_3_6: 0,
+  flash_3_8: 0,
+  flash_4_hydrogen: 0
+});
 
 interface Toast {
   id: string;
@@ -143,9 +156,11 @@ export default function App() {
       
       // Migration: Add usage if missing or reset if new session
       return loaded.map((k: any) => {
-        let usage = k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 };
+        let usage = k.usage || createEmptyUsage(currentSession);
         if (usage.date !== currentSession) {
-            usage = { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 };
+            usage = createEmptyUsage(currentSession);
+        } else {
+            usage = { ...createEmptyUsage(currentSession), ...usage };
         }
         return { 
             ...k, 
@@ -231,15 +246,14 @@ export default function App() {
 
   const getBestTurboModel = (statsRef: React.MutableRefObject<Record<string, { latencies: number[], fails: number, lastFailTime: number }>>) => {
       const models = [
-          'gemini-3.8-flash',
+          'gemini-3.1-flash-lite',
           'gemini-3.5-flash-lite',
-          'gemini-3.1-flash-lite-preview',
-          'gemini-3.7-flash',
+          'gemini-2.5-flash-lite',
+          'gemini-4-hydrogen',
+          'gemini-3.8-flash',
           'gemini-3.6-flash',
-          'gemini-3.5-flash',
           'gemini-3-flash-preview',
-          'gemini-2.5-flash',
-          'gemini-2.5-flash-lite'
+          'gemini-2.5-flash'
       ];
       let bestModel = models[0];
       let bestScore = Infinity;
@@ -248,6 +262,7 @@ export default function App() {
       for (const m of models) {
           const stat = statsRef.current[m];
           let score = 10000;
+          const rpdBonus = (m === 'gemini-3.1-flash-lite' || m === 'gemini-3.5-flash-lite') ? -2000 : 0;
           if (stat) {
               const lats = stat.latencies;
               const recent = lats.slice(-5);
@@ -260,9 +275,10 @@ export default function App() {
                   else if (timeSinceFail < 300000) failPenalty = 10000;
                   else stat.fails = 0;
               }
-              score = avgLat + failPenalty;
+              score = avgLat + failPenalty + rpdBonus;
           } else {
-              if (m.includes('lite')) score = 5000;
+              if (m === 'gemini-3.1-flash-lite' || m === 'gemini-3.5-flash-lite') score = 3000;
+              else if (m.includes('lite')) score = 5500;
               else score = 8000;
           }
           if (score < bestScore) {
@@ -353,18 +369,28 @@ export default function App() {
       const saved = localStorage.getItem(STORAGE_CONFIG);
       if (saved) {
           const parsed = JSON.parse(saved);
-          if (!parsed.migratedTo31FlashLiteDefaultV7) {
-            parsed.model = 'gemini-3.1-flash-lite-preview';
-            parsed.titleMaxLen = 180;
-            parsed.autoExport = true;
-            parsed.autoScroll = true;
-            parsed.prioritizeFastest = true;
-            parsed.migratedTo31FlashLiteDefaultV7 = true;
+          const validIds = new Set(MODELS.map(m => m.id));
+          if (parsed.model === 'gemini-3.1-flash-lite-preview') {
+            parsed.model = 'gemini-3.1-flash-lite';
+          } else if (parsed.model === 'gemini-3-flash') {
+            parsed.model = 'gemini-3-flash-preview';
+          } else if (!parsed.model || !validIds.has(parsed.model)) {
+            parsed.model = 'gemini-3.1-flash-lite';
+          }
+          if (!parsed.migratedTo31FlashLiteDefaultV8) {
+            if (!validIds.has(parsed.model) || parsed.model === 'gemini-4-hydrogen') {
+              parsed.model = 'gemini-3.1-flash-lite';
+            }
+            parsed.titleMaxLen = parsed.titleMaxLen ?? 180;
+            parsed.autoExport = parsed.autoExport ?? true;
+            parsed.autoScroll = parsed.autoScroll ?? true;
+            parsed.prioritizeFastest = parsed.prioritizeFastest ?? true;
+            parsed.migratedTo31FlashLiteDefaultV8 = true;
           }
           return { 
             ...parsed, 
             batchSize: parsed.batchSize || 1, 
-            model: parsed.model || 'gemini-3.1-flash-lite-preview',
+            model: parsed.model || 'gemini-3.1-flash-lite',
             titleMaxLen: parsed.titleMaxLen ?? 180,
             autoExport: parsed.autoExport ?? true,
             autoScroll: parsed.autoScroll ?? true,
@@ -381,7 +407,7 @@ export default function App() {
       maxRetries: 3,
       titleMaxLen: 180,
       keywordsCount: 40,
-      model: 'gemini-3.1-flash-lite-preview', 
+      model: 'gemini-3.1-flash-lite', 
       titlePrefix: '',
       titleSuffix: '',
       negativeTitleWords: '',
@@ -391,7 +417,7 @@ export default function App() {
       autoExport: true,
       autoScroll: true,
       prioritizeFastest: true,
-      migratedTo31FlashLiteDefaultV7: true,
+      migratedTo31FlashLiteDefaultV8: true,
       onlyCategory: false
     };
   });
@@ -491,10 +517,15 @@ export default function App() {
   const startYRef = useRef(0);
   const startScrollTopRef = useRef(0);
   const lastPhaseRef = useRef<'metadata' | 'category' | null>(null);
-  // Persist State locally
+  // Persist State locally (debounced to prevent blocking synchronous writes during rapid queue ticks)
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS, JSON.stringify(localKeys));
-    localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEYS, JSON.stringify(localKeys));
+        localStorage.setItem(STORAGE_CONFIG, JSON.stringify(config));
+      } catch {}
+    }, 500);
+    return () => clearTimeout(timer);
   }, [localKeys, config]);
 
   useEffect(() => {
@@ -503,27 +534,24 @@ export default function App() {
     }
   }, [isProcessing, config.apiMode]);
 
-  // Automatic synchronization of local keys on startup / opening session & login, regardless of Local or Central API mode
+  const localKeysRef = useRef(localKeys);
+  localKeysRef.current = localKeys;
+  const localKeysSignature = useMemo(
+    () => localKeys.map(k => k.key.trim()).filter(Boolean).sort().join('|'),
+    [localKeys]
+  );
+
+  // Automatic synchronization of local keys ONLY when the set of key strings or user changes
   useEffect(() => {
-    if (localKeys.length > 0) {
+    if (localKeysSignature) {
       const activeUid = user?.uid || 'anonymous';
       const originalName = (user as any)?.displayName || userData?.name || userData?.nickname || (user?.email ? user.email.split('@')[0] : (userData?.email ? userData.email.split('@')[0] : 'User'));
       const userEmail = user?.email || userData?.email || '';
 
-      console.log('🚀 [Session Startup Key Sync] Sending local keys to central database...', {
-        count: localKeys.length,
-        user: originalName
-      });
-
-      syncLocalKeysToServer(localKeys, false, activeUid, userEmail, originalName)
-        .then((res) => {
-          if (res.success && res.added > 0) {
-            console.log(`✅ [Startup Key Sync] Successfully synced with central pool (Added: +${res.added}, Total: ${res.total ?? 'N/A'})`);
-          }
-        })
+      syncLocalKeysToServer(localKeysRef.current, false, activeUid, userEmail, originalName)
         .catch((e) => console.warn('[Startup Key Sync] Notice:', e));
     }
-  }, [user?.uid, (user as any)?.displayName, userData?.name, userData?.nickname, userData?.email, localKeys]);
+  }, [user?.uid, (user as any)?.displayName, userData?.name, userData?.nickname, userData?.email, localKeysSignature]);
 
   // Central API Keys Pool Fetch - strictly in-memory (RAM only), no persistent localStorage cache
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
@@ -597,7 +625,7 @@ export default function App() {
                 label: `Central Node ${idx + 1}`,
                 key: k.key, // Held strictly in memory
                 errorCount: 0,
-                usage: { date: currentSession, flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0, flash_3_8: 0 }
+                usage: createEmptyUsage(currentSession)
               }));
               const shuffledPool = shuffleArray(pool);
               setCentralKeys(shuffledPool);
@@ -717,7 +745,7 @@ export default function App() {
         setKeys(prev => prev.map(k => {
             // Check if usage exists, if not or date mismatch, reset
             if (!k.usage || k.usage.date !== currentSession) {
-                return { ...k, usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 } };
+                return { ...k, usage: createEmptyUsage(currentSession) };
             }
             return k;
         }));
@@ -866,15 +894,15 @@ export default function App() {
     if (fileInput) fileInput.value = '';
   };
 
-  const updateItem = (id: string, field: 'title' | 'keywords' | 'category', value: string) => {
+  const updateItem = useCallback((id: string, field: 'title' | 'keywords' | 'category', value: string) => {
     setItems(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p));
-  };
+  }, []);
 
-  const removeItem = (id: string) => {
+  const removeItem = useCallback((id: string) => {
     setItems(prev => prev.filter(p => p.id !== id));
-  };
+  }, []);
 
-  const handleRegenerate = (id: string) => {
+  const handleRegenerate = useCallback((id: string) => {
     // Completely reset the item for a fresh start
     setItems(prev => prev.map(p => p.id === id ? {
       ...p,
@@ -889,7 +917,7 @@ export default function App() {
       retryAfter: undefined
     } : p));
     setIsProcessing(true); // Auto-start
-  };
+  }, [config.onlyCategory]);
 
   const handleRetryFailed = () => {
       // Find all error/failed items and reset them
@@ -921,7 +949,7 @@ export default function App() {
                   return { 
                       ...k, 
                       errorCount: 0, // Reset errors too
-                      usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 } 
+                      usage: createEmptyUsage(currentSession) 
                   };
               }
               return k;
@@ -936,26 +964,26 @@ export default function App() {
               ...k,
               errorCount: 0,
               cooldownUntil: undefined,
-              usage: { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 }
+              usage: createEmptyUsage(currentSession)
           })));
       }
   };
 
-  const handleCopy = (item: ProcessingItem) => {
+  const handleCopy = useCallback((item: ProcessingItem) => {
     const safeName = `"${item.name.replace(/"/g, '""')}"`;
     const safeTitle = `"${item.title.replace(/"/g, '""')}"`;
     const safeKeys = `"${item.keywords.replace(/"/g, '""')}"`;
     const safeCategory = `"${getCategoryId(item.category).replace(/"/g, '""')}"`;
     const row = `${safeName},${safeTitle},${safeKeys},${safeCategory}`;
     navigator.clipboard.writeText(row);
-  };
+  }, []);
 
   // --- Processing Engine (Batch Enabled) ---
 
   const getModelDelay = (modelId: string) => {
-    if (modelId === 'turbo') return 12500;
+    if (modelId === 'turbo') return 4500;
     const model = MODELS.find(m => m.id === modelId);
-    if (!model) return 12000;
+    if (!model) return 12500;
     return (60000 / model.rpm) + 500;
   };
 
@@ -1099,7 +1127,9 @@ export default function App() {
                  category: results[p.id].category,
                  assignedKeyId: undefined,
                  retryAfter: undefined,
-                 failedKeyIds: []
+                 failedKeyIds: [],
+                 file: null,
+                 blob: null
               };
           }
           // If this item was part of this batch but not returned by AI, reset to pending so it NEVER gets stuck
@@ -1115,35 +1145,23 @@ export default function App() {
           return p;
       }));
       
-      const cooldownMs = getModelDelay(config.model);
+      const cooldownMs = getModelDelay(usedModel || config.model);
       
       setKeys(prev => prev.map(k => {
         if (k.id === keyObj.id) {
             const currentSession = getUsageSessionId();
-            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 }) };
-            
-            if (newUsage.date !== currentSession) {
-                newUsage.date = currentSession;
-                newUsage.flash = 0;
-                newUsage.lite = 0;
-                newUsage.flash_3 = 0;
-                newUsage.flash_3_1_lite = 0;
-                newUsage.flash_3_5 = 0;
-                newUsage.flash_3_5_lite = 0;
-                newUsage.flash_3_7 = 0;
-                newUsage.flash_3_6 = 0;
-                newUsage.flash_3_8 = 0;
-            }
+            const newUsage = (k.usage && k.usage.date === currentSession)
+              ? { ...createEmptyUsage(currentSession), ...k.usage }
+              : createEmptyUsage(currentSession);
 
-            if (usedModel === 'gemini-3.8-flash') newUsage.flash_3_8 = (newUsage.flash_3_8 || 0) + 1;
-            else if (usedModel === 'gemini-3.7-flash') newUsage.flash_3_7 = (newUsage.flash_3_7 || 0) + 1;
+            if (usedModel === 'gemini-4-hydrogen') newUsage.flash_4_hydrogen = (newUsage.flash_4_hydrogen || 0) + 1;
+            else if (usedModel === 'gemini-3.8-flash') newUsage.flash_3_8 = (newUsage.flash_3_8 || 0) + 1;
             else if (usedModel === 'gemini-3.6-flash') newUsage.flash_3_6 = (newUsage.flash_3_6 || 0) + 1;
             else if (usedModel === 'gemini-3.5-flash-lite') newUsage.flash_3_5_lite = (newUsage.flash_3_5_lite || 0) + 1;
-            else if (usedModel.includes('gemini-3.5-flash')) newUsage.flash_3_5 = (newUsage.flash_3_5 || 0) + 1;
-            else if (usedModel.includes('gemini-3.1-flash-lite-preview')) newUsage.flash_3_1_lite = (newUsage.flash_3_1_lite || 0) + 1;
+            else if (usedModel.includes('gemini-3.1-flash-lite')) newUsage.flash_3_1_lite = (newUsage.flash_3_1_lite || 0) + 1;
+            else if (usedModel.includes('gemini-3-flash')) newUsage.flash_3 = (newUsage.flash_3 || 0) + 1;
             else if (usedModel.includes('gemini-2.5-flash-lite')) newUsage.lite = (newUsage.lite || 0) + 1;
             else if (usedModel.includes('gemini-2.5-flash')) newUsage.flash = (newUsage.flash || 0) + 1;
-            else if (usedModel.includes('gemini-3-flash-preview')) newUsage.flash_3 = (newUsage.flash_3 || 0) + 1;
 
             return { 
                  ...k, 
@@ -1425,36 +1443,23 @@ export default function App() {
           return p;
       }));
       
-      const cooldownMs = getModelDelay(config.model);
+      const cooldownMs = getModelDelay(usedModel || config.model);
       
       setKeys(prev => prev.map(k => {
         if (k.id === keyObj.id) {
             const currentSession = getUsageSessionId();
-            const newUsage = { ...(k.usage || { date: currentSession, flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 }) };
-            
-            // Ensure usage date is current session before incrementing
-            if (newUsage.date !== currentSession) {
-                newUsage.date = currentSession;
-                newUsage.flash = 0;
-                newUsage.lite = 0;
-                newUsage.flash_3 = 0;
-                newUsage.flash_3_1_lite = 0;
-                newUsage.flash_3_5 = 0;
-                newUsage.flash_3_5_lite = 0;
-                newUsage.flash_3_7 = 0;
-                newUsage.flash_3_6 = 0;
-                newUsage.flash_3_8 = 0;
-            }
+            const newUsage = (k.usage && k.usage.date === currentSession)
+              ? { ...createEmptyUsage(currentSession), ...k.usage }
+              : createEmptyUsage(currentSession);
 
-            if (usedModel === 'gemini-3.8-flash') newUsage.flash_3_8 = (newUsage.flash_3_8 || 0) + 1;
-            else if (usedModel === 'gemini-3.7-flash') newUsage.flash_3_7 = (newUsage.flash_3_7 || 0) + 1;
+            if (usedModel === 'gemini-4-hydrogen') newUsage.flash_4_hydrogen = (newUsage.flash_4_hydrogen || 0) + 1;
+            else if (usedModel === 'gemini-3.8-flash') newUsage.flash_3_8 = (newUsage.flash_3_8 || 0) + 1;
             else if (usedModel === 'gemini-3.6-flash') newUsage.flash_3_6 = (newUsage.flash_3_6 || 0) + 1;
             else if (usedModel === 'gemini-3.5-flash-lite') newUsage.flash_3_5_lite = (newUsage.flash_3_5_lite || 0) + 1;
-            else if (usedModel.includes('gemini-3.5-flash')) newUsage.flash_3_5 = (newUsage.flash_3_5 || 0) + 1;
-            else if (usedModel.includes('gemini-3.1-flash-lite-preview')) newUsage.flash_3_1_lite = (newUsage.flash_3_1_lite || 0) + 1;
+            else if (usedModel.includes('gemini-3.1-flash-lite')) newUsage.flash_3_1_lite = (newUsage.flash_3_1_lite || 0) + 1;
+            else if (usedModel.includes('gemini-3-flash')) newUsage.flash_3 = (newUsage.flash_3 || 0) + 1;
             else if (usedModel.includes('gemini-2.5-flash-lite')) newUsage.lite = (newUsage.lite || 0) + 1;
             else if (usedModel.includes('gemini-2.5-flash')) newUsage.flash = (newUsage.flash || 0) + 1;
-            else if (usedModel.includes('gemini-3-flash-preview')) newUsage.flash_3 = (newUsage.flash_3 || 0) + 1;
 
             return { 
                 ...k, 
@@ -1481,7 +1486,7 @@ export default function App() {
         itemCount: batchItems.length,
         durationMs: batchDuration
       };
-      setLogs(prev => [newLog, ...prev].slice(0, 5000));
+      setLogs(prev => [newLog, ...prev].slice(0, 250));
 
       performanceStats.recordExecution({
         modelId: usedModel,
@@ -1796,8 +1801,7 @@ export default function App() {
     scheduleAgainRef.current = false;
     
     try {
-    const isPlanExpired = userData?.plan === 'expired' || 
-      (userData?.role !== 'admin' && !ADMIN_EMAILS.includes(userData?.email || '') && !!userData?.planEndDate && new Date(userData.planEndDate).getTime() < Date.now());
+    const isPlanExpired = isUserPlanExpired(userData);
 
     if (userData && isPlanExpired) {
         setIsProcessing(false);
@@ -1888,40 +1892,46 @@ export default function App() {
             return false;
         }
 
-        const usage = (k.usage && k.usage.date === currentSession) ? k.usage : { flash: 0, lite: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_7: 0, flash_3_6: 0, flash_3_8: 0 };
+        const usage = (k.usage && k.usage.date === currentSession) ? k.usage : createEmptyUsage(currentSession);
         
         const u = {
             flash: Number(usage.flash || 0),
             lite: Number(usage.lite || 0),
             flash_3: Number(usage.flash_3 || 0),
             flash_3_1_lite: Number(usage.flash_3_1_lite || 0),
-            flash_3_5: Number(usage.flash_3_5 || 0),
             flash_3_5_lite: Number(usage.flash_3_5_lite || 0),
             flash_3_6: Number(usage.flash_3_6 || 0),
-            flash_3_7: Number(usage.flash_3_7 || 0),
-            flash_3_8: Number(usage.flash_3_8 || 0)
+            flash_3_8: Number(usage.flash_3_8 || 0),
+            flash_4_hydrogen: Number(usage.flash_4_hydrogen || 0)
         };
 
         if (config.model === 'turbo') {
-            return (u.flash_3_8 < 10000) || (u.flash_3_7 < 10000) || (u.flash_3_6 < 10000) || (u.flash_3_5_lite < 10000) || (u.flash_3_5 < 10000) || (u.flash_3 < 10000) || (u.flash < 10000) || (u.flash_3_1_lite < 10000) || (u.lite < 20);
+            return (
+              (u.flash_3_1_lite < 10000) ||
+              (u.flash_3_5_lite < 10000) ||
+              (u.lite < 10000) ||
+              (u.flash < 10000) ||
+              (u.flash_3 < 10000) ||
+              (u.flash_3_6 < 10000) ||
+              (u.flash_3_8 < 10000) ||
+              (u.flash_4_hydrogen < 10000)
+            );
+        } else if (config.model === 'gemini-4-hydrogen') {
+            return u.flash_4_hydrogen < 10000;
         } else if (config.model === 'gemini-3.8-flash') {
             return u.flash_3_8 < 10000;
-        } else if (config.model === 'gemini-3.7-flash') {
-            return u.flash_3_7 < 10000;
         } else if (config.model === 'gemini-3.6-flash') {
             return u.flash_3_6 < 10000;
         } else if (config.model === 'gemini-3.5-flash-lite') {
             return u.flash_3_5_lite < 10000;
-        } else if (config.model.includes('gemini-3.5-flash')) {
-            return u.flash_3_5 < 10000;
-        } else if (config.model.includes('gemini-3.1-flash-lite-preview')) {
+        } else if (config.model.includes('gemini-3.1-flash-lite')) {
             return u.flash_3_1_lite < 10000;
+        } else if (config.model.includes('gemini-3-flash')) {
+            return u.flash_3 < 10000;
         } else if (config.model.includes('gemini-2.5-flash-lite')) {
-            return u.lite < 20;
+            return u.lite < 10000;
         } else if (config.model.includes('gemini-2.5-flash')) {
             return u.flash < 10000;
-        } else if (config.model.includes('gemini-3-flash-preview')) {
-            return u.flash_3 < 10000;
         }
         return true;
     });
@@ -2243,7 +2253,7 @@ export default function App() {
 
       // 4. Release orphan taskClaimLockRef entries for items that are no longer processing
       taskClaimLockRef.current.forEach(lockedItemId => {
-        const item = items.find(i => i.id === lockedItemId);
+        const item = itemsRef.current.find(i => i.id === lockedItemId);
         if (!item || (item.status !== 'processing' && item.status !== 'compressing')) {
           taskClaimLockRef.current.delete(lockedItemId);
           needsTick = true;
@@ -2263,7 +2273,7 @@ export default function App() {
     }, 2500);
 
     return () => clearInterval(watchdogInterval);
-  }, [isProcessing, items]);
+  }, [isProcessing]);
 
   // --- SAVE PROJECT ---
   const handleSaveProject = async () => {
@@ -2316,8 +2326,7 @@ export default function App() {
           return;
       }
 
-      const isExpired = userData.plan === 'expired' || 
-          (!userData.role?.includes('admin') && !ADMIN_EMAILS.includes(userData.email) && !!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now());
+      const isExpired = isUserPlanExpired(userData);
 
       if (isExpired) {
           showNotification(
@@ -2645,13 +2654,13 @@ export default function App() {
                </div>
              </h2>
              <div className="flex flex-col text-sm text-slate-500 mt-1 gap-1">
-               <div className="flex items-center gap-2">
+               <div className="flex items-center gap-2 tabular-nums">
                  <span>Queue Progress: {queueProgressPercent}%</span>
                </div>
                
                
                
-               <div className="flex flex-col text-[11px] font-mono mt-1 w-fit bg-slate-900/50 p-2 rounded border border-white/5 gap-1.5 min-h-[30px] justify-center">
+               <div className="flex flex-col text-[11px] font-mono tabular-nums mt-1 w-fit bg-slate-900/50 p-2 rounded border border-white/5 gap-1.5 min-h-[30px] justify-center">
                    {estimatedTimeNode && <div className="flex items-center gap-2">{estimatedTimeNode}</div>}
                    {elapsedTimeNode ? <div className="flex items-center gap-2">{elapsedTimeNode}</div> : <div className="flex items-center gap-2"><span className="inline-flex items-center text-slate-500"><svg className="w-3.5 h-3.5 mr-1.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>Elapsed Time: 0s</span></div>}
                </div>
@@ -2697,7 +2706,7 @@ export default function App() {
                     : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700/80 hover:text-white'
                 }`}
               >
-                <span className={`w-2 h-2 rounded-full ${config.onlyCategory ? 'bg-fuchsia-400 animate-pulse' : 'bg-slate-500'}`} />
+                <span className={`w-2 h-2 rounded-full ${config.onlyCategory ? 'bg-fuchsia-400' : 'bg-slate-500'}`} />
                 <span>{config.onlyCategory ? 'Only Category: ON' : 'Only Category: OFF'}</span>
               </button>
 
@@ -2745,7 +2754,7 @@ export default function App() {
           <div className="bg-slate-900/50 p-4 border-b border-slate-800">
              <div className="flex items-center gap-6 max-w-7xl mx-auto flex-wrap">
                  <div className="flex items-center gap-2">
-                     <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                     <div className="w-2 h-2 rounded-full bg-emerald-500" />
                      <span className="font-bold text-slate-200">Turbo Active</span>
                  </div>
                  {titleSamples > 0 && (

@@ -6,12 +6,14 @@
  */
 
 export const SCAN_FALLBACK_MODELS = [
-  'gemini-3.8-flash',
   'gemini-3.1-flash-lite',
-  'gemini-flash-latest',
-  'gemini-3.7-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-3-flash-preview',
   'gemini-3.6-flash',
-  'gemini-3.5-flash-lite'
+  'gemini-3.8-flash',
+  'gemini-4-hydrogen'
 ] as const;
 
 /**
@@ -19,19 +21,24 @@ export const SCAN_FALLBACK_MODELS = [
  */
 export function getModelDisplayName(modelId: string): string {
   switch (modelId) {
-    case 'gemini-3.8-flash':
-      return 'Gemini 3.8 Flash';
     case 'gemini-3.1-flash-lite':
     case 'gemini-3.1-flash-lite-preview':
       return 'Gemini 3.1 Flash Lite';
-    case 'gemini-flash-latest':
-      return 'Gemini Flash Latest';
-    case 'gemini-3.7-flash':
-      return 'Gemini 3.7 Flash';
-    case 'gemini-3.6-flash':
-      return 'Gemini 3.6 Flash';
     case 'gemini-3.5-flash-lite':
       return 'Gemini 3.5 Flash Lite';
+    case 'gemini-2.5-flash-lite':
+      return 'Gemini 2.5 Flash Lite';
+    case 'gemini-2.5-flash':
+      return 'Gemini 2.5 Flash';
+    case 'gemini-3-flash':
+    case 'gemini-3-flash-preview':
+      return 'Gemini 3 Flash';
+    case 'gemini-3.6-flash':
+      return 'Gemini 3.6 Flash';
+    case 'gemini-3.8-flash':
+      return 'Gemini 3.8 Flash';
+    case 'gemini-4-hydrogen':
+      return 'Gemini 4 Hydrogen';
     default:
       return modelId;
   }
@@ -39,14 +46,18 @@ export function getModelDisplayName(modelId: string): string {
 
 /**
  * Resolves the model to use for a specific attempt number (1, 2, or 3).
- * Ensures attempt 1, attempt 2, and attempt 3 use 3 distinct model families.
+ * Ensures attempt 1, attempt 2, and attempt 3 use 3 distinct active free models.
  */
 export function getAttemptModel(baseSelectedModel: string, attempt: number): string {
-  let base = baseSelectedModel || 'gemini-3.8-flash';
-  if (base.includes('2.5')) base = 'gemini-3.8-flash';
+  let base = baseSelectedModel || 'gemini-3.1-flash-lite';
+  if (base === 'gemini-3.1-flash-lite-preview') base = 'gemini-3.1-flash-lite';
+  if (base === 'gemini-3-flash') base = 'gemini-3-flash-preview';
+  if (!(SCAN_FALLBACK_MODELS as readonly string[]).includes(base)) {
+    base = 'gemini-3.1-flash-lite';
+  }
   if (attempt <= 1) return base;
 
-  // Build a distinct pool of 3 models starting with the selected base model
+  // Build a distinct pool starting with the selected base model
   const pool = [base];
   for (const m of SCAN_FALLBACK_MODELS) {
     if (!pool.includes(m)) {
@@ -55,10 +66,10 @@ export function getAttemptModel(baseSelectedModel: string, attempt: number): str
   }
 
   if (attempt === 2) {
-    return pool[1] || 'gemini-3.1-flash-lite';
+    return pool[1] || 'gemini-3.5-flash-lite';
   }
   if (attempt === 3) {
-    return pool[2] || 'gemini-flash-latest';
+    return pool[2] || 'gemini-2.5-flash-lite';
   }
 
   return pool[(attempt - 1) % pool.length];

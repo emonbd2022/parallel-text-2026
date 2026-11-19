@@ -6,16 +6,18 @@ import { User, Calendar, Image as ImageIcon, Zap, Crown, BarChart2, ShieldCheck,
 import { StatisticsModal } from '../components/StatisticsModal';
 import { getOrCreateDeviceId, formatDeviceId, detectDeviceMetadata, MAX_DEVICES_PER_ACCOUNT } from '../utils/deviceManager';
 import { WHATSAPP_COMMUNITY_URL } from '../services/paymentService';
+import { formatExpiryDate, isPlanLifetime, isUserPlanExpired, isUserUnlimitedActive } from '../utils/planUtils';
 
 const MODELS = [
-  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite (Default)' },
-  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
-  { id: 'gemini-flash-latest', name: 'Gemini Flash Latest' },
-  { id: 'turbo', name: 'Turbo' },
-  { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash' },
-  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
-  { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
-  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite' }
+  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite (15 RPM · 500 RPD)' },
+  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite (15 RPM · 500 RPD)' },
+  { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite (10 RPM · 20 RPD)' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (5 RPM · 20 RPD)' },
+  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (5 RPM · 20 RPD)' },
+  { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (5 RPM · 20 RPD)' },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (5 RPM · 20 RPD)' },
+  { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen (5 RPM · 20 RPD)' },
+  { id: 'turbo', name: 'Turbo (Adaptive Auto)' }
 ];
 
 export const Dashboard: React.FC = () => {
@@ -47,11 +49,10 @@ export const Dashboard: React.FC = () => {
 
   if (!userData) return null;
 
-  const joinDate = new Date(userData.joinDate).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  });
+  const joinDate = formatExpiryDate(userData.joinDate) || '—';
+  const isLifetime = isPlanLifetime(userData);
+  const isUnlimitedActive = isUserUnlimitedActive(userData);
+  const isExpired = isUserPlanExpired(userData);
 
   return (
     <motion.div 
@@ -96,11 +97,11 @@ export const Dashboard: React.FC = () => {
               <h3 className="text-slate-400 font-medium flex items-center gap-2">
                 <Crown className="w-5 h-5 text-amber-400" /> Current Plan
               </h3>
-              {userData.unlimited ? (
+              {isUnlimitedActive ? (
                 <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Plan Active (১ মাস সক্রিয়)
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> {isLifetime ? 'Plan Active (Lifetime)' : 'Plan Active (১ মাস সক্রিয়)'}
                 </span>
-              ) : (userData.plan === 'expired' || (!!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now())) ? (
+              ) : isExpired ? (
                 <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30 font-bold flex items-center gap-1">
                   <AlertCircle className="w-3.5 h-3.5" /> Plan Expired (মেয়াদ শেষ)
                 </span>
@@ -111,18 +112,20 @@ export const Dashboard: React.FC = () => {
               )}
             </div>
             <div className="text-3xl sm:text-4xl font-black text-white mb-2">
-              {userData.unlimited ? '১ মাস আনলিমিটেড' : (userData.plan === 'expired' || (!!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now())) ? 'প্ল্যানের মেয়াদ শেষ' : 'ফ্রি ট্রায়াল (Free Trial)'}
+              {isUnlimitedActive ? (isLifetime ? 'আনলিমিটেড (Lifetime)' : '১ মাস আনলিমিটেড') : isExpired ? 'প্ল্যানের মেয়াদ শেষ' : 'ফ্রি ট্রায়াল (Free Trial)'}
             </div>
             <div className="space-y-3">
-              {userData.unlimited ? (
+              {isUnlimitedActive ? (
                 <p className="text-xs sm:text-sm text-slate-300">
-                  {userData.planEndDate ? (
-                    <>মেয়াদ শেষ হবে: <strong className="text-emerald-400 font-mono font-bold">{new Date(userData.planEndDate).toLocaleDateString()}</strong> (পরবর্তী ১ মাস সক্রিয়)</>
+                  {isLifetime ? (
+                    <>মেয়াদ: <strong className="text-emerald-400 font-semibold">Unlimited · No Ending Date</strong> (আজীবন সক্রিয়)</>
+                  ) : userData.planEndDate ? (
+                    <>মেয়াদ শেষ হবে: <strong className="text-emerald-400 font-mono font-bold tabular-nums">{formatExpiryDate(userData.planEndDate)}</strong></>
                   ) : (
-                    '১ মাস আনলিমিটেড প্রসেসিং সক্রিয়'
+                    'আনলিমিটেড প্রসেসিং সক্রিয়'
                   )}
                 </p>
-              ) : (userData.plan === 'expired' || (!!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now())) ? (
+              ) : isExpired ? (
                 <div className="p-3 bg-rose-950/40 border border-rose-800/60 rounded-xl text-xs text-rose-200 space-y-1">
                   <div className="font-bold flex items-center gap-1.5 text-rose-300">
                     <AlertTriangle className="w-4 h-4 text-rose-400" />
@@ -141,17 +144,17 @@ export const Dashboard: React.FC = () => {
               <div className="pt-2 flex flex-wrap gap-2.5">
                 <button
                   onClick={() => navigate('/pricing')}
-                  className={`px-4 py-2 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer ${
-                    (userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now()))
-                      ? 'bg-gradient-to-r from-rose-600 via-pink-600 to-purple-600 hover:from-rose-500 hover:to-purple-500 shadow-rose-900/40 animate-pulse'
+                  className={`px-4 py-2 text-white rounded-xl text-xs font-bold transition-colors shadow-md flex items-center gap-1.5 cursor-pointer ${
+                    isExpired
+                      ? 'bg-gradient-to-r from-rose-600 via-pink-600 to-purple-600 hover:from-rose-500 hover:to-purple-500 shadow-rose-900/40'
                       : 'bg-gradient-to-r from-purple-600 to-emerald-600 hover:from-purple-500 hover:to-emerald-500 shadow-purple-900/30'
                   }`}
                 >
                   <CreditCard className="w-3.5 h-3.5" />
                   <span>
-                    {(userData.plan === 'expired' || (!userData.unlimited && !!userData.planEndDate && new Date(userData.planEndDate).getTime() < Date.now()))
+                    {isExpired
                       ? 'Renew Plan (প্ল্যান রিনিউ করুন - ৳২০০)'
-                      : userData.unlimited
+                      : isUnlimitedActive
                       ? 'পেমেন্ট হিস্ট্রি / রিনিউ'
                       : 'সাবস্ক্রিপশন কিনুন (৳২০০)'}
                   </span>
@@ -176,7 +179,7 @@ export const Dashboard: React.FC = () => {
             <div className="w-12 h-12 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center mb-4">
               <Zap className="w-6 h-6" />
             </div>
-            <div className="text-3xl font-bold text-white mb-1">
+            <div className="text-3xl font-bold text-white mb-1 tabular-nums">
               {userData.unlimited ? '∞' : userData.credits}
             </div>
             <div className="text-slate-400 text-sm">Available Credits</div>
@@ -186,8 +189,8 @@ export const Dashboard: React.FC = () => {
             <div className="w-12 h-12 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mb-4">
               <ImageIcon className="w-6 h-6" />
             </div>
-            <div className="text-3xl font-bold text-white mb-1">
-              {userData.totalProcessedImages || 0}
+            <div className="text-3xl font-bold text-white mb-1 tabular-nums">
+              {(userData.totalProcessedImages || 0).toLocaleString()}
             </div>
             <div className="text-slate-400 text-sm">Images Processed</div>
           </div>
@@ -196,7 +199,7 @@ export const Dashboard: React.FC = () => {
             <div className="w-12 h-12 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center mb-4">
               <Calendar className="w-6 h-6" />
             </div>
-            <div className="text-lg font-bold text-white mb-1">
+            <div className="text-lg font-bold text-white mb-1 tabular-nums">
               {joinDate}
             </div>
             <div className="text-slate-400 text-sm">Member Since</div>

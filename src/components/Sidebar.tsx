@@ -123,7 +123,7 @@ export const Sidebar: React.FC<Props> = ({
                     label: l, 
                     key: k, 
                     errorCount: 0,
-                    usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_7: 0, flash_3_8: 0 }
+                    usage: { date: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dhaka' }), flash: 0, lite: 0, pro: 0, flash_3: 0, flash_3_1_lite: 0, flash_3_5_lite: 0, flash_3_6: 0, flash_3_8: 0, flash_4_hydrogen: 0 }
                   };
                   if (setLocalKeys) {
                     setLocalKeys(prev => [...prev, newKey]);
@@ -145,11 +145,10 @@ export const Sidebar: React.FC<Props> = ({
                       pro: 0, 
                       flash_3: 0, 
                       flash_3_1_lite: 0, 
-                      flash_3_5: 0, 
-                      flash_3_5_lite: 0, 
-                      flash_3_6: 0, 
-                      flash_3_7: 0,
-                      flash_3_8: 0 
+                      flash_3_5_lite: 0,
+                      flash_3_6: 0,
+                      flash_3_8: 0,
+                      flash_4_hydrogen: 0
                     }
                   }));
                   if (setLocalKeys) {
@@ -255,7 +254,8 @@ export const Sidebar: React.FC<Props> = ({
                           {models.filter(m => m.id !== 'turbo').map(m => {
                             const isSelected = config.model === m.id;
                             const cleanName = m.name.split(' (')[0];
-                            const rpd = m.name.match(/\((.*?)\)/)?.[1];
+                            const quotaInfo = m.name.match(/\((.*?)\)/)?.[1];
+                            const isHighQuota = quotaInfo?.includes('500 RPD');
                             const stat = modelStats[m.id];
                             const hasLatency = stat && stat.count > 0;
                             const avgTimeSec = hasLatency ? (stat.totalTimeMs / stat.count / 1000).toFixed(1) : null;
@@ -276,21 +276,21 @@ export const Sidebar: React.FC<Props> = ({
                               >
                                 <div className="flex items-center gap-2 truncate pr-2">
                                   <span className="truncate">{cleanName}</span>
-                                  {m.id.includes('3.1-flash-lite') && (
+                                  {m.id === 'gemini-3.1-flash-lite' && (
                                     <span className="text-[9px] font-mono bg-fuchsia-500/20 text-fuchsia-300 px-1 rounded font-bold shrink-0">
                                       Default
                                     </span>
                                   )}
                                 </div>
-                                <div className="flex items-center gap-2 shrink-0">
+                                <div className="flex items-center gap-2 shrink-0 tabular-nums">
                                   {avgTimeSec && (
                                     <span className="text-[9px] font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20" title={`Average processing time: ${avgTimeSec}s`}>
                                       ⚡ {avgTimeSec}s
                                     </span>
                                   )}
-                                  {rpd && (
-                                    <span className="text-[9px] font-mono text-slate-500">
-                                      {rpd}
+                                  {quotaInfo && (
+                                    <span className={`text-[9px] font-mono ${isHighQuota ? 'text-emerald-400 font-semibold' : 'text-slate-500'}`}>
+                                      {quotaInfo}
                                     </span>
                                   )}
                                   {isSelected && <Check className="w-3.5 h-3.5 text-purple-400" />}
@@ -330,7 +330,7 @@ export const Sidebar: React.FC<Props> = ({
                                 {isUnrated ? (
                                   <span className="text-slate-600 font-mono text-[9px] uppercase tracking-wider">Unrated</span>
                                 ) : (
-                                  <div className="flex items-center gap-2 text-[10px] font-mono">
+                                  <div className="flex items-center gap-2 text-[10px] font-mono tabular-nums">
                                     <span className="text-slate-400" title="Average Latency">
                                       {(avgTime/1000).toFixed(1)}s
                                     </span>

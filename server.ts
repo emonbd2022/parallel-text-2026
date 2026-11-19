@@ -24,7 +24,44 @@ const keyBuffers = CANDIDATE_SECRETS.map(s => crypto.createHash('sha256').update
 // High-speed bounded LRU caches for crypto operations to drastically reduce CPU usage on Vercel
 const decryptedKeyCache = new Map<string, string>();
 const encryptedKeyCache = new Map<string, string>();
+const genAiClientCache = new Map<string, GoogleGenAI>();
 const MAX_CRYPTO_CACHE_SIZE = 1000;
+const MAX_GENAI_CACHE_SIZE = 100;
+
+function getGenAiClient(apiKey: string): GoogleGenAI {
+    const existing = genAiClientCache.get(apiKey);
+    if (existing) {
+        genAiClientCache.delete(apiKey);
+        genAiClientCache.set(apiKey, existing);
+        return existing;
+    }
+    if (genAiClientCache.size >= MAX_GENAI_CACHE_SIZE) {
+        const oldestKey = genAiClientCache.keys().next().value;
+        if (oldestKey !== undefined) genAiClientCache.delete(oldestKey);
+    }
+    const client = new GoogleGenAI({ apiKey });
+    genAiClientCache.set(apiKey, client);
+    return client;
+}
+
+const ACTIVE_FREE_MODELS = [
+    'gemini-3.1-flash-lite',
+    'gemini-3.5-flash-lite',
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-3-flash-preview',
+    'gemini-3.6-flash',
+    'gemini-3.8-flash',
+    'gemini-4-hydrogen'
+] as const;
+
+function normalizeGeminiModel(model?: string): string {
+    if (!model) return 'gemini-3.1-flash-lite';
+    if (model === 'gemini-3.1-flash-lite-preview') return 'gemini-3.1-flash-lite';
+    if (model === 'gemini-3-flash') return 'gemini-3-flash-preview';
+    if ((ACTIVE_FREE_MODELS as readonly string[]).includes(model)) return model;
+    return 'gemini-3.1-flash-lite';
+}
 
 function getCachedOrSet<K, V>(map: Map<K, V>, key: K, compute: () => V): V {
     const existing = map.get(key);
@@ -314,7 +351,7 @@ async function fetchKeysFromFirestore(idToken?: string, forceRefresh = false): P
                 headers['Authorization'] = `Bearer ${idToken}`;
             }
             
-            const resp = await fetch(url, { headers });
+            const resp = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
             if (!resp.ok) {
                 const errText = await resp.text();
                 if (errText.includes('does not exist for project') || (errText.includes('NOT_FOUND') && errText.includes('databases/'))) {
@@ -700,7 +737,7 @@ async function verifyUserDevice(idToken: string | undefined, deviceId: string | 
         try {
             const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/users/${uid}`;
             const headers: Record<string, string> = { 'Authorization': `Bearer ${idToken}` };
-            const resp = await fetch(url, { headers });
+            const resp = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
             if (!resp.ok) {
                 const errText = await resp.text();
                 if (errText.includes('does not exist for project') || (errText.includes('NOT_FOUND') && errText.includes('databases/'))) {
@@ -848,7 +885,7 @@ app.set('trust proxy', 1);
 
 app.use(cors());
 app.use(compression({
-    level: 6, // optimal balance between compression ratio and CPU time
+    level: 4, // fast compression tuned for low fluid active CPU
     threshold: 1024, // only compress responses > 1KB
     filter: (req, res) => {
         if (req.headers['x-no-compression']) return false;
@@ -920,7 +957,7 @@ async function fetchSettingsFromFirestore(forceRefresh = false): Promise<{ centr
         if (!projectId) return settings;
         try {
             const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/settings/general${apiKey ? `?key=${apiKey}` : ''}`;
-            const resp = await fetch(url);
+            const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
             if (resp.ok) {
                 const data = await resp.json();
                 const fields = data.fields || {};
@@ -1209,19 +1246,17 @@ Return a strictly valid JSON array where each object contains:
 
         promptParts.push({ text: promptText });
 
+        const requestedModel = normalizeGeminiModel(config.model);
         const candidateModels = [
-            config.model || 'gemini-3.1-flash-lite',
-            'gemini-3.1-flash-lite',
-            'gemini-2.5-flash',
-            'gemini-2.5-flash-lite',
-            'gemini-3.8-flash'
+            requestedModel,
+            ...ACTIVE_FREE_MODELS
         ].filter((m, i, arr) => arr.indexOf(m) === i);
 
         let response: any = null;
         let lastAiError: any = null;
 
         keyLoop: for (const currentKey of candidateKeysToTry) {
-            const ai = new GoogleGenAI({ apiKey: currentKey });
+            const ai = getGenAiClient(currentKey);
             for (const candidateModel of candidateModels) {
                 if (serverAbortController.signal.aborted) break keyLoop;
                 try {
@@ -1546,19 +1581,17 @@ Return a strictly valid JSON array where each object contains:
             promptParts.push({ text: `Item ${index} Title / Description: ${item.title || 'Stock Image'}` });
         });
 
+        const requestedCatModel = normalizeGeminiModel(model);
         const candidateModels = [
-            model || 'gemini-3.1-flash-lite',
-            'gemini-3.1-flash-lite',
-            'gemini-2.5-flash',
-            'gemini-2.5-flash-lite',
-            'gemini-3.8-flash'
+            requestedCatModel,
+            ...ACTIVE_FREE_MODELS
         ].filter((m, i, arr) => arr.indexOf(m) === i);
 
         let response: any = null;
         let lastCatError: any = null;
 
         keyLoop: for (const currentKey of candidateKeysToTry) {
-            const ai = new GoogleGenAI({ apiKey: currentKey });
+            const ai = getGenAiClient(currentKey);
             for (const candidateModel of candidateModels) {
                 if (serverAbortController.signal.aborted) break keyLoop;
                 try {
@@ -2259,7 +2292,7 @@ apiRouter.post("/admin/keys/test-single", async (req, res) => {
             return res.status(400).json({ success: false, error: "Invalid or missing API key." });
         }
 
-        const ai = new GoogleGenAI({ apiKey });
+        const ai = getGenAiClient(apiKey);
 
         const promptParts: any[] = [];
         if (base64Image && typeof base64Image === 'string' && base64Image.includes(',')) {
@@ -2283,7 +2316,7 @@ apiRouter.post("/admin/keys/test-single", async (req, res) => {
             });
         }
 
-        const targetModel = model || 'gemini-3.1-flash-lite-preview';
+        const targetModel = normalizeGeminiModel(model);
 
         const response = await ai.models.generateContent({
             model: targetModel,
@@ -2541,7 +2574,7 @@ apiRouter.post("/user/sync-device", async (req, res) => {
                 const headers: Record<string, string> = {};
                 if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
                 
-                const getResp = await fetch(getUrl, { headers });
+                const getResp = await fetch(getUrl, { headers, signal: AbortSignal.timeout(8000) });
                 if (getResp.ok) {
                     const existingDoc = await getResp.json();
                     const fields = existingDoc.fields || {};
@@ -2583,7 +2616,8 @@ apiRouter.post("/user/sync-device", async (req, res) => {
                     await fetch(patchUrl, {
                         method: 'PATCH',
                         headers: { ...headers, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ fields: patchFields })
+                        body: JSON.stringify({ fields: patchFields }),
+                        signal: AbortSignal.timeout(8000)
                     });
                     return res.json({ success: true });
                 }
@@ -2608,6 +2642,31 @@ app.use('/api', (req, res) => {
 app.use((err: any, req: any, res: any, next: any) => {
     console.error("GLOBAL SERVER ERROR:", err);
     res.status(500).json({ error: err.message || "Internal Server Error" });
+});
+
+// Explicit SEO routes for search engine crawlers before SPA fallback
+app.get('/robots.txt', (_req, res) => {
+    const publicRobots = path.join(process.cwd(), 'public', 'robots.txt');
+    const distRobots = path.join(process.cwd(), 'dist', 'robots.txt');
+    const target = fs.existsSync(publicRobots) ? publicRobots : distRobots;
+    if (fs.existsSync(target)) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.sendFile(target);
+    }
+    return res.type('text/plain').send('User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\n');
+});
+
+app.get('/sitemap.xml', (_req, res) => {
+    const publicSitemap = path.join(process.cwd(), 'public', 'sitemap.xml');
+    const distSitemap = path.join(process.cwd(), 'dist', 'sitemap.xml');
+    const target = fs.existsSync(publicSitemap) ? publicSitemap : distSitemap;
+    if (fs.existsSync(target)) {
+        res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.sendFile(target);
+    }
+    return res.status(404).send('Sitemap not found');
 });
 
 async function startServer() {

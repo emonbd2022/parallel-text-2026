@@ -582,13 +582,26 @@ Do not include explanations, markdown, comments, or any additional text.`;
 
   promptParts.push({ text: categoryPromptText });
 
-  const candidateModels = [
-    model || 'gemini-3.1-flash-lite',
+  const activeFreeModels = [
     'gemini-3.1-flash-lite',
-    'gemini-2.5-flash',
+    'gemini-3.5-flash-lite',
     'gemini-2.5-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-3-flash-preview',
+    'gemini-3.6-flash',
     'gemini-3.8-flash',
-    'gemini-3.5-flash-lite'
+    'gemini-4-hydrogen'
+  ];
+  const rawModel = model === 'gemini-3.1-flash-lite-preview'
+    ? 'gemini-3.1-flash-lite'
+    : model === 'gemini-3-flash'
+    ? 'gemini-3-flash-preview'
+    : model;
+  const normalizedModel = rawModel && activeFreeModels.includes(rawModel) ? rawModel : 'gemini-3.1-flash-lite';
+
+  const candidateModels = [
+    normalizedModel,
+    ...activeFreeModels
   ].filter((m, i, arr) => arr.indexOf(m) === i);
 
   try {

@@ -732,7 +732,7 @@ export async function deduplicateCentralKeysOnServer(): Promise<{ success: boole
 export async function testSingleCentralKey(
   keyId: string,
   base64Image: string,
-  model: string = 'gemini-2.5-flash'
+  model: string = 'gemini-3.1-flash-lite'
 ): Promise<{ success: boolean; title?: string; error?: string }> {
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };

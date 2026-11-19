@@ -490,13 +490,16 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
               {[
-                { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', badge: 'Default (500 RPD)', desc: 'Fastest verification' },
-                { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', badge: 'Fast', desc: 'Recommended speed' },
-                { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', badge: 'Latest', desc: 'Always up-to-date' },
-                { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', badge: 'Smart', desc: 'High intelligence' },
-                { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', badge: 'Stable', desc: 'Standard validation' },
+                { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', badge: '15 RPM · 500 RPD', desc: 'Default · High daily quota' },
+                { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite', badge: '15 RPM · 500 RPD', desc: 'High daily free quota' },
+                { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', badge: '10 RPM · 20 RPD', desc: 'Rapid lightweight check' },
+                { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', badge: '5 RPM · 20 RPD', desc: 'Stable baseline model' },
+                { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash', badge: '5 RPM · 20 RPD', desc: 'Generation 3 speed' },
+                { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', badge: '5 RPM · 20 RPD', desc: 'Enhanced balanced check' },
+                { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', badge: '5 RPM · 20 RPD', desc: 'Next-gen fast check' },
+                { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', badge: '5 RPM · 20 RPD', desc: 'Flagship reasoning' },
               ].map(m => (
                 <button
                   key={m.id}
@@ -509,9 +512,9 @@ export const DeadApiModal: React.FC<DeadApiModalProps> = ({
                       : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
                   } disabled:opacity-50`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-white block">{m.name}</span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-bold text-white block truncate">{m.name}</span>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono shrink-0 ${
                       selectedModel === m.id ? 'bg-purple-500/30 text-purple-200' : 'bg-slate-800 text-slate-400'
                     }`}>
                       {m.badge}

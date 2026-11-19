@@ -27,15 +27,17 @@ import {
   getUserPayments
 } from '../services/paymentService';
 import { PaymentRecord } from '../types';
+import { formatExpiryDate, isPlanLifetime, isUserPlanExpired, isUserUnlimitedActive } from '../utils/planUtils';
 
 export const Pricing: React.FC = () => {
   const { userData, user } = useAuth();
   const navigate = useNavigate();
 
+  const accountEmail = userData?.email || user?.email || '';
+
   // Payment form state
   const [selectedMethod, setSelectedMethod] = useState<'bkash' | 'nagad'>('bkash');
   const [trxId, setTrxId] = useState('');
-  const [email, setEmail] = useState(userData?.email || user?.email || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copiedNumber, setCopiedNumber] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
@@ -44,12 +46,6 @@ export const Pricing: React.FC = () => {
   // User payment history state
   const [userPayments, setUserPayments] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
-
-  useEffect(() => {
-    if (userData?.email) {
-      setEmail(userData.email);
-    }
-  }, [userData?.email]);
 
   const fetchHistory = async () => {
     if (!userData?.uid) return;
@@ -101,7 +97,7 @@ export const Pricing: React.FC = () => {
     try {
       await submitSubscriptionPayment({
         userId: userData.uid,
-        userEmail: email.trim() || userData.email,
+        userEmail: accountEmail,
         userName: userData.name || userData.nickname || 'User',
         trxId: cleanTrx,
         method: selectedMethod
@@ -117,13 +113,10 @@ export const Pricing: React.FC = () => {
     }
   };
 
-  const isUnlimitedActive = userData?.unlimited && (!userData.planEndDate || new Date(userData.planEndDate).getTime() > Date.now());
-  const isPlanExpired = userData?.plan === 'expired' || (!userData?.unlimited && !!userData?.planEndDate && new Date(userData.planEndDate).getTime() <= Date.now());
-  const formattedEndDate = userData?.planEndDate ? new Date(userData.planEndDate).toLocaleDateString('bn-BD', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric'
-  }) : null;
+  const isLifetimePlan = isPlanLifetime(userData);
+  const isUnlimitedActive = isUserUnlimitedActive(userData);
+  const isPlanExpired = isUserPlanExpired(userData);
+  const formattedEndDate = userData?.planEndDate ? formatExpiryDate(userData.planEndDate) : null;
 
   return (
     <motion.div 
@@ -170,9 +163,9 @@ export const Pricing: React.FC = () => {
                 <div className="text-lg font-bold text-white flex items-center gap-2">
                   {isUnlimitedActive ? (
                     <>
-                      <span>১ মাস আনলিমিটেড</span>
+                      <span>{isLifetimePlan ? 'আনলিমিটেড (Lifetime)' : '১ মাস আনলিমিটেড'}</span>
                       <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold inline-flex items-center gap-1">
-                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Plan Active (সক্রিয়)
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> {isLifetimePlan ? 'Plan Active (Lifetime)' : 'Plan Active (সক্রিয়)'}
                       </span>
                     </>
                   ) : isPlanExpired ? (
@@ -191,8 +184,10 @@ export const Pricing: React.FC = () => {
             <div className="text-left sm:text-right">
               {isUnlimitedActive ? (
                 <div>
-                  <div className="text-xs text-slate-400">মেয়াদ শেষ হবে</div>
-                  <div className="text-sm font-semibold text-emerald-400">{formattedEndDate || '১ মাস'}</div>
+                  <div className="text-xs text-slate-400">{isLifetimePlan ? 'মেয়াদ' : 'মেয়াদ শেষ হবে'}</div>
+                  <div className="text-sm font-semibold text-emerald-400 tabular-nums">
+                    {isLifetimePlan ? 'Lifetime · No Ending Date' : (formattedEndDate || '১ মাস')}
+                  </div>
                 </div>
               ) : isPlanExpired ? (
                 <div>
@@ -204,7 +199,7 @@ export const Pricing: React.FC = () => {
               ) : (
                 <div>
                   <div className="text-xs text-slate-400">অবশিষ্ট ট্রায়াল ক্রেডিট</div>
-                  <div className="text-base font-bold text-purple-300">{userData.credits} Credits</div>
+                  <div className="text-base font-bold text-purple-300 tabular-nums">{userData.credits} Credits</div>
                 </div>
               )}
             </div>
@@ -357,12 +352,12 @@ export const Pricing: React.FC = () => {
               <div className="w-8 h-8 rounded-full bg-pink-500/20 text-pink-300 flex items-center justify-center font-bold text-sm">
                 ২
               </div>
-              <h4 className="font-bold text-white text-base">রেফারেন্সে ইমেইল লিখুন</h4>
+              <h4 className="font-bold text-white text-base">অটোমেটিক অ্যাকাউন্ট ইমেইল</h4>
               <p className="text-xs text-slate-400 leading-relaxed">
-                বিকাশ বা নগদ সেন্ড মানি করার সময় <strong>Reference (রেফারেন্স)</strong> এর ঘরে আপনার এই সাইটের <strong>লগইন ইমেইল অ্যাড্রেস</strong> লিখুন।
+                আপনার লগইনকৃত একাউন্ট ইমেইল স্বয়ংক্রিয়ভাবে এডমিনের কাছে পাঠানো হবে—আলাদা করে ইমেইল লিখতে হবে না।
               </p>
               <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-[11px] text-slate-300 font-mono break-all">
-                Reference: {email || 'your_email@gmail.com'}
+                Account: {accountEmail || 'Sign in to link email'}
               </div>
             </div>
 
@@ -437,23 +432,7 @@ export const Pricing: React.FC = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              
-              {/* Account Email Field */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                  আপনার একাউন্ট ইমেইল (User Email)
-                </label>
-                <input 
-                  type="email" 
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  placeholder="name@example.com"
-                  className="w-full bg-slate-900 border border-slate-800 focus:border-purple-500 rounded-xl px-4 py-3 text-sm text-white outline-none transition-colors"
-                />
-              </div>
-
+            <div className="w-full space-y-3">
               {/* TrxID Input Field */}
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex justify-between items-center">
@@ -461,7 +440,7 @@ export const Pricing: React.FC = () => {
                   <button 
                     type="button" 
                     onClick={handlePasteTrx} 
-                    className="text-[11px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-medium"
+                    className="text-[11px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-medium cursor-pointer"
                   >
                     <Copy className="w-3 h-3" /> পেস্ট করুন
                   </button>
@@ -476,6 +455,12 @@ export const Pricing: React.FC = () => {
                 />
               </div>
 
+              {accountEmail && (
+                <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span>লগইন একাউন্ট (<span className="font-mono text-slate-300">{accountEmail}</span>) স্বয়ংক্রিয়ভাবে এডমিনের কাছে সংযুক্ত হবে।</span>
+                </p>
+              )}
             </div>
 
             {/* Error Message */}
@@ -617,12 +602,12 @@ export const Pricing: React.FC = () => {
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-semibold border border-amber-500/30">
-                              <Clock className="w-3 h-3 animate-pulse" /> অপেক্ষমাণ (Pending)
+                              <Clock className="w-3 h-3" /> অপেক্ষমাণ (Pending)
                             </span>
                           )}
                         </td>
-                        <td className="py-3 font-sans text-slate-400 text-xs">
-                          {p.expiresAt ? new Date(p.expiresAt).toLocaleDateString() : '—'}
+                        <td className="py-3 font-sans text-slate-400 text-xs tabular-nums">
+                          {p.expiresAt ? formatExpiryDate(p.expiresAt) : '—'}
                         </td>
                       </tr>
                     ))}

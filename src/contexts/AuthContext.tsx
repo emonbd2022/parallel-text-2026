@@ -23,9 +23,9 @@ export interface UserData {
   joinDate: string;
   blocked: boolean;
   role: 'admin' | 'user';
-  plan?: 'free' | 'starter' | 'pro' | 'elite' | 'unlimited' | 'expired';
+  plan?: 'free' | 'starter' | 'pro' | 'elite' | 'unlimited' | 'lifetime' | 'expired';
   planStartDate?: string;
-  planEndDate?: string;
+  planEndDate?: string | null;
   deviceIds?: string[];
   devices?: DeviceMetadata[];
   centralApiAccess?: boolean;
@@ -455,9 +455,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const cached = getUserDataFromCache(currentUser.uid);
       const isFirstAdminUser = ADMIN_EMAILS.includes(currentUser.email || '');
       
-      // If cached user has an expired plan, reset credits to 0 and unlimited to false
+      // If cached user has an expired timed plan, reset credits to 0 and unlimited to false (Lifetime / Unlimited w/o end date never expires)
       if (cached && !isFirstAdminUser) {
-        const isExp = (cached.planEndDate && new Date(cached.planEndDate).getTime() < Date.now()) || cached.plan === 'expired';
+        const isLifetimePlan = cached.plan === 'lifetime' || (!!cached.unlimited && !cached.planEndDate);
+        const isExp = !isLifetimePlan && ((cached.planEndDate && new Date(cached.planEndDate).getTime() < Date.now()) || cached.plan === 'expired');
         if (isExp) {
           cached.unlimited = false;
           cached.credits = 0;
@@ -565,18 +566,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         const isFirstUser = isFirstAdmin;
+        const isLifetimePlan = d.plan === 'lifetime' || (!!d.unlimited && !d.planEndDate);
         let isExpired = false;
-        if (!isFirstUser && d.planEndDate) {
-          try {
-            isExpired = new Date(d.planEndDate).getTime() < Date.now();
-          } catch {}
-        } else if (!isFirstUser && d.plan === 'expired') {
-          isExpired = true;
+        if (!isFirstUser && !isLifetimePlan) {
+          if (d.planEndDate) {
+            try {
+              isExpired = new Date(d.planEndDate).getTime() < Date.now();
+            } catch {}
+          } else if (d.plan === 'expired') {
+            isExpired = true;
+          }
         }
 
-        const effectiveUnlimited = isFirstUser || (isExpired ? false : !!d.unlimited);
-        const effectivePlan: UserData['plan'] = isFirstUser ? 'unlimited' : (isExpired ? 'expired' : (d.plan || 'free'));
-        const effectiveCredits = isFirstUser ? 999999 : (isExpired ? 0 : (typeof d.credits === 'number' ? d.credits : 10));
+        const effectiveUnlimited = isFirstUser || isLifetimePlan || (isExpired ? false : !!d.unlimited);
+        const effectivePlan: UserData['plan'] = isFirstUser
+          ? 'unlimited'
+          : (isLifetimePlan ? 'lifetime' : (isExpired ? 'expired' : (d.plan || 'free')));
+        const effectiveCredits = isFirstUser ? 999999 : (isLifetimePlan ? 999999 : (isExpired ? 0 : (typeof d.credits === 'number' ? d.credits : 10)));
 
         // Auto-persist expired status to Firestore if user passed 1 month
         if (!isFirstUser && isExpired && (d.unlimited || (typeof d.credits === 'number' && d.credits > 0) || d.plan !== 'expired')) {
@@ -799,17 +805,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   localStorage.removeItem('deviceLimitError');
                 }
 
+                const isSnapshotLifetime = d.plan === 'lifetime' || (!!d.unlimited && !d.planEndDate);
                 let isSnapshotExpired = false;
-                if (!isFirstAdmin && d.planEndDate) {
-                  try {
-                    isSnapshotExpired = new Date(d.planEndDate).getTime() < Date.now();
-                  } catch {}
-                } else if (!isFirstAdmin && d.plan === 'expired') {
-                  isSnapshotExpired = true;
+                if (!isFirstAdmin && !isSnapshotLifetime) {
+                  if (d.planEndDate) {
+                    try {
+                      isSnapshotExpired = new Date(d.planEndDate).getTime() < Date.now();
+                    } catch {}
+                  } else if (d.plan === 'expired') {
+                    isSnapshotExpired = true;
+                  }
                 }
-                const snapshotUnlimited = isFirstAdmin || (isSnapshotExpired ? false : !!d.unlimited);
-                const snapshotPlan: UserData['plan'] = isFirstAdmin ? 'unlimited' : (isSnapshotExpired ? 'expired' : (d.plan || 'free'));
-                const snapshotCredits = isFirstAdmin ? 999999 : (isSnapshotExpired ? 0 : (typeof d.credits === 'number' ? d.credits : 10));
+                const snapshotUnlimited = isFirstAdmin || isSnapshotLifetime || (isSnapshotExpired ? false : !!d.unlimited);
+                const snapshotPlan: UserData['plan'] = isFirstAdmin
+                  ? 'unlimited'
+                  : (isSnapshotLifetime ? 'lifetime' : (isSnapshotExpired ? 'expired' : (d.plan || 'free')));
+                const snapshotCredits = isFirstAdmin ? 999999 : (isSnapshotLifetime ? 999999 : (isSnapshotExpired ? 0 : (typeof d.credits === 'number' ? d.credits : 10)));
 
                 if (!isFirstAdmin && isSnapshotExpired && (d.unlimited || (typeof d.credits === 'number' && d.credits > 0) || d.plan !== 'expired')) {
                   try {
@@ -872,12 +883,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
 
-    window.addEventListener('focus', handleFocusSync);
-    document.addEventListener('visibilitychange', () => {
+    const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         handleFocusSync();
       }
-    });
+    };
+
+    window.addEventListener('focus', handleFocusSync);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       unsubscribeAuth();
@@ -885,42 +898,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         userDocUnsubscribe();
       }
       window.removeEventListener('focus', handleFocusSync);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
-  // Real-time automatic plan expiration watcher: resets to zero after 1 month
+  // Event-driven plan expiration watcher: schedules an exact single timeout until planEndDate (skipped for lifetime/unlimited w/o end date)
   useEffect(() => {
     if (!userData || userData.role === 'admin' || !userData.unlimited) return;
+    if (userData.plan === 'lifetime' || !userData.planEndDate) return;
 
-    const checkExpiration = () => {
-      if (userData.planEndDate) {
-        const endTime = new Date(userData.planEndDate).getTime();
-        if (endTime <= Date.now()) {
-          const expiredData: UserData = {
-            ...userData,
-            unlimited: false,
-            credits: 0,
-            plan: 'expired'
-          };
-          setUserData(expiredData);
-          saveUserDataToCache(expiredData);
+    const endTime = new Date(userData.planEndDate).getTime();
+    if (Number.isNaN(endTime)) return;
 
-          if (db && !isFirestoreQuotaExhausted()) {
-            updateDoc(doc(db, 'users', userData.uid), {
-              unlimited: false,
-              credits: 0,
-              plan: 'expired',
-              lastActiveAt: new Date().toISOString()
-            }).catch(() => {});
-          }
-        }
+    const expireNow = () => {
+      const expiredData: UserData = {
+        ...userData,
+        unlimited: false,
+        credits: 0,
+        plan: 'expired'
+      };
+      setUserData(expiredData);
+      saveUserDataToCache(expiredData);
+
+      if (db && !isFirestoreQuotaExhausted()) {
+        updateDoc(doc(db, 'users', userData.uid), {
+          unlimited: false,
+          credits: 0,
+          plan: 'expired',
+          lastActiveAt: new Date().toISOString()
+        }).catch(() => {});
       }
     };
 
-    checkExpiration();
-    const timer = setInterval(checkExpiration, 10000); // Check every 10 seconds
-    return () => clearInterval(timer);
-  }, [userData?.uid, userData?.unlimited, userData?.planEndDate]);
+    const remainingMs = endTime - Date.now();
+    if (remainingMs <= 0) {
+      expireNow();
+      return;
+    }
+
+    // Clamp timeout duration to JS 32-bit signed max (~24.8 days)
+    const MAX_TIMEOUT_MS = 2147483647;
+    const timeoutId = setTimeout(() => {
+      if (Date.now() >= endTime) {
+        expireNow();
+      }
+    }, Math.min(remainingMs, MAX_TIMEOUT_MS));
+
+    return () => clearTimeout(timeoutId);
+  }, [userData?.uid, userData?.unlimited, userData?.plan, userData?.planEndDate]);
 
   return (
     <AuthContext.Provider value={{ user, userData, loading, setUserData, maintenanceMode, setMaintenanceMode, centralModeEnabled, setCentralModeEnabled, notifications, setNotifications, deleteNotification, logout, resetUserDevices, refreshUserData }}>
