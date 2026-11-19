@@ -118,6 +118,11 @@ export const generateMetadataBatch = async (
          },
          body: JSON.stringify({ items, config, virtualKeyId: apiKey, localKeys, isAdmin: isAdmin ?? true, hasExplicitAdminGrant: true })
       });
+    } catch (err: any) {
+      if (timeoutController.signal.aborted && !signal?.aborted) {
+        throw new Error('TIMEOUT: Central API request timed out after 25s');
+      }
+      throw err;
     } finally {
       clearTimeout(timeoutTimer);
     }
@@ -222,18 +227,28 @@ Return a strictly valid JSON array where each object contains:
 
   const candidateModels = [
     requestedModel,
+    'gemini-3.1-flash-lite',
+    'gemini-3.5-flash-lite',
     ...activeFreeModels
-  ].filter((m, i, arr) => arr.indexOf(m) === i);
+  ].filter((m, i, arr) => arr.indexOf(m) === i).slice(0, 3);
 
   let response: any = null;
   let lastError: any = null;
 
   for (const candidateModel of candidateModels) {
-    if (signal?.aborted) throw new Error("Operation aborted by user");
+    if (signal?.aborted) {
+      const abortErr = new Error("Operation aborted by caller");
+      abortErr.name = 'AbortError';
+      throw abortErr;
+    }
     
-    // Per-attempt fast timeout of 9 seconds to alter models rapidly if one hangs or is throttled
+    // Per-attempt fast timeout of 8 seconds to alter models/keys rapidly if one hangs
     const attemptAbortController = new AbortController();
-    const timeoutId = setTimeout(() => attemptAbortController.abort(), 9000);
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      attemptAbortController.abort();
+    }, 8000);
     
     let combinedSignal: AbortSignal = attemptAbortController.signal;
     if (signal) {
@@ -275,8 +290,22 @@ Return a strictly valid JSON array where each object contains:
       if (response?.text) break;
     } catch (err: any) {
       clearTimeout(timeoutId);
+      if (signal?.aborted) {
+        const abortErr = new Error("Operation aborted by caller");
+        abortErr.name = 'AbortError';
+        throw abortErr;
+      }
+      if (timedOut) {
+        lastError = new Error(`TIMEOUT: Model ${candidateModel} timed out after 8s`);
+        console.warn(`[Local Gemini] Model ${candidateModel} timed out, trying fallback...`);
+        continue;
+      }
       lastError = err;
-      if (signal?.aborted) throw err;
+      const errMsg = String(err?.message || err).toLowerCase();
+      // Do not waste cycles retrying other models when the API key itself is invalid or blocked
+      if (errMsg.includes('api_key_invalid') || errMsg.includes('key not valid') || errMsg.includes('permission_denied') || errMsg.includes('403')) {
+        break;
+      }
       console.warn(`[Local Gemini] Model ${candidateModel} failed, trying fallback:`, err?.message || err);
       continue;
     }

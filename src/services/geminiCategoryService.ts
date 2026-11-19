@@ -66,6 +66,11 @@ export const generateCategoriesBatch = async (
          },
          body: JSON.stringify({ items, model, virtualKeyId: apiKey, localKeys, isAdmin, hasExplicitAdminGrant })
       });
+    } catch (err: any) {
+      if (timeoutController.signal.aborted && !signal?.aborted) {
+        throw new Error('TIMEOUT: Central category request timed out after 25s');
+      }
+      throw err;
     } finally {
       clearTimeout(timeoutTimer);
     }
@@ -601,19 +606,29 @@ Do not include explanations, markdown, comments, or any additional text.`;
 
   const candidateModels = [
     normalizedModel,
+    'gemini-3.1-flash-lite',
+    'gemini-3.5-flash-lite',
     ...activeFreeModels
-  ].filter((m, i, arr) => arr.indexOf(m) === i);
+  ].filter((m, i, arr) => arr.indexOf(m) === i).slice(0, 3);
 
   try {
     let catResponse: any = null;
     let lastError: any = null;
 
     for (const candidateModel of candidateModels) {
-      if (signal?.aborted) throw new Error("Operation aborted by user");
+      if (signal?.aborted) {
+        const abortErr = new Error("Operation aborted by caller");
+        abortErr.name = 'AbortError';
+        throw abortErr;
+      }
       
-      // Fast adaptive per-model attempt timeout (8.5 seconds) to switch models rapidly if one hangs
+      // Fast adaptive per-model attempt timeout (8 seconds) to switch models rapidly if one hangs
       const attemptAbortController = new AbortController();
-      const timeoutId = setTimeout(() => attemptAbortController.abort(), 8500);
+      let timedOut = false;
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        attemptAbortController.abort();
+      }, 8000);
 
       let combinedSignal: AbortSignal = attemptAbortController.signal;
       if (signal) {
@@ -653,8 +668,21 @@ Do not include explanations, markdown, comments, or any additional text.`;
         if (catResponse?.text) break;
       } catch (err: any) {
         clearTimeout(timeoutId);
+        if (signal?.aborted) {
+          const abortErr = new Error("Operation aborted by caller");
+          abortErr.name = 'AbortError';
+          throw abortErr;
+        }
+        if (timedOut) {
+          lastError = new Error(`TIMEOUT: Category model ${candidateModel} timed out after 8s`);
+          console.warn(`[Category] Model ${candidateModel} timed out, trying fallback...`);
+          continue;
+        }
         lastError = err;
-        if (signal?.aborted) throw err;
+        const errMsg = String(err?.message || err).toLowerCase();
+        if (errMsg.includes('api_key_invalid') || errMsg.includes('key not valid') || errMsg.includes('permission_denied') || errMsg.includes('403')) {
+          break;
+        }
         console.warn(`[Category] Model ${candidateModel} failed, rapidly altering to next model:`, err?.message || err);
         continue;
       }

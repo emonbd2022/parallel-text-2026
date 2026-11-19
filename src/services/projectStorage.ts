@@ -32,7 +32,7 @@ const openDB = (): Promise<IDBDatabase> => {
 };
 
 export const saveProject = async (items: ProcessingItem[]): Promise<void> => {
-  // 1. Immediately save lightweight metadata to localStorage as instant sync backup
+  // 1. Immediately save lightweight metadata (without multi-MB base64 thumbs) to localStorage as instant sync backup
   try {
     const metaBackup = items.map(i => ({
       id: i.id,
@@ -45,28 +45,10 @@ export const saveProject = async (items: ProcessingItem[]): Promise<void> => {
       attempts: i.attempts || 0,
       exported: !!i.exported,
       usedModel: i.usedModel,
-      errorMsg: i.status === 'error' ? i.errorMsg : undefined,
-      thumb: i.thumb
+      errorMsg: i.status === 'error' ? i.errorMsg : undefined
     }));
     localStorage.setItem(METADATA_BACKUP_KEY, JSON.stringify(metaBackup));
-  } catch (e) {
-    // If localStorage quota exceeded due to large thumbs, strip thumb for backup
-    try {
-      const lightweight = items.map(i => ({
-        id: i.id,
-        name: i.name,
-        size: i.size,
-        status: (i.status === 'processing' || i.status === 'compressing') ? 'pending' : i.status,
-        title: i.title || '',
-        keywords: i.keywords || '',
-        category: i.category || '',
-        attempts: i.attempts || 0,
-        exported: !!i.exported,
-        usedModel: i.usedModel
-      }));
-      localStorage.setItem(METADATA_BACKUP_KEY, JSON.stringify(lightweight));
-    } catch {}
-  }
+  } catch {}
 
   // 2. Persist full objects (including Blob data) in IndexedDB
   try {

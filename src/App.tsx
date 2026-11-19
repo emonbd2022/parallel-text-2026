@@ -193,8 +193,8 @@ export default function App() {
   const sessionRequestCountRef = useRef(parseInt(localStorage.getItem('sessionReqCount') || '0'));
   const schedulerRunningRef = useRef(false);
   const scheduleAgainRef = useRef(false);
-  const taskClaimLockRef = useRef<Set<string>>(new Set());
-  const keyClaimLockRef = useRef<Set<string>>(new Set());
+  const taskClaimLockRef = useRef<Map<string, string>>(new Map());
+  const keyClaimLockRef = useRef<Map<string, string>>(new Map());
 
   // DYNAMIC TASK REASSIGNMENT (CENTRAL API ONLY)
   interface ActiveCentralAssignment {
@@ -226,9 +226,9 @@ export default function App() {
     const elapsed = now - assignment.startTime;
     
     // Dynamic adaptive threshold based on peer statistics:
-    // Only reassign if task exceeds 3x dynamic average duration (and at least 15s)
+    // Reassign faster if task exceeds 2.5x dynamic average duration (and at least 11s)
     const avgDuration = getCentralAvgDuration();
-    const dynamicThreshold = Math.max(15000, avgDuration * 3.0);
+    const dynamicThreshold = Math.max(11000, avgDuration * 2.5);
     return elapsed >= dynamicThreshold;
   };
   useEffect(() => {
@@ -787,11 +787,20 @@ export default function App() {
     }
   }, [items.map(i => i.status).join(',')]); 
 
-  // Scheduler Tick
+  // Scheduler Tick (500ms for fast cooldown pickup + instant resume when tab regains focus)
   useEffect(() => {
     if (!isProcessing) return;
-    const interval = setInterval(() => setTick(t => t + 1), 1000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => setTick(t => t + 1), 500);
+    const handleVisibilityResume = () => {
+      if (document.visibilityState === 'visible') {
+        setTick(t => t + 1);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityResume);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityResume);
+    };
   }, [isProcessing]);
 
   // --- Drag to Scroll Handlers ---
@@ -867,13 +876,13 @@ export default function App() {
 
       const compressQueue = [...newItems];
       const processCompression = async () => {
-        const workers = Array(3).fill(null).map(async () => {
+        const workerCount = Math.min(4, Math.max(2, compressQueue.length));
+        const workers = Array(workerCount).fill(null).map(async () => {
           while (compressQueue.length > 0) {
             const item = compressQueue.shift();
             if (!item) break;
 
             setItems(prev => prev.map(p => p.id === item.id ? { ...p, status: 'compressing' } : p));
-            setStatusMsg(`Preparing ${item.name}...`);
             try {
               const { blob, dataUrl } = await compressImage(item.file!, 50);
               setItems(prev => prev.map(p => p.id === item.id ? { ...p, blob, thumb: dataUrl, status: 'pending' } : p));
@@ -994,22 +1003,22 @@ export default function App() {
     explicitAssignmentId?: string,
     explicitAbortController?: AbortController
   ) => {
-    // 0. ATOMIC CLAIM CHECK (Key check first, then task locks)
+    const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
+    const assignmentId = explicitAssignmentId || `${isCentral ? 'central_cat' : 'local_cat'}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const abortController = explicitAbortController || new AbortController();
+
+    // 0. ATOMIC OWNERSHIP CLAIM CHECK (Key check first, then task locks)
     if (keyClaimLockRef.current.has(keyObj.id)) return;
 
     const validBatch: ProcessingItem[] = [];
     for (const item of batchItems) {
         if (!taskClaimLockRef.current.has(item.id)) {
-            taskClaimLockRef.current.add(item.id);
+            taskClaimLockRef.current.set(item.id, assignmentId);
             validBatch.push(item);
         }
     }
     if (validBatch.length === 0) return;
-    keyClaimLockRef.current.add(keyObj.id);
-
-    const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
-    const assignmentId = explicitAssignmentId || `${isCentral ? 'central_cat' : 'local_cat'}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const abortController = explicitAbortController || new AbortController();
+    keyClaimLockRef.current.set(keyObj.id, assignmentId);
 
     activeCentralAssignmentsRef.current.set(assignmentId, {
       assignmentId,
@@ -1114,7 +1123,7 @@ export default function App() {
       }
 
       setItems(prev => prev.map(p => {
-          if (results && results[p.id]) {
+          if (results && results[p.id] && results[p.id].category?.trim()) {
               if (assignmentId) {
                 const currentItemAssignment = itemAssignmentMapRef.current.get(p.id);
                 if (currentItemAssignment && currentItemAssignment.assignmentId !== assignmentId) {
@@ -1188,12 +1197,12 @@ export default function App() {
       setStatusMsg("Pipeline active...");
 
     } catch (error: any) {
-      const isAborted = error?.name === 'AbortError' || error?.message?.includes('aborted');
       const isReassigned = assignmentId && activeCentralAssignmentsRef.current.get(assignmentId)?.reassigned;
       if (isReassigned) {
         return;
       }
-      if (isAborted) {
+      const isExternalAbort = abortController.signal.aborted;
+      if (isExternalAbort) {
         // Revert batch items back to pending so they never remain stuck in 'processing'
         setItems(prev => prev.map(p => {
           if (validBatch.some(b => b.id === p.id) && (p.status === 'processing' || p.status === 'compressing')) {
@@ -1207,10 +1216,11 @@ export default function App() {
       console.error("Batch processing error:", error);
       
       const errorMessage = error.message || "Unknown error";
-      const isQuota = errorMessage.includes('QUOTA_EXCEEDED');
+      const isQuota = errorMessage.includes('QUOTA_EXCEEDED') || errorMessage.includes('429');
       const isInvalid = errorMessage.includes('INVALID_KEY');
+      const isTimeout = errorMessage.includes('TIMEOUT');
       
-      const cooldownMs = isQuota ? 60000 : (isInvalid ? 60000 : 20000); 
+      const cooldownMs = isQuota ? 30000 : (isInvalid ? 60000 : (isTimeout ? 15000 : 10000)); 
 
       const batchDuration = Date.now() - batchStartTime;
       performanceStats.recordExecution({
@@ -1277,10 +1287,11 @@ export default function App() {
         if (assignmentId) {
           activeCentralAssignmentsRef.current.delete(assignmentId);
         }
-        keyClaimLockRef.current.delete(keyObj.id);
+        if (keyClaimLockRef.current.get(keyObj.id) === assignmentId) {
+          keyClaimLockRef.current.delete(keyObj.id);
+        }
         for (const item of validBatch) {
-          const currentAssignment = itemAssignmentMapRef.current.get(item.id);
-          if (!currentAssignment || currentAssignment.assignmentId === assignmentId) {
+          if (taskClaimLockRef.current.get(item.id) === assignmentId) {
             taskClaimLockRef.current.delete(item.id);
           }
         }
@@ -1292,22 +1303,22 @@ export default function App() {
     explicitAssignmentId?: string,
     explicitAbortController?: AbortController
   ) => {
-    // 0. ATOMIC CLAIM CHECK (Check key first, then task locks)
+    const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
+    const assignmentId = explicitAssignmentId || `${isCentral ? 'central_title' : 'local_title'}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const abortController = explicitAbortController || new AbortController();
+
+    // 0. ATOMIC OWNERSHIP CLAIM CHECK (Check key first, then task locks)
     if (keyClaimLockRef.current.has(keyObj.id)) return;
 
     const validBatch: ProcessingItem[] = [];
     for (const item of batchItems) {
         if (!taskClaimLockRef.current.has(item.id)) {
-            taskClaimLockRef.current.add(item.id);
+            taskClaimLockRef.current.set(item.id, assignmentId);
             validBatch.push(item);
         }
     }
     if (validBatch.length === 0) return;
-    keyClaimLockRef.current.add(keyObj.id);
-
-    const isCentral = config.apiMode === 'central' || keyObj.key.startsWith('central-');
-    const assignmentId = explicitAssignmentId || `${isCentral ? 'central_title' : 'local_title'}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const abortController = explicitAbortController || new AbortController();
+    keyClaimLockRef.current.set(keyObj.id, assignmentId);
 
     activeCentralAssignmentsRef.current.set(assignmentId, {
       assignmentId,
@@ -1409,7 +1420,7 @@ export default function App() {
       }
 
       setItems(prev => prev.map(p => {
-          if (results && results[p.id]) {
+          if (results && results[p.id] && results[p.id].title?.trim()) {
               if (assignmentId) {
                 const currentItemAssignment = itemAssignmentMapRef.current.get(p.id);
                 if (currentItemAssignment && currentItemAssignment.assignmentId !== assignmentId) {
@@ -1500,12 +1511,12 @@ export default function App() {
       });
 
     } catch (error: any) {
-      const isAborted = error?.name === 'AbortError' || error?.message?.includes('aborted');
       const isReassigned = assignmentId && activeCentralAssignmentsRef.current.get(assignmentId)?.reassigned;
       if (isReassigned) {
         return;
       }
-      if (isAborted) {
+      const isExternalAbort = abortController.signal.aborted;
+      if (isExternalAbort) {
         // Revert batch items back to pending so they never remain stuck in 'processing'
         setItems(prev => prev.map(p => {
           if (validBatch.some(b => b.id === p.id) && (p.status === 'processing' || p.status === 'compressing')) {
@@ -1549,7 +1560,11 @@ export default function App() {
             cooldownTime = 30 * 1000; // 30 seconds
             errorPenalty = 1; // Standard failure increment
         }
+      } else if (errorMsgText.includes('TIMEOUT')) {
+        cooldownTime = 15 * 1000;
+        errorPenalty = 1;
       } else {
+        cooldownTime = 5 * 1000;
         errorPenalty = 1; // Standard penalty for other errors
       }
 
@@ -1606,10 +1621,11 @@ export default function App() {
         if (assignmentId) {
           activeCentralAssignmentsRef.current.delete(assignmentId);
         }
-        keyClaimLockRef.current.delete(keyObj.id);
+        if (keyClaimLockRef.current.get(keyObj.id) === assignmentId) {
+          keyClaimLockRef.current.delete(keyObj.id);
+        }
         for (const item of validBatch) {
-          const currentAssignment = itemAssignmentMapRef.current.get(item.id);
-          if (!currentAssignment || currentAssignment.assignmentId === assignmentId) {
+          if (taskClaimLockRef.current.get(item.id) === assignmentId) {
             taskClaimLockRef.current.delete(item.id);
           }
         }
@@ -1840,11 +1856,16 @@ export default function App() {
       : items.filter(i => i.status === 'pending' && i.title && !i.category);
 
     const isProcessingTitle = !config.onlyCategory && items.some(i => (i.status === 'processing' || i.status === 'compressing') && !i.title);
-    const isProcessingCategory = items.some(i => i.status === 'processing' && (config.onlyCategory ? !i.category : (i.title && !i.category)));
+    const isProcessingCategory = items.some(i => (i.status === 'processing' || i.status === 'compressing') && (config.onlyCategory ? !i.category : (i.title && !i.category)));
 
     // If both queues are empty
     if (pendingTitleItems.length === 0 && pendingCategoryItems.length === 0) {
         if (!isProcessingTitle && !isProcessingCategory) {
+            const hasCompressing = items.some(i => i.status === 'compressing');
+            if (hasCompressing) {
+                setStatusMsg('Preparing images...');
+                return;
+            }
             setIsProcessing(false);
             const allDone = items.length > 0 && items.every(i => i.status === 'done');
             if (allDone) {
@@ -1985,6 +2006,11 @@ export default function App() {
     // 2. Faster APIs prioritized first (lowest average processing latency)
     const prioritizedValidKeys = performanceStats.prioritizeApiKeys(validKeys, config.apiMode || 'local');
 
+    const validKeyIdsSet = new Set(validKeys.map(k => k.id));
+    const readyIdleKeyCount = prioritizedValidKeys.filter(
+        k => !busyKeyIds.has(k.id) && !keyClaimLockRef.current.has(k.id) && (!k.cooldownUntil || k.cooldownUntil <= now)
+    ).length;
+
     const getBatch = (queue: ProcessingItem[], keyObj: ApiKey): ProcessingItem[] => {
         const batch: ProcessingItem[] = [];
         let itemIndex = 0;
@@ -1998,7 +2024,13 @@ export default function App() {
                 itemIndex++;
                 continue;
             }
-            if (!candidate.failedKeyIds.includes(keyObj.id)) {
+            // Prevent permanent deadlock if failedKeyIds already blocked every currently valid key
+            const blockedAllValidKeys = validKeys.length > 0 && validKeys.every(vk => candidate.failedKeyIds.includes(vk.id));
+            if (blockedAllValidKeys) {
+                candidate.failedKeyIds = [];
+                setItems(prev => prev.map(p => p.id === candidate.id ? { ...p, failedKeyIds: [] } : p));
+            }
+            if (!candidate.failedKeyIds.some(fid => validKeyIdsSet.has(fid)) || !candidate.failedKeyIds.includes(keyObj.id)) {
                 batch.push(candidate);
                 queue.splice(itemIndex, 1);
             } else {
@@ -2009,6 +2041,7 @@ export default function App() {
     };
 
     // 5. DISPATCH LOOP (MAXIMUM UTILIZATION WITH FASTEST KEYS FIRST)
+    let dispatchedThisTick = 0;
     for (const keyObj of prioritizedValidKeys) {
         if (busyKeyIds.has(keyObj.id) || keyClaimLockRef.current.has(keyObj.id)) continue;
         if (keyObj.cooldownUntil && keyObj.cooldownUntil > now) continue;
@@ -2020,6 +2053,7 @@ export default function App() {
             const batch = getBatch(titleQueue, keyObj);
             if (batch.length > 0) {
                 busyKeyIds.add(keyObj.id);
+                dispatchedThisTick++;
                 startBatchProcessing(batch, keyObj);
                 continue;
             }
@@ -2027,6 +2061,7 @@ export default function App() {
             const batch = getBatch(categoryQueue, keyObj);
             if (batch.length > 0) {
                 busyKeyIds.add(keyObj.id);
+                dispatchedThisTick++;
                 startCategoryBatchProcessing(batch, keyObj);
                 continue;
             }
@@ -2037,6 +2072,7 @@ export default function App() {
             const batch = getBatch(categoryQueue, keyObj);
             if (batch.length > 0) {
                 busyKeyIds.add(keyObj.id);
+                dispatchedThisTick++;
                 startCategoryBatchProcessing(batch, keyObj);
                 continue;
             }
@@ -2044,9 +2080,18 @@ export default function App() {
             const batch = getBatch(titleQueue, keyObj);
             if (batch.length > 0) {
                 busyKeyIds.add(keyObj.id);
+                dispatchedThisTick++;
                 startBatchProcessing(batch, keyObj);
                 continue;
             }
+        }
+    }
+
+    // Deadlock breaker: if idle keys exist and pending items exist with no retryAfter yet nothing dispatched, clear stale failedKeyIds
+    if (dispatchedThisTick === 0 && readyIdleKeyCount > 0 && busyKeyIds.size === 0) {
+        const readyPending = [...pendingTitleItems, ...pendingCategoryItems].some(i => (!i.retryAfter || i.retryAfter <= now) && i.failedKeyIds.length > 0);
+        if (readyPending) {
+            setItems(prev => prev.map(p => p.status === 'pending' && p.failedKeyIds.length > 0 ? { ...p, failedKeyIds: [], retryAfter: undefined } : p));
         }
     }
 
@@ -2103,10 +2148,14 @@ export default function App() {
 
             const elapsedSec = Math.round((now - stalled.startTime) / 1000);
 
-            // 2. Release locks on old key and items
-            keyClaimLockRef.current.delete(stalled.keyId);
+            // 2. Release locks owned by the stalled assignment on old key and items
+            if (keyClaimLockRef.current.get(stalled.keyId) === stalled.assignmentId) {
+                keyClaimLockRef.current.delete(stalled.keyId);
+            }
             for (const item of stalledItems) {
-                taskClaimLockRef.current.delete(item.id);
+                if (taskClaimLockRef.current.get(item.id) === stalled.assignmentId) {
+                    taskClaimLockRef.current.delete(item.id);
+                }
                 const prevMeta = itemAssignmentMapRef.current.get(item.id);
                 itemAssignmentMapRef.current.set(item.id, {
                     assignmentId: '',
@@ -2192,20 +2241,22 @@ export default function App() {
       const now = Date.now();
       let needsTick = false;
 
-      // 1. Gather all item IDs currently claimed by alive, in-flight assignments
+      // 1. Gather all item IDs & active assignment IDs currently claimed by alive, in-flight assignments
       const activeItemIds = new Set<string>();
+      const activeAssignmentIds = new Set<string>();
       activeCentralAssignmentsRef.current.forEach(assignment => {
         if (!assignment.completed && !assignment.reassigned) {
+          activeAssignmentIds.add(assignment.assignmentId);
           assignment.itemIds.forEach(id => activeItemIds.add(id));
         }
       });
 
-      // 2. Identify in-flight assignments that are frozen / stalled (elapsed > 35s)
+      // 2. Identify in-flight assignments that are frozen / stalled (elapsed > 25s)
       const frozenAssignmentIds: string[] = [];
       activeCentralAssignmentsRef.current.forEach((assignment, id) => {
         if (!assignment.completed && !assignment.reassigned) {
           const elapsed = now - assignment.startTime;
-          if (elapsed > 35000) {
+          if (elapsed > 25000) {
             frozenAssignmentIds.push(id);
           }
         }
@@ -2216,30 +2267,36 @@ export default function App() {
           const frozen = activeCentralAssignmentsRef.current.get(id);
           if (frozen) {
             try { frozen.abortController.abort(); } catch {}
-            keyClaimLockRef.current.delete(frozen.keyId);
+            if (keyClaimLockRef.current.get(frozen.keyId) === id) {
+              keyClaimLockRef.current.delete(frozen.keyId);
+            }
             frozen.itemIds.forEach(itemId => {
-              taskClaimLockRef.current.delete(itemId);
+              if (taskClaimLockRef.current.get(itemId) === id) {
+                taskClaimLockRef.current.delete(itemId);
+              }
               itemAssignmentMapRef.current.delete(itemId);
+              activeItemIds.delete(itemId);
             });
             activeCentralAssignmentsRef.current.delete(id);
+            activeAssignmentIds.delete(id);
           }
         });
         needsTick = true;
       }
 
-      // 3. Auto-heal any ghost items marked 'processing' or 'compressing'
-      // that have NO active in-flight task in activeCentralAssignmentsRef
+      // 3. Auto-heal any ghost items marked 'processing' that have NO active in-flight task
       setItems(prev => {
         let repaired = false;
         const updated = prev.map(item => {
-          if ((item.status === 'processing' || item.status === 'compressing') && !activeItemIds.has(item.id)) {
+          if (item.status === 'processing' && !activeItemIds.has(item.id)) {
             repaired = true;
             taskClaimLockRef.current.delete(item.id);
             return {
               ...item,
               status: 'pending' as const,
               assignedKeyId: undefined,
-              progressMsg: undefined
+              progressMsg: undefined,
+              retryAfter: undefined
             };
           }
           return item;
@@ -2251,11 +2308,18 @@ export default function App() {
         return prev;
       });
 
-      // 4. Release orphan taskClaimLockRef entries for items that are no longer processing
-      taskClaimLockRef.current.forEach(lockedItemId => {
+      // 4. Release orphan taskClaimLockRef and keyClaimLockRef entries
+      taskClaimLockRef.current.forEach((ownerAssignmentId, lockedItemId) => {
         const item = itemsRef.current.find(i => i.id === lockedItemId);
-        if (!item || (item.status !== 'processing' && item.status !== 'compressing')) {
+        if (!activeAssignmentIds.has(ownerAssignmentId) || !item || (item.status !== 'processing' && item.status !== 'compressing')) {
           taskClaimLockRef.current.delete(lockedItemId);
+          needsTick = true;
+        }
+      });
+
+      keyClaimLockRef.current.forEach((ownerAssignmentId, lockedKeyId) => {
+        if (!activeAssignmentIds.has(ownerAssignmentId)) {
+          keyClaimLockRef.current.delete(lockedKeyId);
           needsTick = true;
         }
       });
@@ -2270,7 +2334,7 @@ export default function App() {
       if (needsTick) {
         setTick(t => t + 1);
       }
-    }, 2500);
+    }, 1500);
 
     return () => clearInterval(watchdogInterval);
   }, [isProcessing]);
@@ -2400,19 +2464,24 @@ export default function App() {
           return;
       }
 
-      for (const key of keysToTest.slice(0, 5)) {
-          if (config.apiMode === 'central' || key.key.startsWith('central-') || !key.key.startsWith('AIza')) {
-              hasValidKey = true;
-              break;
-          }
+      const keysToCheck = keysToTest.slice(0, 5);
+      if (keysToCheck.some(k => config.apiMode === 'central' || k.key.startsWith('central-') || !k.key.startsWith('AIza'))) {
+          hasValidKey = true;
+      } else {
           try {
-              const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key.key}`);
-              if (res.ok) {
-                  hasValidKey = true;
-                  break; // Found at least one working key
-              }
-          } catch (e) {
-              // Ignore network errors here and just try the next one
+              await Promise.any(
+                  keysToCheck.map(async (key) => {
+                      const res = await fetch(
+                          `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key.key)}`,
+                          { signal: AbortSignal.timeout(4000) }
+                      );
+                      if (!res.ok) throw new Error('Invalid key');
+                      return true;
+                  })
+              );
+              hasValidKey = true;
+          } catch {
+              hasValidKey = false;
           }
       }
 
@@ -2432,9 +2501,9 @@ export default function App() {
       itemAssignmentMapRef.current.clear();
       setItems(prev => prev.map(p => {
           if (p.status === 'processing' || p.status === 'compressing') {
-              return { ...p, status: 'pending', assignedKeyId: undefined, progressMsg: undefined };
+              return { ...p, status: 'pending', assignedKeyId: undefined, progressMsg: undefined, retryAfter: undefined, failedKeyIds: [] };
           }
-          return p;
+          return { ...p, retryAfter: undefined, failedKeyIds: [] };
       }));
       setIsProcessing(true);
       setStatusMsg("Starting processing...");

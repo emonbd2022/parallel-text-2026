@@ -1249,16 +1249,27 @@ Return a strictly valid JSON array where each object contains:
         const requestedModel = normalizeGeminiModel(config.model);
         const candidateModels = [
             requestedModel,
-            ...ACTIVE_FREE_MODELS
+            'gemini-3.1-flash-lite',
+            'gemini-3.5-flash-lite'
         ].filter((m, i, arr) => arr.indexOf(m) === i);
 
         let response: any = null;
         let lastAiError: any = null;
 
-        keyLoop: for (const currentKey of candidateKeysToTry) {
+        keyLoop: for (const currentKey of candidateKeysToTry.slice(0, 4)) {
             const ai = getGenAiClient(currentKey);
             for (const candidateModel of candidateModels) {
                 if (serverAbortController.signal.aborted) break keyLoop;
+                const attemptController = new AbortController();
+                let timedOut = false;
+                const attemptTimer = setTimeout(() => {
+                    timedOut = true;
+                    attemptController.abort();
+                }, 8500);
+                const attemptSignal = typeof (AbortSignal as any).any === 'function'
+                    ? (AbortSignal as any).any([serverAbortController.signal, attemptController.signal])
+                    : attemptController.signal;
+
                 try {
                     response = await ai.models.generateContent({
                         model: candidateModel,
@@ -1266,7 +1277,7 @@ Return a strictly valid JSON array where each object contains:
                         config: {
                             systemInstruction: systemInstruction,
                             responseMimeType: "application/json",
-                            abortSignal: serverAbortController.signal,
+                            abortSignal: attemptSignal,
                             responseSchema: {
                                 type: Type.ARRAY,
                                 items: {
@@ -1282,13 +1293,24 @@ Return a strictly valid JSON array where each object contains:
                             }
                         }
                     });
+                    clearTimeout(attemptTimer);
                     if (response?.text) break keyLoop;
                 } catch (err: any) {
+                    clearTimeout(attemptTimer);
+                    if (serverAbortController.signal.aborted) break keyLoop;
+                    if (timedOut) {
+                        lastAiError = new Error(`Central Gemini timeout on ${candidateModel}`);
+                        console.warn(`[Central Generate] Key ${currentKey.slice(0, 8)}... timed out on ${candidateModel}, rotating key`);
+                        continue keyLoop;
+                    }
                     lastAiError = err;
                     const errMsg = String(err?.message || err).toLowerCase();
                     console.warn(`[Central Generate] Key ${currentKey.slice(0, 8)}... model ${candidateModel} failed: ${errMsg.slice(0, 80)}`);
-                    // If error indicates key is invalid/expired/quota exceeded, try next key
-                    if (errMsg.includes('403') || errMsg.includes('permission_denied') || errMsg.includes('404') || errMsg.includes('quota') || errMsg.includes('429')) {
+                    // If 404 model unavailable, try next model on same key; if key invalid/quota, switch key immediately
+                    if (errMsg.includes('404') || errMsg.includes('not_found')) {
+                        continue;
+                    }
+                    if (errMsg.includes('403') || errMsg.includes('permission_denied') || errMsg.includes('api_key_invalid') || errMsg.includes('quota') || errMsg.includes('429')) {
                         continue keyLoop;
                     }
                     continue;
@@ -1584,16 +1606,27 @@ Return a strictly valid JSON array where each object contains:
         const requestedCatModel = normalizeGeminiModel(model);
         const candidateModels = [
             requestedCatModel,
-            ...ACTIVE_FREE_MODELS
+            'gemini-3.1-flash-lite',
+            'gemini-3.5-flash-lite'
         ].filter((m, i, arr) => arr.indexOf(m) === i);
 
         let response: any = null;
         let lastCatError: any = null;
 
-        keyLoop: for (const currentKey of candidateKeysToTry) {
+        keyLoop: for (const currentKey of candidateKeysToTry.slice(0, 4)) {
             const ai = getGenAiClient(currentKey);
             for (const candidateModel of candidateModels) {
                 if (serverAbortController.signal.aborted) break keyLoop;
+                const attemptController = new AbortController();
+                let timedOut = false;
+                const attemptTimer = setTimeout(() => {
+                    timedOut = true;
+                    attemptController.abort();
+                }, 8500);
+                const attemptSignal = typeof (AbortSignal as any).any === 'function'
+                    ? (AbortSignal as any).any([serverAbortController.signal, attemptController.signal])
+                    : attemptController.signal;
+
                 try {
                     response = await ai.models.generateContent({
                         model: candidateModel,
@@ -1601,7 +1634,7 @@ Return a strictly valid JSON array where each object contains:
                         config: {
                             systemInstruction: systemInstruction,
                             responseMimeType: "application/json",
-                            abortSignal: serverAbortController.signal,
+                            abortSignal: attemptSignal,
                             responseSchema: {
                                 type: Type.ARRAY,
                                 items: {
@@ -1615,13 +1648,23 @@ Return a strictly valid JSON array where each object contains:
                             }
                         }
                     });
+                    clearTimeout(attemptTimer);
                     if (response?.text) break keyLoop;
                 } catch (err: any) {
+                    clearTimeout(attemptTimer);
+                    if (serverAbortController.signal.aborted) break keyLoop;
+                    if (timedOut) {
+                        lastCatError = new Error(`Central Category timeout on ${candidateModel}`);
+                        console.warn(`[Central Category] Key ${currentKey.slice(0, 8)}... timed out on ${candidateModel}, rotating key`);
+                        continue keyLoop;
+                    }
                     lastCatError = err;
                     const errMsg = String(err?.message || err).toLowerCase();
                     console.warn(`[Central Category] Key ${currentKey.slice(0, 8)}... model ${candidateModel} failed: ${errMsg.slice(0, 80)}`);
-                    // If error indicates key is invalid/expired/quota exceeded, try next key
-                    if (errMsg.includes('403') || errMsg.includes('permission_denied') || errMsg.includes('404') || errMsg.includes('quota') || errMsg.includes('429')) {
+                    if (errMsg.includes('404') || errMsg.includes('not_found')) {
+                        continue;
+                    }
+                    if (errMsg.includes('403') || errMsg.includes('permission_denied') || errMsg.includes('api_key_invalid') || errMsg.includes('quota') || errMsg.includes('429')) {
                         continue keyLoop;
                     }
                     continue;
