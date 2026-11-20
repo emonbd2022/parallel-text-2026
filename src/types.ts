@@ -27,6 +27,10 @@ export interface ApiKey {
   avgLatencyMs?: number;
   speedTag?: 'fastest' | 'fast' | 'normal' | 'slower' | 'untried';
   relativeSpeedRatio?: number;
+  serverScore?: number;
+  serverAvgLatencyMs?: number;
+  serverSuccessCount?: number;
+  serverFailCount?: number;
 }
 
 export interface ProcessingItem {

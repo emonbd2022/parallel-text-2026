@@ -5,7 +5,8 @@ const STORAGE_API_SPEED_STATS = 'parrarel_api_stats_v2';
 const STORAGE_SESSION_EXCLUDED = 'parrarel_session_excluded_v2';
 const STORAGE_SESSION_ATTEMPTED = 'parrarel_session_attempted_v2';
 
-export const CONSECUTIVE_ERROR_EXCLUSION_THRESHOLD = 5; // 5 errors at a stretch to exclude
+export const CONSECUTIVE_ERROR_EXCLUSION_THRESHOLD = 5; // 5 errors at a stretch to exclude local keys
+export const CENTRAL_FAILURE_EXCLUSION_THRESHOLD = 2; // Exclude central API key if it fails 2 times
 
 export interface SessionExclusionInfo {
   reason: 'error_excluded';
@@ -35,6 +36,7 @@ class PerformanceStatsService {
   private apiStats: Record<string, ApiKeySpeedStat> = {};
   private sessionExcludedKeys: Map<string, SessionExclusionInfo> = new Map();
   private sessionAttemptedKeys: Set<string> = new Set();
+  private sessionCentralFailCounts: Map<string, number> = new Map();
   private listeners: Set<() => void> = new Set();
 
   constructor() {
@@ -184,14 +186,27 @@ class PerformanceStatsService {
     this.notify();
   }
 
+  public getSessionCentralFailCount(keyId: string): number {
+    return this.sessionCentralFailCounts.get(keyId) || 0;
+  }
+
   public unexcludeKey(keyId: string) {
+    let changed = false;
     if (this.sessionExcludedKeys.has(keyId)) {
       this.sessionExcludedKeys.delete(keyId);
-      if (this.apiStats[keyId]) {
-        this.apiStats[keyId].consecutiveErrors = 0;
-        this.persistApis();
-      }
       this.persistSessionState();
+      changed = true;
+    }
+    if (this.sessionCentralFailCounts.has(keyId)) {
+      this.sessionCentralFailCounts.delete(keyId);
+      changed = true;
+    }
+    if (this.apiStats[keyId] && this.apiStats[keyId].consecutiveErrors > 0) {
+      this.apiStats[keyId].consecutiveErrors = 0;
+      this.persistApis();
+      changed = true;
+    }
+    if (changed) {
       this.notify();
     }
   }
@@ -268,12 +283,12 @@ class PerformanceStatsService {
     this.apiStats[keyId] = currentApi;
     this.persistApis();
 
-    // 3. Local Session Rules:
+    // 3. Session Exclusion Rules:
     // Mark key as attempted so subsequent dispatches know it has run at least once.
     if (apiType === 'local') {
       this.markKeyAttempted(keyId);
 
-      // ONLY exclude if it gives 5 errors at a stretch!
+      // Local API: exclude only if it gives 5 errors at a stretch
       if (!success && currentApi.consecutiveErrors >= CONSECUTIVE_ERROR_EXCLUSION_THRESHOLD) {
         this.excludeLocalKeyForSession(
           keyId, 
@@ -284,6 +299,25 @@ class PerformanceStatsService {
           currentApi.consecutiveErrors,
           durationMs
         );
+      }
+    } else if (apiType === 'central') {
+      this.markKeyAttempted(keyId);
+      if (!success) {
+        const centralFails = (this.sessionCentralFailCounts.get(keyId) || 0) + 1;
+        this.sessionCentralFailCounts.set(keyId, centralFails);
+
+        // Central API: exclude immediately if it fails 2 times
+        if (centralFails >= CENTRAL_FAILURE_EXCLUSION_THRESHOLD || (currentApi.consecutiveErrors || 0) >= CENTRAL_FAILURE_EXCLUSION_THRESHOLD) {
+          this.excludeLocalKeyForSession(
+            keyId,
+            'error_excluded',
+            errorMsg
+              ? `${errorMsg} (Central API excluded after 2 failures)`
+              : 'Excluded after failing 2 times',
+            centralFails,
+            durationMs
+          );
+        }
       }
     }
 
@@ -397,16 +431,18 @@ class PerformanceStatsService {
     });
 
     if (apiType !== 'local') {
-      // For Central keys: sort dynamically by measured speed & error streak
+      // For Central keys: sort dynamically prioritizing best central score, lowest latency, and zero errors
       return available.sort((a, b) => {
         const statA = this.apiStats[a.id];
         const statB = this.apiStats[b.id];
-        const timeA = (statA && statA.count > 0) ? statA.avgTimeMs : 3500;
-        const timeB = (statB && statB.count > 0) ? statB.avgTimeMs : 3500;
+        const timeA = (statA && statA.count > 0) ? statA.avgTimeMs : (a.serverAvgLatencyMs && a.serverAvgLatencyMs > 0 ? a.serverAvgLatencyMs : 3500);
+        const timeB = (statB && statB.count > 0) ? statB.avgTimeMs : (b.serverAvgLatencyMs && b.serverAvgLatencyMs > 0 ? b.serverAvgLatencyMs : 3500);
         const streakA = statA?.consecutiveErrors || 0;
         const streakB = statB?.consecutiveErrors || 0;
-        const scoreA = timeA + (streakA * 1000) + (a.errorCount * 200);
-        const scoreB = timeB + (streakB * 1000) + (b.errorCount * 200);
+        const serverBonusA = (a.serverScore ?? 70) * 35;
+        const serverBonusB = (b.serverScore ?? 70) * 35;
+        const scoreA = timeA + (streakA * 2500) + (a.errorCount * 2000) - serverBonusA;
+        const scoreB = timeB + (streakB * 2500) + (b.errorCount * 2000) - serverBonusB;
         return scoreA - scoreB;
       });
     }
@@ -484,6 +520,7 @@ class PerformanceStatsService {
   public resetSessionPool() {
     this.sessionExcludedKeys.clear();
     this.sessionAttemptedKeys.clear();
+    this.sessionCentralFailCounts.clear();
     sessionStorage.removeItem(STORAGE_SESSION_EXCLUDED);
     sessionStorage.removeItem(STORAGE_SESSION_ATTEMPTED);
     // Reset consecutive errors streak on keys when session pool is reset

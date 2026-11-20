@@ -16,7 +16,7 @@ import { useAuth, ADMIN_EMAILS } from './contexts/AuthContext';
 import { auth, db } from './lib/firebase';
 import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { syncLocalKeysToServer } from './utils/keySync';
-import { fetchCentralKeysFromFirestore, shuffleArray } from './services/centralKeyService';
+import { fetchCentralKeysFromFirestore } from './services/centralKeyService';
 import { recordFirestoreWrite, recordFirestoreRead, getFirestoreAuditStats, isFirestoreQuotaExhausted, handleFirestoreError } from './utils/firestoreAudit';
 import { isUserPlanExpired } from './utils/planUtils';
 import { APP_VERSION } from './config/version';
@@ -173,6 +173,13 @@ export default function App() {
   });
 
   const [centralKeys, setCentralKeys] = useState<ApiKey[]>([]);
+  const centralKeysRef = useRef<ApiKey[]>([]);
+  centralKeysRef.current = centralKeys;
+  const loadedCentralKeyIdsRef = useRef<Set<string>>(new Set());
+  const excludedCentralKeyIdsRef = useRef<Set<string>>(new Set());
+  const centralRefilledBaseCountRef = useRef<number>(0);
+  const centralPoolHasMoreRef = useRef<boolean>(true);
+  const isReplenishingCentralRef = useRef<boolean>(false);
 
   const [history, setHistory] = useState<HistoryRecord[]>(() => {
     try {
@@ -481,7 +488,9 @@ export default function App() {
 
   const pendingCount = items.filter(i => i.status === 'pending').length;
   const processingCount = items.filter(i => i.status === 'processing').length;
-  const activeKeysCount = keys.filter(k => k.errorCount < 20).length;
+  const activeKeysCount = config.apiMode === 'central'
+    ? keys.filter(k => k.errorCount < 2 && k.sessionStatus !== 'error_excluded').length
+    : keys.filter(k => k.errorCount < 20 && k.sessionStatus !== 'error_excluded').length;
 
   useEffect(() => {
     const itemsLeft = pendingCount + processingCount;
@@ -553,7 +562,120 @@ export default function App() {
     }
   }, [user?.uid, (user as any)?.displayName, userData?.name, userData?.nickname, userData?.email, localKeysSignature]);
 
-  // Central API Keys Pool Fetch - strictly in-memory (RAM only), no persistent localStorage cache
+  const reportCentralFailureAndCheckReplenish = (keyId: string, errorMsg: string, reportToServer = false) => {
+    const isExcludedNow =
+      performanceStats.isKeyExcludedForSession(keyId) ||
+      performanceStats.getSessionCentralFailCount(keyId) >= 2;
+    if (!isExcludedNow) return;
+
+    excludedCentralKeyIdsRef.current.add(keyId);
+    if (reportToServer) {
+      fetch('/api/central-report-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId, success: false, errorMsg })
+      }).catch(() => {});
+    }
+
+    const excludedTotal = excludedCentralKeyIdsRef.current.size;
+    if (
+      excludedTotal - centralRefilledBaseCountRef.current >= 5 &&
+      centralPoolHasMoreRef.current &&
+      !isReplenishingCentralRef.current
+    ) {
+      replenishCentralKeysPool(5);
+    }
+  };
+
+  const replenishCentralKeysPool = async (requestCount = 5): Promise<ApiKey[]> => {
+    if (isReplenishingCentralRef.current || !centralPoolHasMoreRef.current) return [];
+    const activeNow = centralKeysRef.current.filter(
+      k => k.errorCount < 2 && !excludedCentralKeyIdsRef.current.has(k.id) && !performanceStats.isKeyExcludedForSession(k.id)
+    );
+    const slotsAvailable = Math.max(0, 20 - activeNow.length);
+    const toFetch = Math.min(requestCount, slotsAvailable, 5);
+    if (toFetch <= 0) return [];
+
+    isReplenishingCentralRef.current = true;
+    centralRefilledBaseCountRef.current = Math.min(
+      excludedCentralKeyIdsRef.current.size,
+      centralRefilledBaseCountRef.current + 5
+    );
+
+    try {
+      const currentSession = getUsageSessionId();
+      const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || ADMIN_EMAILS.includes(user?.email || '');
+      const hasExplicitAdminGrant = userData?.centralApiAccess === true || isAdmin;
+      const validLocalKeys = localKeysRef.current.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
+      const isEligible = isAdmin || hasExplicitAdminGrant || new Set(validLocalKeys).size >= 4;
+
+      let idToken = '';
+      try {
+        if (auth?.currentUser) idToken = await auth.currentUser.getIdToken(false);
+      } catch {}
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+
+      const res = await fetch('/api/central-keys-pool-sync', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          forceRefresh: false,
+          limit: toFetch,
+          offset: 0,
+          excludeIds: Array.from(loadedCentralKeyIdsRef.current),
+          localKeys: localKeysRef.current.map(k => k.key),
+          isAdmin,
+          hasExplicitAdminGrant: isEligible
+        })
+      });
+
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
+        const data = await res.json();
+        centralPoolHasMoreRef.current = Boolean(data.hasMore);
+        if (data.success && Array.isArray(data.keys) && data.keys.length > 0) {
+          const newBatch: ApiKey[] = data.keys.slice(0, toFetch).map((k: any, idx: number) => ({
+            id: k.id,
+            label: k.label || `Central Node #${loadedCentralKeyIdsRef.current.size + idx + 1}`,
+            key: k.key || `central-${k.id}`,
+            errorCount: 0,
+            usage: createEmptyUsage(currentSession),
+            serverScore: typeof k.score === 'number' ? k.score : 70,
+            serverAvgLatencyMs: typeof k.avgLatencyMs === 'number' ? k.avgLatencyMs : 0,
+            serverSuccessCount: typeof k.successCount === 'number' ? k.successCount : 0,
+            serverFailCount: typeof k.failCount === 'number' ? k.failCount : 0
+          }));
+
+          newBatch.forEach(k => loadedCentralKeyIdsRef.current.add(k.id));
+
+          setCentralKeys(prev => {
+            const activePrev = prev.filter(
+              k => k.errorCount < 2 && !excludedCentralKeyIdsRef.current.has(k.id) && !performanceStats.isKeyExcludedForSession(k.id)
+            );
+            return [...activePrev, ...newBatch].slice(0, 20);
+          });
+
+          setItems(prev => prev.map(p =>
+            p.status === 'pending'
+              ? { ...p, retryAfter: undefined, failedKeyIds: p.failedKeyIds.filter(fid => !excludedCentralKeyIdsRef.current.has(fid)) }
+              : p
+          ));
+          setStatusMsg(`Loaded ${newBatch.length} next best Central API keys into pool.`);
+          setTick(t => t + 1);
+          return newBatch;
+        }
+      }
+      return [];
+    } catch (e) {
+      console.warn('[Central Pool Replenish] Notice:', e);
+      return [];
+    } finally {
+      isReplenishingCentralRef.current = false;
+    }
+  };
+
+  // Central API Keys Pool Fetch - loads top 20 BEST keys first into RAM (never loads all at once)
   const fetchCentralKeysPool = async (forceRefresh = false): Promise<ApiKey[]> => {
     const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || ADMIN_EMAILS.includes(user?.email || '');
 
@@ -563,30 +685,25 @@ export default function App() {
       return [];
     }
 
-    // If not a forced refresh and central keys are already pulled into RAM in this session, skip redundant pull
+    // If not a forced refresh and central keys are already pulled into RAM in this session, keep best-first order
     if (!forceRefresh && centralKeys.length > 0) {
-      console.log('⚡ [Central API Pool] Central keys already loaded in memory session cache:', centralKeys.length);
-      const reshuffled = shuffleArray<ApiKey>(centralKeys);
-      setCentralKeys(reshuffled);
-      return reshuffled;
+      return centralKeys;
     }
 
     try {
       const currentSession = getUsageSessionId();
 
+      // Reset sliding-window session state on fresh load
+      loadedCentralKeyIdsRef.current.clear();
+      excludedCentralKeyIdsRef.current.clear();
+      centralRefilledBaseCountRef.current = 0;
+      centralPoolHasMoreRef.current = true;
+
       // 1. Determine eligibility
-      const isAdmin = userData?.role === 'admin' || userData?.role === 'superadmin' || ADMIN_EMAILS.includes(user?.email || '');
       const hasExplicitAdminGrant = userData?.centralApiAccess === true || isAdmin;
       const validLocalKeys = localKeys.map(k => k.key.trim()).filter(k => (k.startsWith('AIza') || k.startsWith('AQ.')) && k.length > 20);
       const uniqueKeysCount = new Set(validLocalKeys).size;
       const isEligible = isAdmin || hasExplicitAdminGrant || uniqueKeysCount >= 4;
-
-      console.log('📥 [Central API Pull] Requesting Central API keys from server pool...', {
-        forceRefresh,
-        isEligible,
-        isAdmin,
-        uniqueKeysCount
-      });
 
       let idToken = '';
       try {
@@ -595,7 +712,7 @@ export default function App() {
         }
       } catch (e) {}
       
-      // 2. Fetch fresh real keys from backend sync endpoint
+      // 2. Fetch ONLY first 20 best-ranked keys from backend sync endpoint
       try {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (idToken) {
@@ -607,6 +724,9 @@ export default function App() {
           headers,
           body: JSON.stringify({ 
             forceRefresh: true,
+            limit: 20,
+            offset: 0,
+            excludeIds: [],
             localKeys: localKeys.map(k => k.key), 
             isAdmin,
             hasExplicitAdminGrant: isEligible
@@ -618,26 +738,27 @@ export default function App() {
           if (contentType && contentType.includes('application/json')) {
             const data = await res.json();
             if (data.success && Array.isArray(data.keys)) {
-              // Workflow: fetch central API -> shuffle randomly -> use
-              const randomizedDataKeys = shuffleArray(data.keys);
-              const pool: ApiKey[] = randomizedDataKeys.map((k: any, idx: number) => ({
+              const pool: ApiKey[] = data.keys.slice(0, 20).map((k: any, idx: number) => ({
                 id: k.id || `central-${idx}`,
-                label: `Central Node ${idx + 1}`,
-                key: k.key, // Held strictly in memory
+                label: k.label || `Central Node #${idx + 1}`,
+                key: k.key || `central-${k.id || idx}`,
                 errorCount: 0,
-                usage: createEmptyUsage(currentSession)
+                usage: createEmptyUsage(currentSession),
+                serverScore: typeof k.score === 'number' ? k.score : 70,
+                serverAvgLatencyMs: typeof k.avgLatencyMs === 'number' ? k.avgLatencyMs : 0,
+                serverSuccessCount: typeof k.successCount === 'number' ? k.successCount : 0,
+                serverFailCount: typeof k.failCount === 'number' ? k.failCount : 0
               }));
-              const shuffledPool = shuffleArray(pool);
-              setCentralKeys(shuffledPool);
+              pool.forEach(k => loadedCentralKeyIdsRef.current.add(k.id));
+              centralPoolHasMoreRef.current = Boolean(data.hasMore);
+              setCentralKeys(pool);
               recordFirestoreRead('central_keys', 1, 'fetchCentralKeysPool:server');
-              console.log(`🎲 [Central API Pulled] Successfully loaded & randomly shuffled ${shuffledPool.length} active worker node(s) into RAM!`);
-              console.log(`📊 [Firestore Audit Stats] Total Reads: ${getFirestoreAuditStats().totalReads}, Total Writes: ${getFirestoreAuditStats().totalWrites}`);
-              return shuffledPool;
+              return pool;
             }
           }
         }
       } catch (serverErr) {
-        console.warn("Backend sync endpoint notice, attempting direct fallback:", serverErr);
+        console.warn("Backend sync endpoint notice:", serverErr);
       }
 
       setCentralKeys([]);
@@ -951,30 +1072,47 @@ export default function App() {
   };
 
   const handleResetUsage = (id: string) => {
-      if (window.confirm('Are you sure you want to manually reset usage counts and errors for this key?')) {
+      if (window.confirm('Are you sure you want to manually reset usage counts, errors, and re-include this key?')) {
           const currentSession = getUsageSessionId();
           setKeys(prev => prev.map(k => {
               if (k.id === id) {
                   return { 
                       ...k, 
                       errorCount: 0, // Reset errors too
+                      cooldownUntil: undefined,
                       usage: createEmptyUsage(currentSession) 
                   };
               }
               return k;
           }));
+          performanceStats.unexcludeKey(id);
+          setItems(prev => prev.map(p => (p.failedKeyIds && p.failedKeyIds.includes(id))
+              ? { ...p, failedKeyIds: p.failedKeyIds.filter(fk => fk !== id), retryAfter: undefined }
+              : p
+          ));
       }
   };
 
   const handleResetAllUsage = () => {
-      if (window.confirm('Are you sure you want to manually reset usage counts, errors, and cooldowns for ALL keys?')) {
+      if (window.confirm('Are you sure you want to manually reset usage counts, errors, cooldowns, and re-include all excluded keys?')) {
           const currentSession = getUsageSessionId();
+          excludedCentralKeyIdsRef.current.clear();
+          centralRefilledBaseCountRef.current = 0;
           setKeys(prev => prev.map(k => ({
               ...k,
               errorCount: 0,
               cooldownUntil: undefined,
               usage: createEmptyUsage(currentSession)
           })));
+          performanceStats.resetSessionPool();
+          setItems(prev => prev.map(p => p.failedKeyIds && p.failedKeyIds.length > 0
+              ? { ...p, failedKeyIds: [], retryAfter: undefined }
+              : p
+          ));
+          if (config.apiMode === 'central') {
+            fetchCentralKeysPool(true);
+          }
+          setStatusMsg('All keys reset and re-included in active pool.');
       }
   };
 
@@ -1235,6 +1373,10 @@ export default function App() {
         errorMsg: errorMessage
       });
 
+      if (isCentral) {
+        reportCentralFailureAndCheckReplenish(keyObj.id, errorMessage, isTimeout);
+      }
+
       setKeys(prev => prev.map(k => {
           if (k.id === keyObj.id) {
               return { 
@@ -1247,14 +1389,16 @@ export default function App() {
       }));
 
       setItems(prev => {
-        const activeKeys = keys.filter(k => k.errorCount < 20);
+        const activeKeys = keys.filter(k =>
+          isCentral ? (k.errorCount < 2 && !performanceStats.isKeyExcludedForSession(k.id) && k.id !== keyObj.id) : k.errorCount < 20
+        );
         return prev.map(p => {
             if (batchItems.find(b => b.id === p.id)) {
                 const newFailedKeys = [...(p.failedKeyIds || []), keyObj.id];
-                const allKeysExhausted = activeKeys.every(k => newFailedKeys.includes(k.id));
-                const backoffDelay = Math.min(2000 * Math.pow(2, p.attempts), 120000);
+                const allKeysExhausted = activeKeys.length === 0 || activeKeys.every(k => newFailedKeys.includes(k.id));
+                const backoffDelay = isCentral ? Math.min(1000 * Math.pow(1.5, p.attempts), 10000) : Math.min(2000 * Math.pow(2, p.attempts), 120000);
                 
-                if (allKeysExhausted && activeKeys.length > 0) {
+                if (allKeysExhausted) {
                      return {
                           ...p,
                           status: 'pending',
@@ -1263,7 +1407,7 @@ export default function App() {
                           assignedKeyId: undefined,
                           failedKeyIds: [],
                           attempts: p.attempts + 1,
-                          retryAfter: Date.now() + Math.max(backoffDelay, 30000)
+                          retryAfter: Date.now() + (isCentral ? 1500 : Math.max(backoffDelay, 30000))
                      };
                 } else {
                      return {
@@ -1547,25 +1691,27 @@ export default function App() {
         errorMsg: errMsg
       });
 
+      if (isCentral) {
+        reportCentralFailureAndCheckReplenish(keyObj.id, errMsg, errorMsgText.includes('TIMEOUT'));
+      }
+
       if (errorMsgText.includes('INVALID_KEY')) {
-        errorPenalty = 1; // Count standard error, let consecutiveErrors reach 5 before session exclusion
+        errorPenalty = 1; // Count standard error
         cooldownTime = 60 * 1000;
       } else if (errorMsgText.includes('QUOTA_EXCEEDED') || errorMsgText.includes('429')) {
         if (errorMsgText.toLowerCase().includes('billing') || errorMsgText.toLowerCase().includes('plan')) {
-            // Daily or hard quota
             cooldownTime = 30 * 60 * 1000; // 30 mins
             errorPenalty = 1;
         } else {
-            // RPM or TPM limit
             cooldownTime = 30 * 1000; // 30 seconds
-            errorPenalty = 1; // Standard failure increment
+            errorPenalty = 1;
         }
       } else if (errorMsgText.includes('TIMEOUT')) {
         cooldownTime = 15 * 1000;
         errorPenalty = 1;
       } else {
         cooldownTime = 5 * 1000;
-        errorPenalty = 1; // Standard penalty for other errors
+        errorPenalty = 1;
       }
 
       setKeys(prevKeys => prevKeys.map(k => {
@@ -1579,28 +1725,25 @@ export default function App() {
           return k;
       }));
 
-      // Revert items to pending or error
+      // Revert items to pending cleanly
       setItems(prev => {
-        // We consider keys active if they have < 20 errors (increased from 5)
-        const activeKeys = keys.filter(k => k.errorCount < 20); 
+        const activeKeys = keys.filter(k =>
+          isCentral ? (k.errorCount < 2 && !performanceStats.isKeyExcludedForSession(k.id) && k.id !== keyObj.id) : k.errorCount < 20
+        );
         
         return prev.map(p => {
             if (batchItems.find(b => b.id === p.id)) {
-                // Track this key as failed for this specific item
                 const newFailedKeys = [...(p.failedKeyIds || []), keyObj.id];
-                
-                // CRITICAL: Check if we have exhausted all available keys for this item
-                // Only fail the item if ALL keys (including this one) have failed it
-                const allKeysExhausted = activeKeys.every(k => newFailedKeys.includes(k.id));
-                const backoffDelay = Math.min(2000 * Math.pow(2, p.attempts), 120000); // Exponential backoff up to 2 mins
-                if (allKeysExhausted && activeKeys.length > 0) {
+                const allKeysExhausted = activeKeys.length === 0 || activeKeys.every(k => newFailedKeys.includes(k.id));
+                const backoffDelay = isCentral ? Math.min(1000 * Math.pow(1.5, p.attempts), 10000) : Math.min(2000 * Math.pow(2, p.attempts), 120000);
+                if (allKeysExhausted) {
                      return {
                           ...p,
                           status: 'pending',
                           assignedKeyId: undefined,
-                          failedKeyIds: [], // Auto retry by resetting failed keys
+                          failedKeyIds: [],
                           attempts: p.attempts + 1,
-                          retryAfter: Date.now() + Math.max(backoffDelay, 30000) // At least 30s backoff if all keys failed
+                          retryAfter: Date.now() + (isCentral ? 1500 : Math.max(backoffDelay, 30000))
                      };
                 } else {
                      return {
@@ -1908,8 +2051,14 @@ export default function App() {
 
     // 3. Validate API keys and session limits
     const validKeys = keys.filter(k => {
-        // Exclude keys banned for this session (for local APIs)
-        if (config.apiMode === 'local' && performanceStats.isKeyExcludedForSession(k.id)) {
+        // Exclude keys banned for this session (Central excludes at 2 failures; Local excludes at 5 consecutive errors)
+        if (performanceStats.isKeyExcludedForSession(k.id)) {
+            return false;
+        }
+        if (config.apiMode === 'central' && k.errorCount >= 2) {
+            return false;
+        }
+        if (config.apiMode === 'local' && k.errorCount >= 20) {
             return false;
         }
 
@@ -1959,20 +2108,30 @@ export default function App() {
     
     if (validKeys.length === 0) {
         const totalKeys = keys.length;
-        if (totalKeys > 0) {
+        if (config.apiMode === 'central') {
+            if (totalKeys === 0) {
+                setStatusMsg("Connecting to Central API pool...");
+                fetchCentralKeysPool().then(pool => {
+                    if (!pool || pool.length === 0) {
+                        setStatusMsg("No Central API keys available in the central pool. Please add an API key.");
+                        setIsProcessing(false);
+                    }
+                }).catch(() => {
+                    setStatusMsg("Could not connect to Central API pool. Please check your internet connection.");
+                    setIsProcessing(false);
+                });
+            } else if (centralPoolHasMoreRef.current) {
+                setStatusMsg("Loading next batch of best Central API keys...");
+                if (!isReplenishingCentralRef.current) {
+                    replenishCentralKeysPool(5);
+                }
+            } else {
+                setStatusMsg("All loaded Central API keys reached failure/safety limits. Click Reset All to retry.");
+                setIsProcessing(false);
+            }
+        } else if (totalKeys > 0) {
             setStatusMsg("All keys have high error counts or hit safety limits.");
             setIsProcessing(false);
-        } else if (config.apiMode === 'central') {
-            setStatusMsg("Connecting to Central API pool...");
-            fetchCentralKeysPool().then(pool => {
-                if (!pool || pool.length === 0) {
-                    setStatusMsg("No Central API keys available in the central pool. Please add an API key.");
-                    setIsProcessing(false);
-                }
-            }).catch(() => {
-                setStatusMsg("Could not connect to Central API pool. Please check your internet connection.");
-                setIsProcessing(false);
-            });
         } else {
             setStatusMsg("No API keys configured.");
             setIsProcessing(false);
@@ -1998,13 +2157,11 @@ export default function App() {
     const titleQueue = [...pendingTitleItems].sort((a, b) => a.attempts - b.attempts);
     const categoryQueue = [...pendingCategoryItems].sort((a, b) => a.attempts - b.attempts);
 
-    const titlePoolSize = keys.length > 1 ? Math.ceil(keys.length / 2) : keys.length;
-    const titleKeyIds = new Set(keys.slice(0, titlePoolSize).map(k => k.id));
-
-    // Prioritize keys according to speed, health, and session fairness:
-    // 1. Untried local keys first ("Try to use all the local API at least once")
-    // 2. Faster APIs prioritized first (lowest average processing latency)
+    // Prioritize keys according to speed, health, and session fairness (best central keys stay ranked first)
     const prioritizedValidKeys = performanceStats.prioritizeApiKeys(validKeys, config.apiMode || 'local');
+
+    const titlePoolSize = prioritizedValidKeys.length > 1 ? Math.ceil(prioritizedValidKeys.length / 2) : prioritizedValidKeys.length;
+    const titleKeyIds = new Set(prioritizedValidKeys.slice(0, titlePoolSize).map(k => k.id));
 
     const validKeyIdsSet = new Set(validKeys.map(k => k.id));
     const readyIdleKeyCount = prioritizedValidKeys.filter(
@@ -2279,6 +2436,27 @@ export default function App() {
             });
             activeCentralAssignmentsRef.current.delete(id);
             activeAssignmentIds.delete(id);
+
+            // Record timeout failure on the hanging key so Watchdog doesn't loop on the exact same frozen key
+            const isFrozenCentral = frozen.apiType === 'central';
+            performanceStats.recordExecution({
+              modelId: config.model,
+              keyId: frozen.keyId,
+              keyLabel: frozen.keyLabel,
+              apiType: isFrozenCentral ? 'central' : 'local',
+              durationMs: now - frozen.startTime,
+              itemCount: frozen.itemIds.length,
+              success: false,
+              errorMsg: 'TIMEOUT: Assignment froze >25s'
+            });
+            setKeys(prevKeys => prevKeys.map(k =>
+              k.id === frozen.keyId
+                ? { ...k, errorCount: k.errorCount + 1, cooldownUntil: now + 15000 }
+                : k
+            ));
+            if (isFrozenCentral) {
+              reportCentralFailureAndCheckReplenish(frozen.keyId, 'TIMEOUT: Request froze >25s', true);
+            }
           }
         });
         needsTick = true;
@@ -2437,17 +2615,17 @@ export default function App() {
       
       let activeKeys = keys;
       if (config.apiMode === 'central') {
-          if (activeKeys.length === 0) {
-              setStatusMsg("Connecting to Central API Pool...");
-              activeKeys = await fetchCentralKeysPool();
+          const activeCentralNonExcluded = activeKeys.filter(
+              k => k.errorCount < 2 && !performanceStats.isKeyExcludedForSession(k.id)
+          );
+          if (activeCentralNonExcluded.length === 0) {
+              setStatusMsg("Loading best Central API keys...");
+              activeKeys = await fetchCentralKeysPool(activeKeys.length > 0);
           }
           if (activeKeys.length === 0) {
               setStatusMsg("No Central API keys available in server pool. Please add a key or try again.");
               return;
           }
-          // Workflow: fetch central API -> shuffle randomly -> use
-          activeKeys = shuffleArray(activeKeys);
-          setCentralKeys(activeKeys);
       } else {
           if (activeKeys.length === 0) {
               setStatusMsg("No API keys configured. Please add keys first.");
@@ -2457,7 +2635,11 @@ export default function App() {
 
       setStatusMsg("Validating API keys...");
       let hasValidKey = false;
-      const keysToTest = activeKeys.filter(k => k.errorCount < 20);
+      const keysToTest = activeKeys.filter(k =>
+          config.apiMode === 'central'
+              ? (k.errorCount < 2 && !performanceStats.isKeyExcludedForSession(k.id))
+              : k.errorCount < 20
+      );
       
       if (keysToTest.length === 0) {
           setStatusMsg("All configured keys have hit safety limits.");

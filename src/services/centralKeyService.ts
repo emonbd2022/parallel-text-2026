@@ -2,6 +2,18 @@ import { collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBa
 import { db, auth } from '../lib/firebase';
 import { recordFirestoreRead, recordFirestoreWrite, isFirestoreQuotaExhausted, handleFirestoreError } from '../utils/firestoreAudit';
 
+export interface CentralKeyStatsInfo {
+  score: number;
+  successCount: number;
+  failCount: number;
+  consecutiveFailures: number;
+  avgLatencyMs: number;
+  lastLatencyMs: number;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  lastError?: string;
+}
+
 export interface CentralKeyRecord {
   id: string;
   label: string;
@@ -17,6 +29,7 @@ export interface CentralKeyRecord {
   deadReason?: string;
   lastTestedAt?: string;
   createdAt: string;
+  stats?: CentralKeyStatsInfo;
 }
 
 // In-memory runtime cache for central keys to eliminate repeated Firestore reads
@@ -251,7 +264,12 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
             contributorName: derivedContributor,
             contributorEmail: email,
             enabled: k.enabled !== false,
-            createdAt: k.createdAt || new Date().toISOString()
+            status: k.status,
+            isDead: k.isDead,
+            deadReason: k.deadReason,
+            lastTestedAt: k.lastTestedAt,
+            createdAt: k.createdAt || new Date().toISOString(),
+            stats: k.stats
           };
         });
       }
@@ -295,6 +313,21 @@ export async function fetchAdminCentralKeys(forceRefresh = false): Promise<Centr
   }
 
   return [];
+}
+
+export async function resetAdminCentralKeyStats(): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.currentUser) {
+      try {
+        headers['Authorization'] = `Bearer ${await auth.currentUser.getIdToken()}`;
+      } catch {}
+    }
+    const res = await fetch('/api/admin/keys/reset-stats', { method: 'POST', headers });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -443,7 +443,7 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                                                 )}
                                                 {api.status === 'error_excluded' && (
                                                     <span className="text-[9px] px-2 py-0.5 rounded font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
-                                                        ⛔ Excluded (5 Errors Streak)
+                                                        {api.apiType === 'central' ? '⛔ Excluded (2 Failures)' : '⛔ Excluded (5 Errors Streak)'}
                                                     </span>
                                                 )}
                                             </div>
@@ -459,8 +459,8 @@ export const StatisticsModal: React.FC<Props> = ({ logs, modelStats: propModelSt
                                                     <span className="text-slate-500 text-[10px] block">Batches / Streak</span>
                                                     <span className="text-slate-300">
                                                         {api.count} ok · {api.consecutiveErrors > 0 ? (
-                                                            <span className={api.consecutiveErrors >= 5 ? "text-rose-400 font-bold" : "text-amber-400 font-medium"}>
-                                                                {api.consecutiveErrors}/5 streak
+                                                            <span className={api.consecutiveErrors >= (api.apiType === 'central' ? 2 : 5) ? "text-rose-400 font-bold" : "text-amber-400 font-medium"}>
+                                                                {api.consecutiveErrors}/{api.apiType === 'central' ? 2 : 5} streak
                                                             </span>
                                                         ) : (
                                                             <span className="text-emerald-400/80">0 streak</span>

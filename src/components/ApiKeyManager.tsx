@@ -662,7 +662,7 @@ export const ApiKeyManager: React.FC<Props> = ({
                 <span className="text-slate-400 text-[10px] block mb-0.5">Active Central Nodes</span>
                 <span className="text-base font-bold text-white font-mono tabular-nums flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
-                  {keys.length > 0 ? keys.length : '16'} Nodes
+                  {keys.filter(k => k.sessionStatus !== 'error_excluded' && k.errorCount < 2).length} / 20 Nodes
                 </span>
               </div>
               <div className="p-2.5 bg-slate-900/80 rounded-xl border border-slate-800">
@@ -769,7 +769,7 @@ export const ApiKeyManager: React.FC<Props> = ({
                 <button 
                   type="button"
                   onClick={onResetAll}
-                  title="Reset error counts and usage counters for all local keys"
+                  title="Reset error counts, usage counters, and re-include all excluded local keys"
                   className="text-[11px] font-semibold px-2.5 py-1.5 rounded-xl transition-all bg-red-950/30 text-red-300 hover:bg-red-900/60 hover:text-white border border-red-900/40 hover:border-red-700 shadow-sm flex items-center gap-1 cursor-pointer shrink-0"
                 >
                   <RotateCcw className="w-3 h-3 text-red-400" />

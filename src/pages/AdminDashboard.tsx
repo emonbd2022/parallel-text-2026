@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { where, getDocs, getDoc, updateDoc, doc, query, orderBy, limit, startAfter, setDoc, collection, deleteDoc, writeBatch, getAggregateFromServer, sum } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { useAuth, UserData, AppNotification, ADMIN_EMAILS } from '../contexts/AuthContext';
-import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Upload, Laptop, Smartphone, ShieldCheck, Flame, Power, CheckSquare, Square, SlidersHorizontal, CreditCard, Clock, RotateCcw } from 'lucide-react';
+import { Shield, Search, RefreshCw, Trash2, CheckCircle2, AlertTriangle, Loader2, Send, Bell, X, Info, CheckCircle, Users, Globe, UserPlus, Eye, MessageSquare, ArrowUpDown, Image as ImageIcon, Key, Sparkles, Plus, Copy, Check, Zap, User, Download, Upload, Laptop, Smartphone, ShieldCheck, Flame, Power, CheckSquare, Square, SlidersHorizontal, CreditCard, Clock, RotateCcw, Trophy, Activity } from 'lucide-react';
 import { 
   fetchAdminCentralKeys, 
   addCentralKeyToFirestore, 
@@ -14,6 +14,7 @@ import {
   deduplicateCentralKeysOnServer,
   parseCentralKeysCSV,
   importCentralKeys,
+  resetAdminCentralKeyStats,
   CentralKeyRecord 
 } from '../services/centralKeyService';
 import { DeadApiModal } from '../components/DeadApiModal';
@@ -201,6 +202,39 @@ export const AdminDashboard: React.FC = () => {
   const [togglingKeyId, setTogglingKeyId] = useState<string | null>(null);
   const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
   const [keyStatusFilter, setKeyStatusFilter] = useState<'all' | 'active' | 'disabled' | 'dead'>('all');
+  const [keySortBestFirst, setKeySortBestFirst] = useState<boolean>(true);
+  const [showAllTopKeys, setShowAllTopKeys] = useState<boolean>(false);
+  const [isResettingKeyStats, setIsResettingKeyStats] = useState<boolean>(false);
+
+  const handleResetCentralKeyStats = async () => {
+    if (!window.confirm('Reset performance scores and latency counters for all Central API keys?')) return;
+    setIsResettingKeyStats(true);
+    try {
+      await resetAdminCentralKeyStats();
+      await fetchCentralKeys(true);
+    } catch (e: any) {
+      alert('Failed to reset key stats: ' + (e?.message || e));
+    } finally {
+      setIsResettingKeyStats(false);
+    }
+  };
+
+  const bestCentralKeys = useMemo(() => {
+    return centralKeys
+      .filter(k => k.enabled && !k.isDead && k.status !== 'dead')
+      .slice()
+      .sort((a, b) => {
+        const aScore = a.stats?.score ?? 70;
+        const bScore = b.stats?.score ?? 70;
+        if (bScore !== aScore) return bScore - aScore;
+        const aSucc = a.stats?.successCount ?? 0;
+        const bSucc = b.stats?.successCount ?? 0;
+        if (bSucc !== aSucc) return bSucc - aSucc;
+        const aLat = (a.stats?.avgLatencyMs && a.stats.avgLatencyMs > 0) ? a.stats.avgLatencyMs : 999999;
+        const bLat = (b.stats?.avgLatencyMs && b.stats.avgLatencyMs > 0) ? b.stats.avgLatencyMs : 999999;
+        return aLat - bLat;
+      });
+  }, [centralKeys]);
 
   const fetchCentralKeys = async (forceRefresh = false) => {
     setLoadingKeys(true);
@@ -2429,6 +2463,161 @@ export const AdminDashboard: React.FC = () => {
             </div>
           </div>
 
+          {/* Best Central API Keys Performance Leaderboard */}
+          {centralKeys.length > 0 && (
+            <div className="bg-slate-900/85 border border-emerald-500/25 rounded-2xl p-5 shadow-xl space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                      <Trophy className="w-4 h-4" />
+                    </div>
+                    <h3 className="text-base font-bold text-white">Best Central API Keys — Priority Ranking</h3>
+                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                      Top 20 First
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Highest-scoring active keys are dispatched to users first (initial 20 keys, +5 replenished after every 5 failures, max 20 active, 2-fail auto-exclude).
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {bestCentralKeys.length > 6 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllTopKeys(prev => !prev)}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      {showAllTopKeys ? 'Show Top 6' : `View Top ${Math.min(20, bestCentralKeys.length)}`}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleResetCentralKeyStats}
+                    disabled={isResettingKeyStats || loadingKeys}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
+                    title="Reset all central key performance scores and latency stats"
+                  >
+                    {isResettingKeyStats ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                    <span>Reset Stats</span>
+                  </button>
+                </div>
+              </div>
+
+              {(() => {
+                const top20 = bestCentralKeys.slice(0, 20);
+                const testedKeys = bestCentralKeys.filter(k => (k.stats?.totalAttempts ?? 0) > 0);
+                const totalSuccesses = centralKeys.reduce((sum, k) => sum + (k.stats?.successCount ?? 0), 0);
+                const totalFails = centralKeys.reduce((sum, k) => sum + (k.stats?.failCount ?? 0), 0);
+                const avgTopScore = top20.length > 0
+                  ? Math.round(top20.reduce((sum, k) => sum + (k.stats?.score ?? 70), 0) / top20.length)
+                  : 0;
+                const fastestLatency = testedKeys.reduce((min, k) => {
+                  const lat = k.stats?.avgLatencyMs ?? 0;
+                  return lat > 0 && (min === 0 || lat < min) ? lat : min;
+                }, 0);
+
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Top 20 Avg Score</span>
+                      <span className="text-lg font-bold text-emerald-400 font-mono">{avgTopScore}/100</span>
+                    </div>
+                    <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Telemetry Coverage</span>
+                      <span className="text-lg font-bold text-purple-300 font-mono">{testedKeys.length} / {bestCentralKeys.length} Tested</span>
+                    </div>
+                    <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Pool Success / Fail</span>
+                      <span className="text-lg font-bold text-slate-100 font-mono">
+                        <span className="text-emerald-400">{totalSuccesses}</span>
+                        <span className="text-slate-600 mx-1">/</span>
+                        <span className="text-rose-400">{totalFails}</span>
+                      </span>
+                    </div>
+                    <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500 block">Fastest Avg Node</span>
+                      <span className="text-lg font-bold text-amber-300 font-mono">
+                        {fastestLatency > 0 ? `${(fastestLatency / 1000).toFixed(2)}s` : 'Pending runs'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {bestCentralKeys.length === 0 ? (
+                <div className="p-4 bg-slate-950/70 border border-slate-800 rounded-xl text-xs text-slate-400 text-center">
+                  No active central keys available for ranking.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {bestCentralKeys.slice(0, showAllTopKeys ? 20 : 6).map((key, rankIdx) => {
+                    const st = key.stats;
+                    const score = st?.score ?? 70;
+                    const succ = st?.successCount ?? 0;
+                    const fail = st?.failCount ?? 0;
+                    const total = succ + fail;
+                    const rate = total > 0 ? Math.round((succ / total) * 100) : null;
+                    const latencyMs = st?.avgLatencyMs ?? 0;
+                    const streak = st?.consecutiveFailures ?? 0;
+                    const scoreColor =
+                      score >= 80 ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
+                        : score >= 60 ? 'text-amber-300 border-amber-500/30 bg-amber-500/10'
+                        : 'text-rose-400 border-rose-500/30 bg-rose-500/10';
+
+                    return (
+                      <div key={key.id} className="p-3.5 bg-slate-950/80 border border-slate-800/90 hover:border-purple-500/40 rounded-xl flex flex-col justify-between gap-2.5 transition-colors">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <span className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-extrabold shrink-0 border ${
+                              rankIdx === 0 ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' :
+                              rankIdx === 1 ? 'bg-slate-300/15 text-slate-200 border-slate-400/30' :
+                              rankIdx === 2 ? 'bg-orange-500/15 text-orange-300 border-orange-500/30' :
+                              'bg-purple-500/10 text-purple-300 border-purple-500/20'
+                            }`}>
+                              #{rankIdx + 1}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-slate-100 truncate">{key.label || 'Central Node'}</p>
+                              <p className="text-[10px] font-mono text-slate-500 truncate">{key.maskedKey || key.id}</p>
+                            </div>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded-lg text-[11px] font-extrabold font-mono border shrink-0 ${scoreColor}`}>
+                            {score} pts
+                          </span>
+                        </div>
+
+                        <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              score >= 80 ? 'bg-emerald-500' : score >= 60 ? 'bg-amber-400' : 'bg-rose-500'
+                            }`}
+                            style={{ width: `${Math.min(100, Math.max(4, score))}%` }}
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                          <span>
+                            <strong className="text-emerald-400">{succ}</strong> OK / <strong className="text-rose-400">{fail}</strong> Fail
+                            {rate !== null ? ` (${rate}%)` : ' (New)'}
+                          </span>
+                          <span className="flex items-center gap-1 text-slate-300">
+                            <Activity className="w-3 h-3 text-purple-400" />
+                            {latencyMs > 0 ? `${(latencyMs / 1000).toFixed(2)}s` : '—'}
+                            {streak > 0 && (
+                              <span className="ml-1 text-[10px] text-rose-400 font-bold">({streak}/2 err)</span>
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
             {/* System Diagnostic Information Banner */}
             <div className="p-4 bg-slate-950/90 border border-purple-500/20 rounded-xl space-y-3">
@@ -2696,6 +2885,19 @@ export const AdminDashboard: React.FC = () => {
                   >
                     Dead ({centralKeys.filter(k => k.isDead || k.status === 'dead').length})
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setKeySortBestFirst(prev => !prev)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer ${
+                      keySortBestFirst
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                        : 'bg-slate-900 text-slate-400 hover:bg-slate-800 border border-slate-800'
+                    }`}
+                    title="Sort keys by Best Performance Score first (same order loaded for users)"
+                  >
+                    <Trophy className="w-3 h-3" />
+                    <span>Best Ranked</span>
+                  </button>
                 </div>
 
                 {/* Admin Quick Batch Privileges & Search */}
@@ -2812,6 +3014,7 @@ export const AdminDashboard: React.FC = () => {
                         <th className="p-4 font-semibold">Label / Origin</th>
                         <th className="p-4 font-semibold">Masked API Key</th>
                         <th className="p-4 font-semibold">Contributor</th>
+                        <th className="p-4 font-semibold">Best Score & Stats</th>
                         <th className="p-4 font-semibold">Added On</th>
                         <th className="p-4 font-semibold">Admin Status & Switch</th>
                         <th className="p-4 font-semibold text-right">Privilege Actions</th>
@@ -2840,6 +3043,16 @@ export const AdminDashboard: React.FC = () => {
                             (k.contributedBy && k.contributedBy.toLowerCase().includes(q)) ||
                             k.id.toLowerCase().includes(q)
                           );
+                        })
+                        .sort((a, b) => {
+                          if (!keySortBestFirst) return 0;
+                          const aDead = !a.enabled || a.isDead || a.status === 'dead' ? 1 : 0;
+                          const bDead = !b.enabled || b.isDead || b.status === 'dead' ? 1 : 0;
+                          if (aDead !== bDead) return aDead - bDead;
+                          const aScore = a.stats?.score ?? 70;
+                          const bScore = b.stats?.score ?? 70;
+                          if (bScore !== aScore) return bScore - aScore;
+                          return (b.stats?.successCount ?? 0) - (a.stats?.successCount ?? 0);
                         })
                         .map((key, idx) => {
                           const isKeyEnabled = Boolean(key.enabled && !key.isDead && key.status !== 'dead');
@@ -2922,6 +3135,39 @@ export const AdminDashboard: React.FC = () => {
                                     </span>
                                   )}
                                 </div>
+                              </td>
+
+                              <td className="p-4">
+                                {(() => {
+                                  const st = key.stats;
+                                  const score = st?.score ?? 70;
+                                  const succ = st?.successCount ?? 0;
+                                  const fail = st?.failCount ?? 0;
+                                  const lat = st?.avgLatencyMs ?? 0;
+                                  return (
+                                    <div className="flex flex-col gap-1">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className={`px-2 py-0.5 text-[11px] font-bold font-mono rounded-md border ${
+                                          score >= 80
+                                            ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                            : score >= 60
+                                              ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                              : 'bg-rose-500/15 text-rose-400 border-rose-500/30'
+                                        }`}>
+                                          {score} pts
+                                        </span>
+                                        {lat > 0 && (
+                                          <span className="text-[10px] font-mono text-slate-400">
+                                            {(lat / 1000).toFixed(1)}s
+                                          </span>
+                                        )}
+                                      </div>
+                                      <span className="text-[10px] font-mono text-slate-400">
+                                        <span className="text-emerald-400">{succ} ok</span> / <span className="text-rose-400">{fail} fail</span>
+                                      </span>
+                                    </div>
+                                  );
+                                })()}
                               </td>
 
                               <td className="p-4 text-xs text-slate-400">

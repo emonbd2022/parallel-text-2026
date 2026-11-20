@@ -146,6 +146,215 @@ let lastCentralKeysFetchTime = 0;
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL (High Efficiency)
 let centralKeyRefreshPromise: Promise<{ id: string; key: string }[]> | null = null;
 
+export interface CentralKeyStat {
+    keyId: string;
+    successCount: number;
+    failCount: number;
+    consecutiveFailures: number;
+    totalLatencyMs: number;
+    avgLatencyMs: number;
+    lastLatencyMs: number;
+    lastSuccessAt?: string;
+    lastFailureAt?: string;
+    lastError?: string;
+    score: number;
+}
+
+const centralKeyStatsMap = new Map<string, CentralKeyStat>();
+let centralStatsLoaded = false;
+let centralStatsDirty = false;
+let saveCentralStatsTimeout: NodeJS.Timeout | null = null;
+let lastCentralStatsSaveTime = 0;
+
+function computeCentralKeyScore(stat?: CentralKeyStat): number {
+    if (!stat || (stat.successCount === 0 && stat.failCount === 0)) {
+        return 70; // Untested / Ready baseline
+    }
+    const total = stat.successCount + stat.failCount;
+    const successRate = total > 0 ? stat.successCount / total : 0.7;
+    const speedBonus = stat.avgLatencyMs > 0
+        ? Math.max(0, Math.min(20, Math.round(20 - (stat.avgLatencyMs - 1000) / 500)))
+        : 10;
+    const streakPenalty = (stat.consecutiveFailures || 0) * 18;
+    return Math.max(0, Math.min(100, Math.round(successRate * 80 + speedBonus - streakPenalty)));
+}
+
+function recordCentralKeyOutcome(keyId: string, success: boolean, durationMs: number, errorMsg?: string): void {
+    if (!keyId || keyId === 'env-primary-key') return;
+    const existing: CentralKeyStat = centralKeyStatsMap.get(keyId) || {
+        keyId,
+        successCount: 0,
+        failCount: 0,
+        consecutiveFailures: 0,
+        totalLatencyMs: 0,
+        avgLatencyMs: 0,
+        lastLatencyMs: 0,
+        score: 70
+    };
+
+    if (success) {
+        existing.successCount += 1;
+        existing.consecutiveFailures = 0;
+        existing.totalLatencyMs += Math.max(1, durationMs);
+        existing.avgLatencyMs = Math.round(existing.totalLatencyMs / existing.successCount);
+        existing.lastLatencyMs = Math.max(1, durationMs);
+        existing.lastSuccessAt = new Date().toISOString();
+    } else {
+        existing.failCount += 1;
+        existing.consecutiveFailures += 1;
+        existing.lastFailureAt = new Date().toISOString();
+        if (errorMsg) {
+            existing.lastError = String(errorMsg).slice(0, 140);
+        }
+    }
+    existing.score = computeCentralKeyScore(existing);
+    centralKeyStatsMap.set(keyId, existing);
+    centralStatsDirty = true;
+    saveCentralKeyStatsDebounced();
+}
+
+function getSortedActiveCentralKeys(): { id: string; key: string; stat: CentralKeyStat }[] {
+    return centralKeys
+        .map(k => {
+            const stat = centralKeyStatsMap.get(k.id) || {
+                keyId: k.id,
+                successCount: 0,
+                failCount: 0,
+                consecutiveFailures: 0,
+                totalLatencyMs: 0,
+                avgLatencyMs: 0,
+                lastLatencyMs: 0,
+                score: 70
+            };
+            return { ...k, stat };
+        })
+        .sort((a, b) => {
+            // 1. Keep keys with >= 2 consecutive failures at the bottom
+            const aDegraded = a.stat.consecutiveFailures >= 2 ? 1 : 0;
+            const bDegraded = b.stat.consecutiveFailures >= 2 ? 1 : 0;
+            if (aDegraded !== bDegraded) return aDegraded - bDegraded;
+
+            // 2. Higher computed score first (reliability + speed)
+            if (b.stat.score !== a.stat.score) return b.stat.score - a.stat.score;
+
+            // 3. Proven successful keys beat untested keys
+            const aProven = a.stat.successCount > 0 ? 1 : 0;
+            const bProven = b.stat.successCount > 0 ? 1 : 0;
+            if (aProven !== bProven) return bProven - aProven;
+
+            // 4. Higher success count
+            if (b.stat.successCount !== a.stat.successCount) return b.stat.successCount - a.stat.successCount;
+
+            // 5. Lower avg latency
+            if (a.stat.avgLatencyMs > 0 && b.stat.avgLatencyMs > 0 && a.stat.avgLatencyMs !== b.stat.avgLatencyMs) {
+                return a.stat.avgLatencyMs - b.stat.avgLatencyMs;
+            }
+
+            // 6. Fewer fails
+            return a.stat.failCount - b.stat.failCount;
+        });
+}
+
+async function loadCentralKeyStatsFromFirestore(idToken?: string): Promise<void> {
+    if (centralStatsLoaded) return;
+    centralStatsLoaded = true;
+    const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+    const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+    if (!projectId) return;
+
+    const dbCandidates = getFirestoreDbCandidates();
+    for (const dbId of dbCandidates) {
+        try {
+            const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/Stats${apiKey ? `?key=${apiKey}` : ''}`;
+            const headers: Record<string, string> = {};
+            if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
+            const resp = await fetch(url, { headers, signal: AbortSignal.timeout(5000) });
+            if (!resp.ok) continue;
+            const data = (await resp.json()) as any;
+            const rawJson = data?.fields?.statsJson?.stringValue;
+            if (rawJson) {
+                const parsed = JSON.parse(rawJson);
+                if (parsed && typeof parsed === 'object') {
+                    for (const [keyId, val] of Object.entries(parsed)) {
+                        const s = val as any;
+                        if (s && typeof s === 'object' && !centralKeyStatsMap.has(keyId)) {
+                            const entry: CentralKeyStat = {
+                                keyId,
+                                successCount: Number(s.successCount || 0),
+                                failCount: Number(s.failCount || 0),
+                                consecutiveFailures: Number(s.consecutiveFailures || 0),
+                                totalLatencyMs: Number(s.totalLatencyMs || 0),
+                                avgLatencyMs: Number(s.avgLatencyMs || 0),
+                                lastLatencyMs: Number(s.lastLatencyMs || 0),
+                                lastSuccessAt: s.lastSuccessAt,
+                                lastFailureAt: s.lastFailureAt,
+                                lastError: s.lastError,
+                                score: 70
+                            };
+                            entry.score = computeCentralKeyScore(entry);
+                            centralKeyStatsMap.set(keyId, entry);
+                        }
+                    }
+                }
+            }
+            return;
+        } catch {}
+    }
+}
+
+function saveCentralKeyStatsDebounced(): void {
+    if (!centralStatsDirty || Date.now() < serverFirestoreQuotaExhaustedUntil) return;
+    if (saveCentralStatsTimeout) return;
+
+    const elapsed = Date.now() - lastCentralStatsSaveTime;
+    const delayMs = elapsed >= 90000 ? 15000 : (90000 - elapsed);
+
+    saveCentralStatsTimeout = setTimeout(async () => {
+        saveCentralStatsTimeout = null;
+        if (!centralStatsDirty || Date.now() < serverFirestoreQuotaExhaustedUntil) return;
+        centralStatsDirty = false;
+        lastCentralStatsSaveTime = Date.now();
+
+        const projectId = process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID;
+        const apiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+        if (!projectId) return;
+
+        // Keep stats compact (max 1000 keys)
+        const compact: Record<string, CentralKeyStat> = {};
+        let count = 0;
+        for (const [k, v] of centralKeyStatsMap.entries()) {
+            compact[k] = v;
+            count++;
+            if (count >= 1000) break;
+        }
+
+        const body = {
+            fields: {
+                statsJson: { stringValue: JSON.stringify(compact) },
+                updatedAt: { stringValue: new Date().toISOString() }
+            }
+        };
+
+        const dbCandidates = getFirestoreDbCandidates();
+        for (const dbId of dbCandidates) {
+            try {
+                const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${dbId}/documents/central_keys/Stats${apiKey ? `?key=${apiKey}` : ''}`;
+                const resp = await fetch(url, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                    signal: AbortSignal.timeout(6000)
+                });
+                if (resp.ok) return;
+                if (resp.status === 429) {
+                    serverFirestoreQuotaExhaustedUntil = Date.now() + 30 * 60 * 1000;
+                    return;
+                }
+            } catch {}
+        }
+    }, delayMs);
+}
+
 let cachedSettings: { centralModeEnabled: boolean } | null = null;
 let lastSettingsFetchTime = 0;
 const SETTINGS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL (High Efficiency)
@@ -590,7 +799,10 @@ async function syncCentralKeys(forceRefresh = false, idToken?: string): Promise<
             console.log(`[Server] Performing Central API registry sync from authoritative Firestore (forceRefresh=${forceRefresh})...`);
             
             // 1. Fetch strictly from authoritative Firestore registry document (with single read caching)
-            const firestoreKeys = await fetchKeysFromFirestore(idToken, forceRefresh);
+            const [firestoreKeys] = await Promise.all([
+                fetchKeysFromFirestore(idToken, forceRefresh),
+                loadCentralKeyStatsFromFirestore(idToken).catch(() => {})
+            ]);
 
             // If Firestore answered with an authoritative document
             if (firestoreKeys !== null) {
@@ -895,30 +1107,42 @@ app.use(compression({
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// Helper to map a virtual key ID like 'central-5' or a UUID to a real key in server memory
-async function getRealKey(virtualKeyId: string): Promise<string> {
+// Helper to map a virtual key ID like 'central-ck_123', UUID, or legacy 'central-5' to a real key entry in server memory
+async function getRealKeyEntry(virtualKeyId?: string): Promise<{ id: string; key: string }> {
     await syncCentralKeys();
     if (centralKeys.length > 0) {
         let index = -1;
         if (virtualKeyId) {
-            if (virtualKeyId.startsWith('central-')) {
-                const num = parseInt(virtualKeyId.split('-')[1], 10);
+            const stripped = virtualKeyId.startsWith('central-') ? virtualKeyId.slice('central-'.length) : virtualKeyId;
+            const foundByExact = centralKeys.findIndex(k => k.id === virtualKeyId || k.id === stripped);
+            if (foundByExact !== -1) {
+                index = foundByExact;
+            } else if (virtualKeyId.startsWith('central-') && /^\d+$/.test(stripped)) {
+                const num = parseInt(stripped, 10);
                 if (!isNaN(num) && num >= 0 && num < centralKeys.length) {
                     index = num;
                 }
             }
-            if (index === -1) {
-                const foundIdx = centralKeys.findIndex(k => k.id === virtualKeyId);
-                if (foundIdx !== -1) index = foundIdx;
-            }
         }
-        if (index === -1) index = Math.floor(Math.random() * centralKeys.length);
-        return centralKeys[index % centralKeys.length].key;
+        if (index === -1) {
+            const sorted = getSortedActiveCentralKeys();
+            if (sorted.length > 0) {
+                return { id: sorted[0].id, key: sorted[0].key };
+            }
+            index = Math.floor(Math.random() * centralKeys.length);
+        }
+        const entry = centralKeys[index % centralKeys.length];
+        return { id: entry.id, key: entry.key };
     }
     if (process.env.GEMINI_API_KEY) {
-        return process.env.GEMINI_API_KEY;
+        return { id: 'env-primary-key', key: process.env.GEMINI_API_KEY };
     }
     throw new Error("No Central API keys available in server pool. The authoritative registry contains zero keys.");
+}
+
+async function getRealKey(virtualKeyId: string): Promise<string> {
+    const entry = await getRealKeyEntry(virtualKeyId);
+    return entry.key;
 }
 
 // Router to handle all Central API endpoints
@@ -978,7 +1202,7 @@ async function fetchSettingsFromFirestore(forceRefresh = false): Promise<{ centr
     return await settingsRefreshPromise;
 }
 
-// 1-Read Central API Keys Pool for Runtime Client Processing (Safe Virtual Node Handles Only)
+// 1-Read Central API Keys Pool for Runtime Client Processing (Best-first sliding window, max 20 nodes)
 apiRouter.get("/central-keys-pool", async (req, res) => {
     try {
         const settings = await fetchSettingsFromFirestore();
@@ -1004,20 +1228,27 @@ apiRouter.get("/central-keys-pool", async (req, res) => {
         const isForce = req.query.refresh === 'true';
         await syncCentralKeys(isForce, idToken);
 
-        let poolKeys: { id: string; label: string; key: string }[] = [];
-        if (centralKeys.length > 0) {
-            // Return ANONYMOUS VIRTUAL HANDLES. Real decrypted keys NEVER touch the browser.
-            poolKeys = centralKeys.map((_, index) => ({
-                id: `central-${index}`,
-                label: `Central Pool Node ${index + 1}`,
-                key: `central-${index}`
-            }));
-        }
+        const limitParam = Math.min(20, Math.max(1, parseInt(String(req.query.limit || '20'), 10) || 20));
+        const offsetParam = Math.max(0, parseInt(String(req.query.offset || '0'), 10) || 0);
+        const sorted = getSortedActiveCentralKeys();
+        const page = sorted.slice(offsetParam, offsetParam + limitParam);
+
+        const poolKeys = page.map((item, idx) => ({
+            id: item.id,
+            label: `Central Node ${offsetParam + idx + 1}`,
+            key: item.id.startsWith('central-') ? item.id : `central-${item.id}`,
+            score: item.stat.score,
+            avgLatencyMs: item.stat.avgLatencyMs,
+            successCount: item.stat.successCount,
+            failCount: item.stat.failCount
+        }));
 
         res.json({
             success: true,
             keys: poolKeys,
-            count: poolKeys.length
+            count: poolKeys.length,
+            totalAvailable: sorted.length,
+            hasMore: offsetParam + poolKeys.length < sorted.length
         });
     } catch (error: any) {
         console.error("Error fetching central keys pool:", error);
@@ -1025,11 +1256,11 @@ apiRouter.get("/central-keys-pool", async (req, res) => {
     }
 });
 
-// Endpoint to securely return node handles to eligible clients
+// Endpoint to securely return best-ranked node handles to eligible clients (20 max initial, 5 refill batches)
 apiRouter.post("/central-keys-pool-sync", async (req, res) => {
     try {
         const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-        const { localKeys, isAdmin, hasExplicitAdminGrant, forceRefresh } = body;
+        const { localKeys, isAdmin, hasExplicitAdminGrant, forceRefresh, limit, offset, excludeIds } = body;
         const isForceRefresh = forceRefresh === true || req.query.refresh === 'true';
 
         const settings = await fetchSettingsFromFirestore();
@@ -1060,25 +1291,51 @@ apiRouter.post("/central-keys-pool-sync", async (req, res) => {
         const idToken = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : undefined;
         await syncCentralKeys(isForceRefresh, idToken);
 
-        let poolKeys: { id: string; label: string; key: string }[] = [];
-        if (centralKeys.length > 0) {
-            // Return ANONYMOUS VIRTUAL HANDLES. Real decrypted keys NEVER touch the browser.
-            poolKeys = centralKeys.map((k, index) => ({
-                id: `central-${index}`,
-                label: `Central Pool Node ${index + 1}`,
-                key: `central-${index}`
-            }));
-        }
+        const clampedLimit = Math.min(20, Math.max(1, Number(limit) || 20));
+        const clampedOffset = Math.max(0, Number(offset) || 0);
+        const excludeSet = new Set<string>(Array.isArray(excludeIds) ? excludeIds.map((x: any) => String(x)) : []);
+
+        const sortedAll = getSortedActiveCentralKeys();
+        const eligibleRemaining = sortedAll.filter(item => !excludeSet.has(item.id));
+        const page = eligibleRemaining.slice(clampedOffset, clampedOffset + clampedLimit);
+
+        const poolKeys = page.map((item, index) => ({
+            id: item.id,
+            label: `Central Node #${excludeSet.size + clampedOffset + index + 1}`,
+            key: item.id.startsWith('central-') ? item.id : `central-${item.id}`,
+            score: item.stat.score,
+            avgLatencyMs: item.stat.avgLatencyMs,
+            successCount: item.stat.successCount,
+            failCount: item.stat.failCount
+        }));
 
         res.json({
             success: true,
             keys: poolKeys,
             count: poolKeys.length,
+            totalAvailable: sortedAll.length,
+            remainingAvailable: Math.max(0, eligibleRemaining.length - poolKeys.length),
+            hasMore: eligibleRemaining.length > clampedOffset + poolKeys.length,
             timestamp: Date.now()
         });
     } catch (error: any) {
         console.error("Error fetching sync central keys pool:", error);
         res.status(500).json({ success: false, error: "Failed to fetch central keys", keys: [], count: 0 });
+    }
+});
+
+// Client failure report endpoint so timeouts/watchdog aborts also update Best Central Key rankings
+apiRouter.post("/central-report-key", async (req, res) => {
+    try {
+        const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+        const { keyId, success = false, durationMs = 0, errorMsg } = body;
+        if (keyId) {
+            const cleanId = String(keyId).startsWith('central-') ? String(keyId).slice('central-'.length) : String(keyId);
+            recordCentralKeyOutcome(cleanId, Boolean(success), Number(durationMs) || 0, errorMsg);
+        }
+        res.json({ success: true });
+    } catch {
+        res.json({ success: false });
     }
 });
 
@@ -1174,25 +1431,25 @@ apiRouter.post("/central-generate", async (req, res) => {
         };
         req.on('close', onClose);
 
-        // Gather candidate keys to try with automatic failover
-        const candidateKeysToTry: string[] = [];
+        // Gather candidate keys (requested key first, then top-ranked healthy backups, strictly max 3 keys & 20s deadline)
+        const candidateEntries: { id: string; key: string }[] = [];
         try {
-            const requestedKey = await getRealKey(virtualKeyId);
-            if (requestedKey) candidateKeysToTry.push(requestedKey);
+            const requestedEntry = await getRealKeyEntry(virtualKeyId);
+            if (requestedEntry?.key) candidateEntries.push(requestedEntry);
         } catch {}
 
-        const shuffled = [...centralKeys].sort(() => Math.random() - 0.5);
-        for (const k of shuffled) {
-            if (k.key && !candidateKeysToTry.includes(k.key)) {
-                candidateKeysToTry.push(k.key);
+        const bestSorted = getSortedActiveCentralKeys();
+        for (const k of bestSorted) {
+            if (k.key && !candidateEntries.some(c => c.key === k.key)) {
+                candidateEntries.push({ id: k.id, key: k.key });
             }
-            if (candidateKeysToTry.length >= 5) break;
+            if (candidateEntries.length >= 3) break;
         }
-        if (process.env.GEMINI_API_KEY && !candidateKeysToTry.includes(process.env.GEMINI_API_KEY)) {
-            candidateKeysToTry.push(process.env.GEMINI_API_KEY);
+        if (candidateEntries.length === 0 && process.env.GEMINI_API_KEY) {
+            candidateEntries.push({ id: 'env-primary-key', key: process.env.GEMINI_API_KEY });
         }
 
-        if (candidateKeysToTry.length === 0) {
+        if (candidateEntries.length === 0) {
             throw new Error("No Central API keys available in server pool. The authoritative registry contains zero keys.");
         }
 
@@ -1249,23 +1506,27 @@ Return a strictly valid JSON array where each object contains:
         const requestedModel = normalizeGeminiModel(config.model);
         const candidateModels = [
             requestedModel,
-            'gemini-3.1-flash-lite',
-            'gemini-3.5-flash-lite'
+            'gemini-3.1-flash-lite'
         ].filter((m, i, arr) => arr.indexOf(m) === i);
 
         let response: any = null;
         let lastAiError: any = null;
+        const serverDeadline = Date.now() + 20000; // Strict 20s total server budget so client 25s timeout never stalls
 
-        keyLoop: for (const currentKey of candidateKeysToTry.slice(0, 4)) {
-            const ai = getGenAiClient(currentKey);
+        keyLoop: for (const candidate of candidateEntries) {
+            if (serverAbortController.signal.aborted || Date.now() >= serverDeadline) break keyLoop;
+            const ai = getGenAiClient(candidate.key);
             for (const candidateModel of candidateModels) {
-                if (serverAbortController.signal.aborted) break keyLoop;
+                const remainingMs = serverDeadline - Date.now();
+                if (serverAbortController.signal.aborted || remainingMs < 1500) break keyLoop;
+
+                const attemptStart = Date.now();
                 const attemptController = new AbortController();
                 let timedOut = false;
                 const attemptTimer = setTimeout(() => {
                     timedOut = true;
                     attemptController.abort();
-                }, 8500);
+                }, Math.min(7500, remainingMs));
                 const attemptSignal = typeof (AbortSignal as any).any === 'function'
                     ? (AbortSignal as any).any([serverAbortController.signal, attemptController.signal])
                     : attemptController.signal;
@@ -1294,26 +1555,30 @@ Return a strictly valid JSON array where each object contains:
                         }
                     });
                     clearTimeout(attemptTimer);
-                    if (response?.text) break keyLoop;
+                    if (response?.text) {
+                        recordCentralKeyOutcome(candidate.id, true, Date.now() - attemptStart);
+                        break keyLoop;
+                    }
+                    recordCentralKeyOutcome(candidate.id, false, Date.now() - attemptStart, 'Empty AI response');
+                    continue keyLoop;
                 } catch (err: any) {
                     clearTimeout(attemptTimer);
-                    if (serverAbortController.signal.aborted) break keyLoop;
+                    if (serverAbortController.signal.aborted && !timedOut) break keyLoop;
                     if (timedOut) {
-                        lastAiError = new Error(`Central Gemini timeout on ${candidateModel}`);
-                        console.warn(`[Central Generate] Key ${currentKey.slice(0, 8)}... timed out on ${candidateModel}, rotating key`);
+                        lastAiError = new Error(`TIMEOUT: Central Gemini timeout on ${candidateModel}`);
+                        recordCentralKeyOutcome(candidate.id, false, Date.now() - attemptStart, 'Timeout');
+                        console.warn(`[Central Generate] Key ${candidate.key.slice(0, 8)}... timed out on ${candidateModel}, rotating key`);
                         continue keyLoop;
                     }
                     lastAiError = err;
                     const errMsg = String(err?.message || err).toLowerCase();
-                    console.warn(`[Central Generate] Key ${currentKey.slice(0, 8)}... model ${candidateModel} failed: ${errMsg.slice(0, 80)}`);
-                    // If 404 model unavailable, try next model on same key; if key invalid/quota, switch key immediately
+                    console.warn(`[Central Generate] Key ${candidate.key.slice(0, 8)}... model ${candidateModel} failed: ${errMsg.slice(0, 80)}`);
                     if (errMsg.includes('404') || errMsg.includes('not_found')) {
+                        // Only try fallback model on the same key when model name is 404
                         continue;
                     }
-                    if (errMsg.includes('403') || errMsg.includes('permission_denied') || errMsg.includes('api_key_invalid') || errMsg.includes('quota') || errMsg.includes('429')) {
-                        continue keyLoop;
-                    }
-                    continue;
+                    recordCentralKeyOutcome(candidate.id, false, Date.now() - attemptStart, err?.message || 'API error');
+                    continue keyLoop;
                 }
             }
         }
@@ -1398,7 +1663,15 @@ Return a strictly valid JSON array where each object contains:
             return;
         }
         console.error("Central API Error:", error);
-        res.status(500).json({ error: String(error?.message || error) });
+        const msg = String(error?.message || error || '');
+        const lower = msg.toLowerCase();
+        const status = lower.includes('429') || lower.includes('quota') ? 429
+            : (lower.includes('403') || lower.includes('api_key_invalid') || lower.includes('permission_denied')) ? 403
+            : lower.includes('timeout') ? 504 : 500;
+        const normalizedErr = status === 429 ? `QUOTA_EXCEEDED: ${msg}`
+            : status === 403 ? `INVALID_KEY: ${msg}`
+            : msg;
+        res.status(status).json({ error: normalizedErr });
     }
 });
 
@@ -1493,25 +1766,25 @@ apiRouter.post("/central-category", async (req, res) => {
         };
         req.on('close', onClose);
 
-        // Gather candidate keys to try with automatic failover
-        const candidateKeysToTry: string[] = [];
+        // Gather candidate keys (requested key first, then top-ranked healthy backups, strictly max 3 keys & 20s deadline)
+        const candidateEntries: { id: string; key: string }[] = [];
         try {
-            const requestedKey = await getRealKey(virtualKeyId);
-            if (requestedKey) candidateKeysToTry.push(requestedKey);
+            const requestedEntry = await getRealKeyEntry(virtualKeyId);
+            if (requestedEntry?.key) candidateEntries.push(requestedEntry);
         } catch {}
 
-        const shuffled = [...centralKeys].sort(() => Math.random() - 0.5);
-        for (const k of shuffled) {
-            if (k.key && !candidateKeysToTry.includes(k.key)) {
-                candidateKeysToTry.push(k.key);
+        const bestSorted = getSortedActiveCentralKeys();
+        for (const k of bestSorted) {
+            if (k.key && !candidateEntries.some(c => c.key === k.key)) {
+                candidateEntries.push({ id: k.id, key: k.key });
             }
-            if (candidateKeysToTry.length >= 5) break;
+            if (candidateEntries.length >= 3) break;
         }
-        if (process.env.GEMINI_API_KEY && !candidateKeysToTry.includes(process.env.GEMINI_API_KEY)) {
-            candidateKeysToTry.push(process.env.GEMINI_API_KEY);
+        if (candidateEntries.length === 0 && process.env.GEMINI_API_KEY) {
+            candidateEntries.push({ id: 'env-primary-key', key: process.env.GEMINI_API_KEY });
         }
 
-        if (candidateKeysToTry.length === 0) {
+        if (candidateEntries.length === 0) {
             throw new Error("No Central API keys available in server pool. The authoritative registry contains zero keys.");
         }
 
@@ -1606,23 +1879,27 @@ Return a strictly valid JSON array where each object contains:
         const requestedCatModel = normalizeGeminiModel(model);
         const candidateModels = [
             requestedCatModel,
-            'gemini-3.1-flash-lite',
-            'gemini-3.5-flash-lite'
+            'gemini-3.1-flash-lite'
         ].filter((m, i, arr) => arr.indexOf(m) === i);
 
         let response: any = null;
         let lastCatError: any = null;
+        const serverDeadline = Date.now() + 20000;
 
-        keyLoop: for (const currentKey of candidateKeysToTry.slice(0, 4)) {
-            const ai = getGenAiClient(currentKey);
+        keyLoop: for (const candidate of candidateEntries) {
+            if (serverAbortController.signal.aborted || Date.now() >= serverDeadline) break keyLoop;
+            const ai = getGenAiClient(candidate.key);
             for (const candidateModel of candidateModels) {
-                if (serverAbortController.signal.aborted) break keyLoop;
+                const remainingMs = serverDeadline - Date.now();
+                if (serverAbortController.signal.aborted || remainingMs < 1500) break keyLoop;
+
+                const attemptStart = Date.now();
                 const attemptController = new AbortController();
                 let timedOut = false;
                 const attemptTimer = setTimeout(() => {
                     timedOut = true;
                     attemptController.abort();
-                }, 8500);
+                }, Math.min(7500, remainingMs));
                 const attemptSignal = typeof (AbortSignal as any).any === 'function'
                     ? (AbortSignal as any).any([serverAbortController.signal, attemptController.signal])
                     : attemptController.signal;
@@ -1649,25 +1926,29 @@ Return a strictly valid JSON array where each object contains:
                         }
                     });
                     clearTimeout(attemptTimer);
-                    if (response?.text) break keyLoop;
+                    if (response?.text) {
+                        recordCentralKeyOutcome(candidate.id, true, Date.now() - attemptStart);
+                        break keyLoop;
+                    }
+                    recordCentralKeyOutcome(candidate.id, false, Date.now() - attemptStart, 'Empty AI response');
+                    continue keyLoop;
                 } catch (err: any) {
                     clearTimeout(attemptTimer);
-                    if (serverAbortController.signal.aborted) break keyLoop;
+                    if (serverAbortController.signal.aborted && !timedOut) break keyLoop;
                     if (timedOut) {
-                        lastCatError = new Error(`Central Category timeout on ${candidateModel}`);
-                        console.warn(`[Central Category] Key ${currentKey.slice(0, 8)}... timed out on ${candidateModel}, rotating key`);
+                        lastCatError = new Error(`TIMEOUT: Central Category timeout on ${candidateModel}`);
+                        recordCentralKeyOutcome(candidate.id, false, Date.now() - attemptStart, 'Timeout');
+                        console.warn(`[Central Category] Key ${candidate.key.slice(0, 8)}... timed out on ${candidateModel}, rotating key`);
                         continue keyLoop;
                     }
                     lastCatError = err;
                     const errMsg = String(err?.message || err).toLowerCase();
-                    console.warn(`[Central Category] Key ${currentKey.slice(0, 8)}... model ${candidateModel} failed: ${errMsg.slice(0, 80)}`);
+                    console.warn(`[Central Category] Key ${candidate.key.slice(0, 8)}... model ${candidateModel} failed: ${errMsg.slice(0, 80)}`);
                     if (errMsg.includes('404') || errMsg.includes('not_found')) {
                         continue;
                     }
-                    if (errMsg.includes('403') || errMsg.includes('permission_denied') || errMsg.includes('api_key_invalid') || errMsg.includes('quota') || errMsg.includes('429')) {
-                        continue keyLoop;
-                    }
-                    continue;
+                    recordCentralKeyOutcome(candidate.id, false, Date.now() - attemptStart, err?.message || 'API error');
+                    continue keyLoop;
                 }
             }
         }
@@ -1707,7 +1988,15 @@ Return a strictly valid JSON array where each object contains:
             return;
         }
         console.error("Central API Error:", error);
-        res.status(500).json({ error: error.message || "Internal Server Error" });
+        const msg = String(error?.message || error || '');
+        const lower = msg.toLowerCase();
+        const status = lower.includes('429') || lower.includes('quota') ? 429
+            : (lower.includes('403') || lower.includes('api_key_invalid') || lower.includes('permission_denied')) ? 403
+            : lower.includes('timeout') ? 504 : 500;
+        const normalizedErr = status === 429 ? `QUOTA_EXCEEDED: ${msg}`
+            : status === 403 ? `INVALID_KEY: ${msg}`
+            : msg;
+        res.status(status).json({ error: normalizedErr });
     }
 });
 
@@ -1935,6 +2224,26 @@ apiRouter.post("/admin/keys/refresh", async (req, res) => {
             const isDead = Boolean(data.isDead || data.status === 'dead');
             const status = data.status || (isDead ? 'dead' : (data.enabled === false ? 'disabled' : 'active'));
 
+            const stat = centralKeyStatsMap.get(data.id);
+            const statsObj = stat ? {
+                score: stat.score,
+                successCount: stat.successCount,
+                failCount: stat.failCount,
+                consecutiveFailures: stat.consecutiveFailures,
+                avgLatencyMs: stat.avgLatencyMs,
+                lastLatencyMs: stat.lastLatencyMs,
+                lastSuccessAt: stat.lastSuccessAt,
+                lastFailureAt: stat.lastFailureAt,
+                lastError: stat.lastError
+            } : {
+                score: 70,
+                successCount: 0,
+                failCount: 0,
+                consecutiveFailures: 0,
+                avgLatencyMs: 0,
+                lastLatencyMs: 0
+            };
+
             return {
                 id: data.id,
                 label: data.label,
@@ -1947,7 +2256,8 @@ apiRouter.post("/admin/keys/refresh", async (req, res) => {
                 createdAt: data.createdAt,
                 contributedBy: exactContributor,
                 contributorName: exactContributor,
-                contributorEmail: data.contributorEmail
+                contributorEmail: data.contributorEmail,
+                stats: statsObj
             };
         });
         const activeKeys = keys.filter(k => k.enabled && !k.isDead && k.status !== 'dead').length;
@@ -2006,6 +2316,25 @@ apiRouter.get("/admin/keys", async (req, res) => {
 
             const isDead = Boolean(data.isDead || data.status === 'dead');
             const status = data.status || (isDead ? 'dead' : (data.enabled === false ? 'disabled' : 'active'));
+            const stat = centralKeyStatsMap.get(data.id);
+            const statsObj = stat ? {
+                score: stat.score,
+                successCount: stat.successCount,
+                failCount: stat.failCount,
+                consecutiveFailures: stat.consecutiveFailures,
+                avgLatencyMs: stat.avgLatencyMs,
+                lastLatencyMs: stat.lastLatencyMs,
+                lastSuccessAt: stat.lastSuccessAt,
+                lastFailureAt: stat.lastFailureAt,
+                lastError: stat.lastError
+            } : {
+                score: 70,
+                successCount: 0,
+                failCount: 0,
+                consecutiveFailures: 0,
+                avgLatencyMs: 0,
+                lastLatencyMs: 0
+            };
 
             return {
                 id: data.id,
@@ -2019,7 +2348,8 @@ apiRouter.get("/admin/keys", async (req, res) => {
                 createdAt: data.createdAt,
                 contributedBy: exactContributor,
                 contributorName: exactContributor,
-                contributorEmail: data.contributorEmail
+                contributorEmail: data.contributorEmail,
+                stats: statsObj
             };
         });
         const activeKeys = keys.filter(k => k.enabled && !k.isDead && k.status !== 'dead').length;
@@ -2034,6 +2364,18 @@ apiRouter.get("/admin/keys", async (req, res) => {
             updatedAt: new Date().toISOString(),
             version: 1
         });
+    } catch (e: any) {
+        res.status(500).json({ success: false, error: String(e?.message || e) });
+    }
+});
+
+apiRouter.post("/admin/keys/reset-stats", async (req, res) => {
+    try {
+        centralKeyStatsMap.clear();
+        centralStatsDirty = true;
+        lastCentralStatsSaveTime = 0;
+        saveCentralKeyStatsDebounced();
+        res.json({ success: true });
     } catch (e: any) {
         res.status(500).json({ success: false, error: String(e?.message || e) });
     }
@@ -2360,6 +2702,7 @@ apiRouter.post("/admin/keys/test-single", async (req, res) => {
         }
 
         const targetModel = normalizeGeminiModel(model);
+        const testStart = Date.now();
 
         const response = await ai.models.generateContent({
             model: targetModel,
@@ -2369,12 +2712,15 @@ apiRouter.post("/admin/keys/test-single", async (req, res) => {
         const title = response?.text ? response.text.trim() : (response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '');
 
         if (!title) {
+            if (keyId) recordCentralKeyOutcome(keyId, false, Date.now() - testStart, 'Model returned empty response');
             return res.json({ success: false, error: "Model returned empty response." });
         }
 
+        if (keyId) recordCentralKeyOutcome(keyId, true, Date.now() - testStart);
         return res.json({ success: true, keyId, title });
     } catch (err: any) {
         const errorMsg = err?.message || String(err) || "Failed to generate title";
+        if (req.body?.keyId) recordCentralKeyOutcome(req.body.keyId, false, 0, errorMsg);
         return res.json({ success: false, keyId: req.body?.keyId, error: errorMsg });
     }
 });
